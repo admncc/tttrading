@@ -1,0 +1,146 @@
+import {
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import type { DashboardStats } from "@tttrading/shared";
+import { pct, pnlClass, shortTime, usd } from "../format.js";
+
+function Kpi({ label, value, cls }: { label: string; value: string; cls?: string }) {
+  return (
+    <div className="kpi">
+      <div className="label">{label}</div>
+      <div className={`value ${cls ?? ""}`}>{value}</div>
+    </div>
+  );
+}
+
+export function Overview({ stats }: { stats: DashboardStats | null }) {
+  if (!stats) return <div className="empty">Loading…</div>;
+  const o = stats.overall;
+
+  const equityData = stats.equityCurve.map((p) => ({ t: shortTime(p.t), pnl: p.pnl }));
+  const groupData = stats.byGroup.map((g) => ({
+    name: g.groupName,
+    pnl: Number(g.stats.realizedPnl.toFixed(2)),
+  }));
+
+  return (
+    <div>
+      <h1>Overview</h1>
+
+      <div className="kpi-grid">
+        <Kpi label="Realized PnL" value={usd(o.realizedPnl)} cls={pnlClass(o.realizedPnl)} />
+        <Kpi label="Win Rate" value={pct(o.winRate)} />
+        <Kpi label="Trades" value={String(o.trades)} />
+        <Kpi label="Open" value={String(o.openTrades)} />
+        <Kpi
+          label="Profit Factor"
+          value={Number.isFinite(o.profitFactor) ? o.profitFactor.toFixed(2) : "∞"}
+        />
+        <Kpi label="Avg PnL / trade" value={usd(o.avgPnl)} cls={pnlClass(o.avgPnl)} />
+        <Kpi label="Best" value={usd(o.bestTrade)} cls="pos" />
+        <Kpi label="Worst" value={usd(o.worstTrade)} cls="neg" />
+      </div>
+
+      <div className="panel">
+        <h2>Cumulative PnL</h2>
+        {equityData.length === 0 ? (
+          <div className="empty">No closed trades yet.</div>
+        ) : (
+          <ResponsiveContainer width="100%" height={280}>
+            <AreaChart data={equityData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+              <defs>
+                <linearGradient id="pnlFill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.4} />
+                  <stop offset="100%" stopColor="#3b82f6" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#232838" />
+              <XAxis dataKey="t" stroke="#8b93a7" fontSize={11} minTickGap={40} />
+              <YAxis stroke="#8b93a7" fontSize={11} width={70} />
+              <Tooltip
+                contentStyle={{ background: "#131722", border: "1px solid #232838" }}
+                formatter={(v: number) => usd(v)}
+              />
+              <Area type="monotone" dataKey="pnl" stroke="#3b82f6" fill="url(#pnlFill)" />
+            </AreaChart>
+          </ResponsiveContainer>
+        )}
+      </div>
+
+      <div className="grid-2">
+        <div className="panel">
+          <h2>Performance by Group</h2>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Group</th>
+                  <th>Trades</th>
+                  <th>Win %</th>
+                  <th>PnL</th>
+                  <th>PF</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stats.byGroup.map((g) => (
+                  <tr key={g.groupId}>
+                    <td>{g.groupName}</td>
+                    <td>{g.stats.trades}</td>
+                    <td>{pct(g.stats.winRate)}</td>
+                    <td className={pnlClass(g.stats.realizedPnl)}>{usd(g.stats.realizedPnl)}</td>
+                    <td>
+                      {Number.isFinite(g.stats.profitFactor)
+                        ? g.stats.profitFactor.toFixed(2)
+                        : "∞"}
+                    </td>
+                  </tr>
+                ))}
+                {stats.byGroup.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="empty">
+                      No groups yet.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="panel">
+          <h2>Group PnL</h2>
+          {groupData.length === 0 ? (
+            <div className="empty">—</div>
+          ) : (
+            <ResponsiveContainer width="100%" height={240}>
+              <BarChart data={groupData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#232838" />
+                <XAxis dataKey="name" stroke="#8b93a7" fontSize={11} />
+                <YAxis stroke="#8b93a7" fontSize={11} width={60} />
+                <Tooltip
+                  contentStyle={{ background: "#131722", border: "1px solid #232838" }}
+                  formatter={(v: number) => usd(v)}
+                  cursor={{ fill: "#1a1f2e" }}
+                />
+                <Bar dataKey="pnl">
+                  {groupData.map((d, i) => (
+                    <Cell key={i} fill={d.pnl >= 0 ? "#22c55e" : "#ef4444"} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

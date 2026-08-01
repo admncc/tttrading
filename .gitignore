@@ -1,0 +1,33 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build output
+dist/
+build/
+*.tsbuildinfo
+
+# env & secrets
+.env
+.env.local
+*.env
+!.env.example
+
+# database
+*.sqlite
+*.sqlite3
+*.db
+data/
+
+# telegram session
+*.session
+telegram.session*
+
+# logs
+*.log
+logs/
+
+# editor / os
+.DS_Store
+.vscode/
+.idea/

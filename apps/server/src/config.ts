@@ -1,0 +1,72 @@
+import dotenv from "dotenv";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+import type { TradingEnv } from "@tttrading/shared";
+
+// Load .env from the repo root (two levels up from apps/server/src).
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.resolve(__dirname, "../../../.env") });
+
+function bool(v: string | undefined, def = false): boolean {
+  if (v === undefined) return def;
+  return ["1", "true", "yes", "on"].includes(v.toLowerCase());
+}
+
+function num(v: string | undefined, def: number): number {
+  const n = v === undefined ? NaN : Number(v);
+  return Number.isFinite(n) ? n : def;
+}
+
+const tradingEnv = (process.env.TRADING_ENV as TradingEnv) || "testnet";
+
+export const config = {
+  /** HTTP + WebSocket port for the desk API. */
+  port: num(process.env.PORT, 4000),
+  host: process.env.HOST || "0.0.0.0",
+
+  /** Where the SQLite file lives. */
+  dbPath: process.env.DB_PATH || path.resolve(__dirname, "../../../data/tttrading.sqlite"),
+
+  /** testnet | mainnet | paper. Controls whether real orders are sent. */
+  tradingEnv,
+  isPaper: tradingEnv === "paper",
+  isTestnet: tradingEnv === "testnet",
+
+  /** Seed a couple of demo groups + trades on an empty database. */
+  seedDemo: bool(process.env.SEED_DEMO, true),
+
+  hyperliquid: {
+    /** Private key of the Hyperliquid API/agent wallet (0x...). */
+    privateKey: process.env.HL_PRIVATE_KEY || "",
+    /** Main account address (for reading state); defaults to wallet address. */
+    accountAddress: process.env.HL_ACCOUNT_ADDRESS || "",
+  },
+
+  telegram: {
+    apiId: num(process.env.TG_API_ID, 0),
+    apiHash: process.env.TG_API_HASH || "",
+    /** StringSession value produced on first interactive login. */
+    session: process.env.TG_SESSION || "",
+  },
+
+  anthropic: {
+    apiKey: process.env.ANTHROPIC_API_KEY || "",
+    model: process.env.ANTHROPIC_MODEL || "claude-sonnet-5",
+  },
+} as const;
+
+export function hyperliquidReady(): boolean {
+  return !config.isPaper && !!config.hyperliquid.privateKey;
+}
+
+export function telegramReady(): boolean {
+  return (
+    config.telegram.apiId > 0 &&
+    !!config.telegram.apiHash &&
+    !!config.telegram.session
+  );
+}
+
+export function llmReady(): boolean {
+  return !!config.anthropic.apiKey;
+}
