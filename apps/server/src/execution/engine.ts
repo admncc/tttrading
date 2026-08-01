@@ -126,6 +126,17 @@ async function execute(signal: Signal, group: Group, parsed: ParsedSignal): Prom
     return failed;
   }
 
+  // Protect the position with reduce-only SL/TP trigger orders (live only).
+  const bracket = await hyperliquid.placeBracketOrders({
+    symbol: parsed.symbol,
+    side: parsed.side,
+    size: result.size,
+    stopLoss: parsed.stopLoss,
+    takeProfits: parsed.takeProfits,
+    slippage: maxSlippage,
+  });
+  if (bracket.error) log.warn(`Bracket orders for ${parsed.symbol} failed: ${bracket.error}`);
+
   const trade = tradesRepo.create({
     signalId: signal.id,
     groupId: group.id,
@@ -141,12 +152,20 @@ async function execute(signal: Signal, group: Group, parsed: ParsedSignal): Prom
     stopLoss: parsed.stopLoss,
     takeProfits: parsed.takeProfits,
     exchangeOrderId: result.orderId,
+    bracketOrderIds: bracket.orderIds.length ? bracket.orderIds : undefined,
+    bracketProtected: bracket.protectedOnExchange,
   });
 
   const executed = signalsRepo.update(signal.id, { status: "executed", tradeId: trade.id })!;
+  const prot =
+    parsed.stopLoss === undefined && (parsed.takeProfits?.length ?? 0) === 0
+      ? ""
+      : bracket.protectedOnExchange
+        ? " [SL/TP live]"
+        : " [SL/TP recorded]";
   log.info(
     `${result.simulated ? "SIMULATED" : "LIVE"} ${parsed.side} ${result.size} ${parsed.symbol} ` +
-      `@ ${result.filledPrice} (${group.name})`,
+      `@ ${result.filledPrice} (${group.name})${prot}`,
   );
   broadcast({ type: "signal", signal: executed });
   broadcast({ type: "trade", trade });
@@ -175,7 +194,16 @@ export async function closeTrade(tradeId: string, exitPriceOverride?: number) {
 
   let exitPrice = exitPriceOverride;
   if (exitPrice === undefined) {
-    exitPrice = (await hyperliquid.getMidPrice(trade.symbol)) ?? trade.entryPrice;
+    try {
+      exitPrice = (await hyperliquid.getMidPrice(trade.symbol)) ?? trade.entryPrice;
+    } catch {
+      exitPrice = trade.entryPrice; // fall back to entry if the price feed is down
+    }
+  }
+
+  // Cancel any resting SL/TP orders so they don't fire after we close.
+  if (trade.bracketOrderIds?.length) {
+    await hyperliquid.cancelOrders(trade.symbol, trade.bracketOrderIds);
   }
 
   if (hyperliquid.live) {

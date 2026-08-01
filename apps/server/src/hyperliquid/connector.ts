@@ -29,6 +29,12 @@ export interface OrderResult {
   error?: string;
 }
 
+export interface BracketResult {
+  orderIds: string[];
+  protectedOnExchange: boolean;
+  error?: string;
+}
+
 export interface Position {
   symbol: string;
   size: number; // signed
@@ -156,11 +162,24 @@ export class HyperliquidConnector {
 
   /** Place a market order (implemented as an aggressive IOC limit). */
   async placeMarketOrder(req: OrderRequest): Promise<OrderResult> {
-    const asset = await this.getAsset(req.symbol);
+    let asset: AssetInfo | undefined;
+    let mid: number | undefined;
+    try {
+      asset = await this.getAsset(req.symbol);
+      if (asset) mid = await this.getMidPrice(req.symbol);
+    } catch (err) {
+      // Network / API failure while pricing the order — fail cleanly.
+      return {
+        ok: false,
+        filledPrice: 0,
+        size: 0,
+        simulated: !this.live,
+        error: `Price feed error: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
     if (!asset) {
       return { ok: false, filledPrice: 0, size: 0, simulated: !this.live, error: `Unknown symbol ${req.symbol}` };
     }
-    const mid = await this.getMidPrice(req.symbol);
     if (!mid || mid <= 0) {
       return { ok: false, filledPrice: 0, size: 0, simulated: !this.live, error: `No price for ${req.symbol}` };
     }
@@ -207,9 +226,124 @@ export class HyperliquidConnector {
       };
     }
   }
+
+  /**
+   * Place reduce-only SL/TP trigger orders that protect an open position.
+   * The stop-loss covers the full size; take-profits split the size evenly.
+   * No-op (returns unprotected) in paper/unsigned mode.
+   */
+  async placeBracketOrders(params: {
+    symbol: string;
+    side: TradeSide;
+    size: number;
+    stopLoss?: number;
+    takeProfits?: number[];
+    slippage: number;
+  }): Promise<BracketResult> {
+    const { symbol, side, size, stopLoss, takeProfits, slippage } = params;
+    const tps = takeProfits ?? [];
+    if (stopLoss === undefined && tps.length === 0) {
+      return { orderIds: [], protectedOnExchange: false };
+    }
+    if (!this.live || !this.exchange) {
+      return { orderIds: [], protectedOnExchange: false };
+    }
+
+    let asset: AssetInfo | undefined;
+    try {
+      asset = await this.getAsset(symbol);
+    } catch (err) {
+      return {
+        orderIds: [],
+        protectedOnExchange: false,
+        error: `Price feed error: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+    if (!asset) return { orderIds: [], protectedOnExchange: false, error: `Unknown symbol ${symbol}` };
+
+    // Closing a long means selling; closing a short means buying.
+    const closeIsBuy = side === "short";
+    const orders: HlOrderParams[] = [];
+
+    const worstPx = (triggerPx: number) =>
+      roundPx(triggerPx * (closeIsBuy ? 1 + slippage : 1 - slippage), asset.szDecimals);
+
+    if (stopLoss !== undefined) {
+      orders.push({
+        a: asset.index,
+        b: closeIsBuy,
+        p: String(worstPx(stopLoss)),
+        s: String(roundSize(size, asset.szDecimals)),
+        r: true,
+        t: { trigger: { isMarket: true, triggerPx: String(roundPx(stopLoss, asset.szDecimals)), tpsl: "sl" } },
+      });
+    }
+
+    if (tps.length > 0) {
+      let remaining = size;
+      tps.forEach((tp, i) => {
+        const isLast = i === tps.length - 1;
+        const chunk = isLast ? remaining : roundSize(size / tps.length, asset.szDecimals);
+        remaining = roundSize(remaining - chunk, asset.szDecimals);
+        if (chunk <= 0) return;
+        orders.push({
+          a: asset.index,
+          b: closeIsBuy,
+          p: String(worstPx(tp)),
+          s: String(chunk),
+          r: true,
+          t: { trigger: { isMarket: true, triggerPx: String(roundPx(tp, asset.szDecimals)), tpsl: "tp" } },
+        });
+      });
+    }
+
+    if (orders.length === 0) return { orderIds: [], protectedOnExchange: false };
+
+    try {
+      const res = (await this.exchange.order({ orders, grouping: "na" })) as unknown as HlOrderResponse;
+      const statuses = res.response?.data?.statuses ?? [];
+      const orderIds: string[] = [];
+      for (const s of statuses) {
+        if ("resting" in s) orderIds.push(String(s.resting.oid));
+        else if ("filled" in s) orderIds.push(String(s.filled.oid));
+      }
+      return { orderIds, protectedOnExchange: orderIds.length > 0 };
+    } catch (err) {
+      return {
+        orderIds: [],
+        protectedOnExchange: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  /** Cancel resting orders (e.g. SL/TP) for a symbol. */
+  async cancelOrders(symbol: string, orderIds: string[]): Promise<void> {
+    if (!this.live || !this.exchange || orderIds.length === 0) return;
+    const asset = await this.getAsset(symbol);
+    if (!asset) return;
+    try {
+      await this.exchange.cancel({
+        cancels: orderIds.map((oid) => ({ a: asset.index, o: Number(oid) })),
+      });
+    } catch (err) {
+      log.warn(`Failed to cancel orders for ${symbol}:`, err instanceof Error ? err.message : err);
+    }
+  }
 }
 
 /* --------------------------- response parsing --------------------------- */
+
+type HlOrderParams = {
+  a: number;
+  b: boolean;
+  p: string;
+  s: string;
+  r: boolean;
+  t:
+    | { limit: { tif: "Gtc" | "Ioc" | "Alo" } }
+    | { trigger: { isMarket: boolean; triggerPx: string; tpsl: "tp" | "sl" } };
+};
 
 interface HlOrderResponse {
   status: string;

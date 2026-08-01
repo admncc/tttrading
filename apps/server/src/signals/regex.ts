@@ -49,13 +49,27 @@ function firstNumber(text: string, patterns: RegExp[]): number | undefined {
   return undefined;
 }
 
-function allNumbers(text: string, pattern: RegExp): number[] {
+/**
+ * Extract take-profit levels. Handles both repeated labels ("TP1 x TP2 y") and
+ * a single label followed by several values ("TP 64000 / 65000", "targets:
+ * 64000, 65000"). Separators: comma, slash, or whitespace on the same line.
+ */
+function extractTakeProfits(text: string): number[] {
+  const label = /(?:tp\d*|take[\s-]?profits?\d*|targets?\d*|ziele?\d*)\s*[:=]?\s*/gi;
   const out: number[] = [];
-  for (const m of text.matchAll(pattern)) {
-    const n = toNumber(m[1]!);
-    if (n !== undefined) out.push(n);
+  for (const m of text.matchAll(label)) {
+    const rest = text.slice(m.index! + m[0].length);
+    // Grab the run of numbers separated by , / or spaces until something else.
+    const run = rest.match(/^([0-9][0-9.,]*(?:\s*[\/,\s]\s*[0-9][0-9.,]*)*)/);
+    if (!run) continue;
+    // Split on slash/whitespace only; toNumber() resolves any thousands commas.
+    for (const token of run[1]!.split(/[\/\s]+/)) {
+      const n = toNumber(token);
+      if (n !== undefined) out.push(n);
+    }
   }
-  return out;
+  // De-duplicate while preserving order.
+  return [...new Set(out)];
 }
 
 /**
@@ -83,10 +97,7 @@ export function parseWithRegex(text: string): ParsedSignal | null {
     /🛑[:\s]*([0-9][0-9.,]*)/,
   ]);
 
-  const takeProfits = allNumbers(
-    text,
-    /\b(?:tp\d*|take[\s-]?profit\d*|target\d*|ziel\d*)\b[:\s]*([0-9][0-9.,]*)/gi,
-  );
+  const takeProfits = extractTakeProfits(text);
 
   const leverageHint = firstNumber(text, [
     /\b(?:lev(?:erage)?|hebel)\b[:\s]*([0-9]+)\s*x?/i,

@@ -49,6 +49,7 @@ export function Trades({ trades, onChange }: { trades: Trade[]; onChange: () => 
                 <th>Notional</th>
                 <th>Size</th>
                 <th>Entry</th>
+                <th>SL / TP</th>
                 <th>Exit</th>
                 <th>PnL</th>
                 <th>Status</th>
@@ -68,6 +69,24 @@ export function Trades({ trades, onChange }: { trades: Trade[]; onChange: () => 
                   <td>{usd(t.notionalUsd, 0)}</td>
                   <td>{num(t.size)}</td>
                   <td>{num(t.entryPrice)}</td>
+                  <td>
+                    {t.stopLoss === undefined && !t.takeProfits?.length ? (
+                      <span className="muted">—</span>
+                    ) : (
+                      <span>
+                        {t.bracketProtected && (
+                          <span title="SL/TP live on exchange" style={{ marginRight: 4 }}>
+                            🛡
+                          </span>
+                        )}
+                        <span className="neg">{t.stopLoss ? num(t.stopLoss) : "—"}</span>
+                        <span className="muted"> / </span>
+                        <span className="pos">
+                          {t.takeProfits?.length ? t.takeProfits.map((x) => num(x)).join(",") : "—"}
+                        </span>
+                      </span>
+                    )}
+                  </td>
                   <td>{t.exitPrice !== undefined ? num(t.exitPrice) : "—"}</td>
                   <td className={pnlClass(t.realizedPnl)}>
                     {t.realizedPnl !== undefined ? usd(t.realizedPnl) : "—"}
@@ -86,7 +105,7 @@ export function Trades({ trades, onChange }: { trades: Trade[]; onChange: () => 
               ))}
               {shown.length === 0 && (
                 <tr>
-                  <td colSpan={12} className="empty">
+                  <td colSpan={13} className="empty">
                     No trades.
                   </td>
                 </tr>

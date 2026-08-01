@@ -49,6 +49,8 @@ CREATE TABLE IF NOT EXISTS trades (
   realized_pnl REAL,
   fees REAL,
   exchange_order_id TEXT,
+  bracket_order_ids TEXT,        -- JSON string[]
+  bracket_protected INTEGER,
   error TEXT,
   opened_at TEXT NOT NULL,
   closed_at TEXT
@@ -64,8 +66,26 @@ function open(): Database.Database {
   database.pragma("journal_mode = WAL");
   database.pragma("foreign_keys = ON");
   database.exec(SCHEMA);
+  migrate(database);
   log.info(`SQLite ready at ${config.dbPath}`);
   return database;
+}
+
+/** Add columns introduced after the initial schema to pre-existing databases. */
+function migrate(database: Database.Database): void {
+  const columns = (database.prepare("PRAGMA table_info(trades)").all() as { name: string }[]).map(
+    (c) => c.name,
+  );
+  const additions: Record<string, string> = {
+    bracket_order_ids: "TEXT",
+    bracket_protected: "INTEGER",
+  };
+  for (const [name, type] of Object.entries(additions)) {
+    if (!columns.includes(name)) {
+      database.exec(`ALTER TABLE trades ADD COLUMN ${name} ${type}`);
+      log.info(`Migrated: added trades.${name}`);
+    }
+  }
 }
 
 export const db: Database.Database = open();

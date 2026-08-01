@@ -105,8 +105,12 @@ export interface Trade {
   realizedPnl?: number;
   /** Fees paid in USDC. */
   fees?: number;
-  /** Exchange order id, when available. */
+  /** Exchange order id of the entry, when available. */
   exchangeOrderId?: string;
+  /** Exchange order ids of the resting SL/TP trigger orders (live mode). */
+  bracketOrderIds?: string[];
+  /** Whether SL/TP were actually placed on the exchange (vs. only recorded). */
+  bracketProtected?: boolean;
   error?: string;
   openedAt: string;
   closedAt?: string;

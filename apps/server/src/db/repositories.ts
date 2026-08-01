@@ -84,6 +84,8 @@ interface TradeRow {
   realized_pnl: number | null;
   fees: number | null;
   exchange_order_id: string | null;
+  bracket_order_ids: string | null;
+  bracket_protected: number | null;
   error: string | null;
   opened_at: string;
   closed_at: string | null;
@@ -109,6 +111,10 @@ function toTrade(r: TradeRow): Trade {
     realizedPnl: r.realized_pnl ?? undefined,
     fees: r.fees ?? undefined,
     exchangeOrderId: r.exchange_order_id ?? undefined,
+    bracketOrderIds: r.bracket_order_ids
+      ? (JSON.parse(r.bracket_order_ids) as string[])
+      : undefined,
+    bracketProtected: r.bracket_protected === null ? undefined : !!r.bracket_protected,
     error: r.error ?? undefined,
     openedAt: r.opened_at,
     closedAt: r.closed_at ?? undefined,
@@ -273,10 +279,12 @@ export const trades = {
     db.prepare(
       `INSERT INTO trades (id, signal_id, group_id, group_name, symbol, side, status, env,
         leverage, notional_usd, size, entry_price, exit_price, stop_loss, take_profits,
-        realized_pnl, fees, exchange_order_id, error, opened_at, closed_at)
+        realized_pnl, fees, exchange_order_id, bracket_order_ids, bracket_protected, error,
+        opened_at, closed_at)
        VALUES (@id, @signal_id, @group_id, @group_name, @symbol, @side, @status, @env,
         @leverage, @notional_usd, @size, @entry_price, @exit_price, @stop_loss, @take_profits,
-        @realized_pnl, @fees, @exchange_order_id, @error, @opened_at, @closed_at)`,
+        @realized_pnl, @fees, @exchange_order_id, @bracket_order_ids, @bracket_protected, @error,
+        @opened_at, @closed_at)`,
     ).run({
       id,
       signal_id: input.signalId ?? null,
@@ -296,6 +304,8 @@ export const trades = {
       realized_pnl: input.realizedPnl ?? null,
       fees: input.fees ?? null,
       exchange_order_id: input.exchangeOrderId ?? null,
+      bracket_order_ids: input.bracketOrderIds ? JSON.stringify(input.bracketOrderIds) : null,
+      bracket_protected: input.bracketProtected === undefined ? null : input.bracketProtected ? 1 : 0,
       error: input.error ?? null,
       opened_at: openedAt,
       closed_at: input.closedAt ?? null,
@@ -308,7 +318,8 @@ export const trades = {
     const m = { ...existing, ...patch };
     db.prepare(
       `UPDATE trades SET status=@status, exit_price=@exit_price, realized_pnl=@realized_pnl,
-        fees=@fees, exchange_order_id=@exchange_order_id, error=@error, closed_at=@closed_at
+        fees=@fees, exchange_order_id=@exchange_order_id, bracket_order_ids=@bracket_order_ids,
+        bracket_protected=@bracket_protected, error=@error, closed_at=@closed_at
        WHERE id=@id`,
     ).run({
       id,
@@ -317,6 +328,8 @@ export const trades = {
       realized_pnl: m.realizedPnl ?? null,
       fees: m.fees ?? null,
       exchange_order_id: m.exchangeOrderId ?? null,
+      bracket_order_ids: m.bracketOrderIds ? JSON.stringify(m.bracketOrderIds) : null,
+      bracket_protected: m.bracketProtected === undefined ? null : m.bracketProtected ? 1 : 0,
       error: m.error ?? null,
       closed_at: m.closedAt ?? null,
     });

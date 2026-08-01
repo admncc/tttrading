@@ -27,7 +27,7 @@ tttrading/
     │   ├── telegram/      # GramJS user client -> listens to channels
     │   ├── signals/       # regex + LLM signal parsing
     │   ├── hyperliquid/   # @nktkas/hyperliquid connector (orders, leverage)
-    │   ├── execution/     # engine: rules, auto/confirm, order + trade records
+    │   ├── execution/     # engine: rules, auto/confirm, entry + SL/TP brackets
     │   ├── stats/         # performance aggregation
     │   ├── db/            # SQLite (better-sqlite3) + repositories + seed
     │   └── api/           # REST + WebSocket
@@ -117,8 +117,9 @@ without risking funds.
 - **Signals** – live feed of incoming signals with the parsed interpretation;
   a queue to confirm/reject signals from `confirm`-mode groups; and a box to
   paste a raw message to test parsing + routing end-to-end.
-- **Trades** – all trades with filters; close open trades (sends a reduce-only
-  order in live mode, records the exit in paper mode).
+- **Trades** – all trades with filters; a 🛡 marks positions protected by live
+  SL/TP orders. Closing sends a reduce-only order (live) and cancels any
+  resting SL/TP; in paper mode the exit is just recorded.
 - **Groups & Settings** – per-group leverage, trade size (USDC), execution mode
   (auto / confirm), margin mode, max slippage, and an optional symbol allow-list.
 
@@ -159,8 +160,6 @@ pnpm start          # runs the built server (serve the web build separately)
 
 ## Roadmap / not yet included
 
-- Placing SL/TP as native Hyperliquid trigger orders (currently stored on the
-  trade; closing is manual/market).
 - Automatic reconciliation of fills/PnL from exchange history.
 - Authentication on the desk API (run it on a trusted network for now).
 - Alerting (Telegram/email) on fills and errors.
