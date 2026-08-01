@@ -14,6 +14,7 @@ const BLANK: GroupInput = {
     maxSlippage: 0.01,
     autoSplitSingleTp: false,
     tpLevels: 3,
+    breakevenAfterTp: 0,
   },
 };
 
@@ -126,6 +127,19 @@ function GroupForm({
           />
         </div>
         <div className="field">
+          <label>Move SL to break-even after TP #</label>
+          <input
+            type="number"
+            min={0}
+            max={10}
+            value={g.settings.breakevenAfterTp}
+            onChange={(e) => setS({ breakevenAfterTp: Number(e.target.value) })}
+          />
+          <span className="muted" style={{ fontSize: 11 }}>
+            0 = off
+          </span>
+        </div>
+        <div className="field">
           <label>Allowed symbols (comma sep, blank = all)</label>
           <input
             value={g.settings.allowedSymbols?.join(", ") ?? ""}
@@ -225,6 +239,7 @@ export function Groups({ groups, onChange }: { groups: Group[]; onChange: () => 
               {g.settings.executionMode} · {g.settings.marginMode} ·{" "}
               {(g.settings.maxSlippage * 100).toFixed(1)}% slippage ·{" "}
               {g.settings.autoSplitSingleTp ? `split→${g.settings.tpLevels} TP` : "TP as-is"}
+              {g.settings.breakevenAfterTp > 0 && ` · BE after TP${g.settings.breakevenAfterTp}`}
               {g.settings.allowedSymbols && g.settings.allowedSymbols.length > 0 && (
                 <> · {g.settings.allowedSymbols.join(", ")}</>
               )}

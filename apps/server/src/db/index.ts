@@ -49,8 +49,11 @@ CREATE TABLE IF NOT EXISTS trades (
   realized_pnl REAL,
   fees REAL,
   exchange_order_id TEXT,
-  bracket_order_ids TEXT,        -- JSON string[]
+  sl_order_id TEXT,
+  tp_order_ids TEXT,             -- JSON string[]
   bracket_protected INTEGER,
+  tp_filled_count INTEGER,
+  sl_moved_to_breakeven INTEGER,
   error TEXT,
   opened_at TEXT NOT NULL,
   closed_at TEXT
@@ -77,8 +80,11 @@ function migrate(database: Database.Database): void {
     (c) => c.name,
   );
   const additions: Record<string, string> = {
-    bracket_order_ids: "TEXT",
     bracket_protected: "INTEGER",
+    sl_order_id: "TEXT",
+    tp_order_ids: "TEXT",
+    tp_filled_count: "INTEGER",
+    sl_moved_to_breakeven: "INTEGER",
   };
   for (const [name, type] of Object.entries(additions)) {
     if (!columns.includes(name)) {

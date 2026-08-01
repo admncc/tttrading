@@ -30,9 +30,21 @@ export interface OrderResult {
 }
 
 export interface BracketResult {
-  orderIds: string[];
+  slOrderId?: string;
+  tpOrderIds: string[];
   protectedOnExchange: boolean;
   error?: string;
+}
+
+export interface FillLite {
+  oid: string;
+  symbol: string;
+  size: number; // absolute
+  price: number;
+  side: "B" | "A"; // buy / sell
+  closedPnl: number;
+  fee: number;
+  time: number;
 }
 
 export interface Position {
@@ -243,10 +255,10 @@ export class HyperliquidConnector {
     const { symbol, side, size, stopLoss, takeProfits, slippage } = params;
     const tps = takeProfits ?? [];
     if (stopLoss === undefined && tps.length === 0) {
-      return { orderIds: [], protectedOnExchange: false };
+      return { tpOrderIds: [], protectedOnExchange: false };
     }
     if (!this.live || !this.exchange) {
-      return { orderIds: [], protectedOnExchange: false };
+      return { tpOrderIds: [], protectedOnExchange: false };
     }
 
     let asset: AssetInfo | undefined;
@@ -254,16 +266,17 @@ export class HyperliquidConnector {
       asset = await this.getAsset(symbol);
     } catch (err) {
       return {
-        orderIds: [],
+        tpOrderIds: [],
         protectedOnExchange: false,
         error: `Price feed error: ${err instanceof Error ? err.message : String(err)}`,
       };
     }
-    if (!asset) return { orderIds: [], protectedOnExchange: false, error: `Unknown symbol ${symbol}` };
+    if (!asset) return { tpOrderIds: [], protectedOnExchange: false, error: `Unknown symbol ${symbol}` };
 
     // Closing a long means selling; closing a short means buying.
     const closeIsBuy = side === "short";
     const orders: HlOrderParams[] = [];
+    const kinds: ("sl" | "tp")[] = []; // parallel to `orders`, to map responses back
 
     const worstPx = (triggerPx: number) =>
       roundPx(triggerPx * (closeIsBuy ? 1 + slippage : 1 - slippage), asset.szDecimals);
@@ -277,6 +290,7 @@ export class HyperliquidConnector {
         r: true,
         t: { trigger: { isMarket: true, triggerPx: String(roundPx(stopLoss, asset.szDecimals)), tpsl: "sl" } },
       });
+      kinds.push("sl");
     }
 
     if (tps.length > 0) {
@@ -294,27 +308,61 @@ export class HyperliquidConnector {
           r: true,
           t: { trigger: { isMarket: true, triggerPx: String(roundPx(tp, asset.szDecimals)), tpsl: "tp" } },
         });
+        kinds.push("tp");
       });
     }
 
-    if (orders.length === 0) return { orderIds: [], protectedOnExchange: false };
+    if (orders.length === 0) return { tpOrderIds: [], protectedOnExchange: false };
 
     try {
       const res = (await this.exchange.order({ orders, grouping: "na" })) as unknown as HlOrderResponse;
       const statuses = res.response?.data?.statuses ?? [];
-      const orderIds: string[] = [];
-      for (const s of statuses) {
-        if ("resting" in s) orderIds.push(String(s.resting.oid));
-        else if ("filled" in s) orderIds.push(String(s.filled.oid));
-      }
-      return { orderIds, protectedOnExchange: orderIds.length > 0 };
+      let slOrderId: string | undefined;
+      const tpOrderIds: string[] = [];
+      statuses.forEach((s, i) => {
+        let oid: string | undefined;
+        if ("resting" in s) oid = String(s.resting.oid);
+        else if ("filled" in s) oid = String(s.filled.oid);
+        if (!oid) return;
+        if (kinds[i] === "sl") slOrderId = oid;
+        else tpOrderIds.push(oid);
+      });
+      const protectedOnExchange = slOrderId !== undefined || tpOrderIds.length > 0;
+      return { slOrderId, tpOrderIds, protectedOnExchange };
     } catch (err) {
       return {
-        orderIds: [],
+        tpOrderIds: [],
         protectedOnExchange: false,
         error: err instanceof Error ? err.message : String(err),
       };
     }
+  }
+
+  /** Recent fills for the configured account (most recent first). */
+  async getRecentFills(): Promise<FillLite[]> {
+    if (!this.live && !config.hyperliquid.accountAddress) return [];
+    const fills = (await this.info.userFills({
+      user: this.accountAddress(),
+    })) as unknown as {
+      oid: number;
+      coin: string;
+      sz: string;
+      px: string;
+      side: "B" | "A";
+      closedPnl: string;
+      fee: string;
+      time: number;
+    }[];
+    return fills.map((f) => ({
+      oid: String(f.oid),
+      symbol: f.coin,
+      size: Math.abs(Number(f.sz)),
+      price: Number(f.px),
+      side: f.side,
+      closedPnl: Number(f.closedPnl),
+      fee: Number(f.fee),
+      time: f.time,
+    }));
   }
 
   /** Cancel resting orders (e.g. SL/TP) for a symbol. */

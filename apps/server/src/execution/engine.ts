@@ -162,8 +162,11 @@ async function execute(signal: Signal, group: Group, parsed: ParsedSignal): Prom
     stopLoss: parsed.stopLoss,
     takeProfits: takeProfits.length ? takeProfits : undefined,
     exchangeOrderId: result.orderId,
-    bracketOrderIds: bracket.orderIds.length ? bracket.orderIds : undefined,
+    slOrderId: bracket.slOrderId,
+    tpOrderIds: bracket.tpOrderIds.length ? bracket.tpOrderIds : undefined,
     bracketProtected: bracket.protectedOnExchange,
+    tpFilledCount: 0,
+    slMovedToBreakeven: false,
   });
 
   const executed = signalsRepo.update(signal.id, { status: "executed", tradeId: trade.id })!;
@@ -212,8 +215,11 @@ export async function closeTrade(tradeId: string, exitPriceOverride?: number) {
   }
 
   // Cancel any resting SL/TP orders so they don't fire after we close.
-  if (trade.bracketOrderIds?.length) {
-    await hyperliquid.cancelOrders(trade.symbol, trade.bracketOrderIds);
+  const restingIds = [trade.slOrderId, ...(trade.tpOrderIds ?? [])].filter(
+    (x): x is string => !!x,
+  );
+  if (restingIds.length) {
+    await hyperliquid.cancelOrders(trade.symbol, restingIds);
   }
 
   if (hyperliquid.live) {

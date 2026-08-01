@@ -47,6 +47,12 @@ export interface GroupSettings {
   autoSplitSingleTp: boolean;
   /** Number of TP levels to generate when auto-splitting a single target. */
   tpLevels: number;
+  /**
+   * Move the stop-loss to break-even (the entry price) once this many
+   * take-profit levels have filled. 0 disables it; 1 = after TP1, 2 = after
+   * TP2, and so on. Per channel, since providers scale out differently.
+   */
+  breakevenAfterTp: number;
   /** If set, ignore signals for symbols not in this allow-list. */
   allowedSymbols?: string[];
 }
@@ -116,10 +122,16 @@ export interface Trade {
   fees?: number;
   /** Exchange order id of the entry, when available. */
   exchangeOrderId?: string;
-  /** Exchange order ids of the resting SL/TP trigger orders (live mode). */
-  bracketOrderIds?: string[];
+  /** Resting stop-loss trigger order id (live mode). */
+  slOrderId?: string;
+  /** Resting take-profit trigger order ids, in level order (live mode). */
+  tpOrderIds?: string[];
   /** Whether SL/TP were actually placed on the exchange (vs. only recorded). */
   bracketProtected?: boolean;
+  /** How many take-profit levels have filled so far (from reconciliation). */
+  tpFilledCount?: number;
+  /** Whether the stop-loss has been moved to break-even. */
+  slMovedToBreakeven?: boolean;
   error?: string;
   openedAt: string;
   closedAt?: string;

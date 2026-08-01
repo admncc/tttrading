@@ -79,11 +79,26 @@ export function Trades({ trades, onChange }: { trades: Trade[]; onChange: () => 
                             🛡
                           </span>
                         )}
+                        {t.slMovedToBreakeven && (
+                          <span
+                            className="tag"
+                            title="Stop-loss moved to break-even"
+                            style={{ marginRight: 4 }}
+                          >
+                            BE
+                          </span>
+                        )}
                         <span className="neg">{t.stopLoss ? num(t.stopLoss) : "—"}</span>
                         <span className="muted"> / </span>
                         <span className="pos">
                           {t.takeProfits?.length ? t.takeProfits.map((x) => num(x)).join(",") : "—"}
                         </span>
+                        {t.takeProfits?.length && (t.tpFilledCount ?? 0) > 0 ? (
+                          <span className="muted" style={{ fontSize: 11 }}>
+                            {" "}
+                            ({t.tpFilledCount}/{t.takeProfits.length} hit)
+                          </span>
+                        ) : null}
                       </span>
                     )}
                   </td>

@@ -172,8 +172,21 @@ pnpm build
 pnpm start          # runs the built server (serve the web build separately)
 ```
 
+### Reconciliation & break-even
+
+In live mode a background monitor polls the exchange every
+`MONITOR_INTERVAL_MS` and:
+
+- detects when SL/TP trigger orders fill externally and **closes the trade
+  with the real PnL** (and shows TP progress, e.g. "1/3 hit"), and
+- **moves the stop-loss to break-even** once the configured number of TP levels
+  has filled (per-group `breakevenAfterTp`, e.g. after TP1).
+
+Trigger a pass by hand with `POST /api/reconcile`.
+
 ## Roadmap / not yet included
 
-- Automatic reconciliation of fills/PnL from exchange history.
+- Risk "traffic light" scoring per channel from historical performance, with an
+  option to skip red trades while still tracking their outcome.
 - Authentication on the desk API (run it on a trusted network for now).
 - Alerting (Telegram/email) on fills and errors.

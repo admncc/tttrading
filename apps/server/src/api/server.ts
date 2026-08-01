@@ -14,6 +14,7 @@ import {
   rejectSignal,
   submitManual,
 } from "../execution/engine.js";
+import { reconcileOnce } from "../execution/monitor.js";
 import { broadcast, register, unregister, type SocketLike } from "../ws/hub.js";
 
 const groupSettingsSchema = z.object({
@@ -24,6 +25,7 @@ const groupSettingsSchema = z.object({
   maxSlippage: z.number().min(0).max(0.2),
   autoSplitSingleTp: z.boolean(),
   tpLevels: z.number().int().min(1).max(10),
+  breakevenAfterTp: z.number().int().min(0).max(10),
   allowedSymbols: z.array(z.string()).optional(),
 });
 
@@ -119,6 +121,12 @@ export async function buildServer() {
 
   /* ------------------------- stats & positions ------------------------ */
   app.get("/api/stats", async () => dashboard());
+
+  // Manually trigger a reconciliation pass against the exchange.
+  app.post("/api/reconcile", async () => {
+    await reconcileOnce();
+    return { ok: true };
+  });
 
   app.get("/api/positions", async () => {
     try {

@@ -35,6 +35,9 @@ export const config = {
   /** Seed a couple of demo groups + trades on an empty database. */
   seedDemo: bool(process.env.SEED_DEMO, true),
 
+  /** How often the reconciliation monitor polls the exchange (live only). */
+  monitorIntervalMs: num(process.env.MONITOR_INTERVAL_MS, 15000),
+
   hyperliquid: {
     /** Private key of the Hyperliquid API/agent wallet (0x...). */
     privateKey: process.env.HL_PRIVATE_KEY || "",

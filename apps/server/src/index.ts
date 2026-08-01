@@ -4,6 +4,7 @@ import "./db/index.js"; // open + migrate
 import { seedDemo } from "./db/seed.js";
 import { buildServer } from "./api/server.js";
 import { startTelegram, stopTelegram } from "./telegram/listener.js";
+import { startMonitor, stopMonitor } from "./execution/monitor.js";
 import { broadcast } from "./ws/hub.js";
 
 async function main(): Promise<void> {
@@ -19,9 +20,11 @@ async function main(): Promise<void> {
   log.info(`Desk API listening on http://${config.host}:${config.port}`);
 
   await startTelegram();
+  startMonitor();
 
   const shutdown = async () => {
     log.info("Shutting down...");
+    stopMonitor();
     await stopTelegram();
     await app.close();
     process.exit(0);
