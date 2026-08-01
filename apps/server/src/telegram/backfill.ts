@@ -13,10 +13,25 @@ export interface BackfillResult {
   error?: string;
 }
 
-/** Resolve a group's channel string to something getEntity understands. */
-function channelRef(channel: string): string | number {
+/**
+ * Resolve a group's channel string to a Telegram entity. Public channels
+ * resolve by @handle; private channels are found by numeric id in the account's
+ * dialog list (a bare id is otherwise misread as a PeerUser).
+ */
+async function resolveEntity(
+  client: NonNullable<ReturnType<typeof getTelegramClient>>,
+  channel: string,
+): Promise<unknown> {
   const norm = normalizeChannel(channel);
-  return /^\d+$/.test(norm) ? Number(norm) : channel;
+  if (!/^\d+$/.test(norm)) return client.getEntity(channel);
+
+  const dialogs = await client.getDialogs({});
+  for (const d of dialogs) {
+    const e = d.entity as { id?: unknown } | undefined;
+    if (e && String(e.id) === norm) return e;
+  }
+  // Fallback: try the -100-marked channel id form.
+  return client.getEntity(Number(`-100${norm}`));
 }
 
 /**
@@ -35,8 +50,11 @@ export async function backfillGroup(groupId: string, days = 30, maxMessages = 80
   let imported = 0;
 
   try {
-    const entity = await client.getEntity(channelRef(group.telegramChannel));
-    const messages = await client.getMessages(entity, { limit: maxMessages });
+    const entity = await resolveEntity(client, group.telegramChannel);
+    const messages = await client.getMessages(
+      entity as Parameters<typeof client.getMessages>[0],
+      { limit: maxMessages },
+    );
     const history = tradesRepo.forGroup(groupId);
 
     // getMessages returns newest-first; stop once we pass the cutoff.
@@ -45,6 +63,10 @@ export async function backfillGroup(groupId: string, days = 30, maxMessages = 80
       if (date && date < cutoff) break;
       const text = (m as { message?: string }).message;
       if (!text) continue;
+
+      const receivedAt = date ? new Date(date * 1000).toISOString() : undefined;
+      // Skip messages already imported so re-running is idempotent.
+      if (receivedAt && signalsRepo.existsSimilar(groupId, receivedAt, text)) continue;
 
       const parsed = await parseSignal(text);
       const risk = parsed ? assessRisk(group.settings, parsed, history) : undefined;
@@ -55,7 +77,7 @@ export async function backfillGroup(groupId: string, days = 30, maxMessages = 80
         status: "backfill",
         parsed: parsed ?? undefined,
         risk,
-        receivedAt: date ? new Date(date * 1000).toISOString() : undefined,
+        receivedAt,
       });
       broadcast({ type: "signal", signal });
       imported++;

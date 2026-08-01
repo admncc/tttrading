@@ -222,6 +222,15 @@ export const signals = {
       .all() as SignalRow[];
     return rows.map(toSignal);
   },
+  /** True if a signal with the same group, timestamp and text already exists. */
+  existsSimilar(groupId: string, receivedAt: string, rawText: string): boolean {
+    const row = db
+      .prepare(
+        "SELECT 1 FROM signals WHERE group_id = ? AND received_at = ? AND raw_text = ? LIMIT 1",
+      )
+      .get(groupId, receivedAt, rawText);
+    return !!row;
+  },
   get(id: string): Signal | undefined {
     const row = db.prepare("SELECT * FROM signals WHERE id = ?").get(id) as SignalRow | undefined;
     return row ? toSignal(row) : undefined;
