@@ -208,9 +208,26 @@ stable `AUTH_SECRET` in production so tokens survive restarts, and
 `AUTH_TOKEN_TTL_HOURS` to control lifetime. Leave `DESK_PASSWORD` blank to
 disable auth for local development.
 
+### Alerts
+
+Set `ALERT_TG_BOT_TOKEN` + `ALERT_TG_CHAT_ID` (a Telegram **bot**, separate from
+the user session used for reading) to receive alerts on fills, errors and
+optionally blocked red trades. Toggle with `ALERT_ON_FILL` / `ALERT_ON_ERROR` /
+`ALERT_ON_BLOCKED`. A "started" message confirms the setup on boot.
+
+### Messages view
+
+The **Messages** tab shows the raw feed of everything the tracked channels post
+(not just parsed signals), filterable by channel — handy for tuning parsing.
+
+## Deployment
+
+The API serves the built desk too, so production is a single process on one
+port. See **[DEPLOY.md](./DEPLOY.md)** for Docker Compose and bare-Node
+(systemd) instructions, HTTPS/reverse-proxy setup, and the Telegram login steps.
+
 ## Roadmap / not yet included
 
-- Alerting (Telegram/email) on fills and errors.
 - Multi-user accounts / roles (current auth is a single shared password).
 - Authentication on the desk API (run it on a trusted network for now).
 - Alerting (Telegram/email) on fills and errors.

@@ -6,6 +6,7 @@ import { hyperliquid } from "../hyperliquid/connector.js";
 import { parseSignal } from "../signals/parser.js";
 import { expandTakeProfits } from "../signals/takeprofit.js";
 import { assessRisk } from "../risk/score.js";
+import { alertBlocked, alertClosed, alertError, alertOpened } from "../alerts/notifier.js";
 import { broadcast } from "../ws/hub.js";
 import { pushStats } from "../stats/service.js";
 
@@ -60,6 +61,7 @@ export async function handleIncoming(group: Group, rawText: string): Promise<Sig
     });
     await createShadowTrade(group, parsed, signal.id, risk);
     log.info(`Blocked RED signal: ${parsed.side} ${parsed.symbol} (${group.name}) — tracking shadow`);
+    alertBlocked(group.name, `${parsed.side} ${parsed.symbol}`, risk.score);
     broadcast({ type: "signal", signal });
     return signal;
   }
@@ -204,6 +206,7 @@ async function execute(
   if (!result.ok) {
     const failed = signalsRepo.update(signal.id, { status: "failed", error: result.error })!;
     log.error(`Order failed for ${parsed.symbol}: ${result.error}`);
+    alertError(`order ${parsed.symbol} (${group.name})`, result.error ?? "unknown");
     broadcast({ type: "signal", signal: failed });
     return failed;
   }
@@ -262,6 +265,7 @@ async function execute(
     `${result.simulated ? "SIMULATED" : "LIVE"} ${parsed.side} ${result.size} ${parsed.symbol} ` +
       `@ ${result.filledPrice} (${group.name})${prot}`,
   );
+  alertOpened(trade);
   broadcast({ type: "signal", signal: executed });
   broadcast({ type: "trade", trade });
   pushStats();
@@ -331,6 +335,7 @@ export async function closeTrade(tradeId: string, exitPriceOverride?: number) {
   if (updated) {
     broadcast({ type: "trade", trade: updated });
     pushStats();
+    alertClosed(updated);
     log.info(`Closed ${trade.symbol} ${trade.side} — PnL ${(grossPnl - fees).toFixed(2)} USDC`);
   }
   return updated;

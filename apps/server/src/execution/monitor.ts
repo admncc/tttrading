@@ -3,6 +3,7 @@ import { config } from "../config.js";
 import { log } from "../logger.js";
 import { groups as groupsRepo, trades as tradesRepo } from "../db/repositories.js";
 import { hyperliquid, type FillLite } from "../hyperliquid/connector.js";
+import { alertClosed } from "../alerts/notifier.js";
 import { broadcast } from "../ws/hub.js";
 import { pushStats } from "../stats/service.js";
 
@@ -86,6 +87,7 @@ async function reconcileTrade(trade: Trade, byOid: Map<string, FillLite[]>): Pro
     });
     if (updated) {
       broadcast({ type: "trade", trade: updated });
+      alertClosed(updated);
       log.info(
         `Reconciled close ${trade.symbol} ${trade.side} — PnL ${(grossPnl - fees).toFixed(2)} USDC ` +
           `(${tpFilled}/${tpOids.length} TP)`,

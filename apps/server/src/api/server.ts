@@ -1,6 +1,8 @@
+import fs from "node:fs";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
+import fastifyStatic from "@fastify/static";
 import { z } from "zod";
 import type { WsEvent } from "@tttrading/shared";
 import { config, authEnabled } from "../config.js";
@@ -192,6 +194,21 @@ export async function buildServer() {
       unregister(sock),
     );
   });
+
+  /* ------------------------ serve the built web ----------------------- */
+  // In production the API also serves the desk (single process, single port).
+  if (fs.existsSync(config.webDist)) {
+    await app.register(fastifyStatic, { root: config.webDist });
+    // SPA fallback: any non-API/non-ws GET returns index.html.
+    app.setNotFoundHandler((req, reply) => {
+      const path = req.url.split("?")[0] ?? "";
+      if (req.method === "GET" && !path.startsWith("/api") && !path.startsWith("/ws")) {
+        return reply.sendFile("index.html");
+      }
+      return reply.code(404).send({ error: "not found" });
+    });
+    log.info(`Serving desk web from ${config.webDist}`);
+  }
 
   return app;
 }

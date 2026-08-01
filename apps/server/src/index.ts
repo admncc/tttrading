@@ -1,5 +1,6 @@
-import { config } from "./config.js";
+import { config, alertsEnabled } from "./config.js";
 import { log, addLogSink } from "./logger.js";
+import { sendAlert } from "./alerts/notifier.js";
 import "./db/index.js"; // open + migrate
 import { seedDemo } from "./db/seed.js";
 import { buildServer } from "./api/server.js";
@@ -21,6 +22,9 @@ async function main(): Promise<void> {
 
   await startTelegram();
   startMonitor();
+
+  log.info(`Alerts ${alertsEnabled ? "enabled (Telegram bot)" : "disabled"}.`);
+  if (alertsEnabled) void sendAlert(`🤖 TT Desk started (${config.tradingEnv}).`);
 
   const shutdown = async () => {
     log.info("Shutting down...");

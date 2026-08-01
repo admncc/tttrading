@@ -1,0 +1,18 @@
+services:
+  desk:
+    build: .
+    container_name: tttrading-desk
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    env_file:
+      - .env
+    environment:
+      # Container-fixed paths (override anything in .env).
+      HOST: 0.0.0.0
+      PORT: "4000"
+      DB_PATH: /data/tttrading.sqlite
+      WEB_DIST: /app/apps/web/dist
+    volumes:
+      # Persist the SQLite database outside the container.
+      - ./data:/data

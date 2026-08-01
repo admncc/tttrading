@@ -14,6 +14,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",
     "@fastify/cors": "^10.0.1",
+    "@fastify/static": "^8.0.3",
     "@fastify/websocket": "^11.0.1",
     "@nktkas/hyperliquid": "^0.18.0",
     "@tttrading/shared": "workspace:*",

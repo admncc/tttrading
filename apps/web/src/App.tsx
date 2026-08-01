@@ -4,14 +4,16 @@ import { api, openWs, getToken, setToken, setAuthErrorHandler } from "./api.js";
 import { Overview } from "./pages/Overview.js";
 import { Trades } from "./pages/Trades.js";
 import { Signals } from "./pages/Signals.js";
+import { Messages } from "./pages/Messages.js";
 import { Groups } from "./pages/Groups.js";
 import { Login } from "./pages/Login.js";
 
-type Tab = "overview" | "trades" | "signals" | "groups";
+type Tab = "overview" | "trades" | "signals" | "messages" | "groups";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "overview", label: "Overview" },
   { id: "signals", label: "Signals" },
+  { id: "messages", label: "Messages" },
   { id: "trades", label: "Trades" },
   { id: "groups", label: "Groups & Settings" },
 ];
@@ -150,6 +152,7 @@ export function App() {
         {tab === "signals" && (
           <Signals signals={signals} groups={groups} onChange={refresh} />
         )}
+        {tab === "messages" && <Messages signals={signals} groups={groups} />}
         {tab === "trades" && <Trades trades={trades} onChange={refresh} />}
         {tab === "groups" && <Groups groups={groups} onChange={refresh} />}
       </main>

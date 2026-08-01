@@ -66,10 +66,26 @@ export const config = {
     /** Session token lifetime in hours (default 1 week). */
     tokenTtlHours: num(process.env.AUTH_TOKEN_TTL_HOURS, 168),
   },
+
+  alerts: {
+    /** Telegram BOT token (separate from the user session used for reading). */
+    telegramBotToken: process.env.ALERT_TG_BOT_TOKEN || "",
+    /** Chat/channel id the bot posts alerts to. */
+    telegramChatId: process.env.ALERT_TG_CHAT_ID || "",
+    onFill: bool(process.env.ALERT_ON_FILL, true),
+    onError: bool(process.env.ALERT_ON_ERROR, true),
+    onBlocked: bool(process.env.ALERT_ON_BLOCKED, false),
+  },
+
+  /** Directory of the built web app to serve in production (if present). */
+  webDist: process.env.WEB_DIST || path.resolve(__dirname, "../../web/dist"),
 } as const;
 
 /** Whether the desk API requires a login. */
 export const authEnabled = !!config.auth.password;
+
+/** Whether Telegram bot alerts are configured. */
+export const alertsEnabled = !!(config.alerts.telegramBotToken && config.alerts.telegramChatId);
 
 export function hyperliquidReady(): boolean {
   return !config.isPaper && !!config.hyperliquid.privateKey;
