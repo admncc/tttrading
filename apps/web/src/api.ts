@@ -69,6 +69,9 @@ export const api = {
     ),
   applyUpdate: () => req<{ ok: boolean; message: string }>("/api/update", { method: "POST" }),
 
+  exportGroup: (id: string, name: string) => downloadFile(`/api/groups/${id}/export`, `${name}.txt`),
+  exportAll: () => downloadFile("/api/export", "all-channels.txt"),
+
   backfill: (days: number) =>
     req<{ groupId: string; groupName: string; imported: number; error?: string }[]>("/api/backfill", {
       method: "POST",
@@ -99,6 +102,30 @@ export const api = {
 
   stats: () => req<DashboardStats>("/api/stats"),
 };
+
+/** Fetch a file with auth and trigger a browser download. */
+async function downloadFile(path: string, fallbackName: string): Promise<void> {
+  const headers: Record<string, string> = {};
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(path, { headers });
+  if (res.status === 401) {
+    setToken(null);
+    onAuthError?.();
+    throw new Error("unauthorized");
+  }
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  const cd = res.headers.get("Content-Disposition") ?? "";
+  const name = cd.match(/filename="([^"]+)"/)?.[1] ?? fallbackName;
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
 
 /** Open a WebSocket to the desk API and invoke handler on each event. */
 export function openWs(onEvent: (e: WsEvent) => void): () => void {

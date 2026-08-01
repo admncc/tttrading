@@ -222,6 +222,13 @@ export const signals = {
       .all() as SignalRow[];
     return rows.map(toSignal);
   },
+  /** All signals for a group, oldest first (for export/analysis). */
+  forGroup(groupId: string): Signal[] {
+    const rows = db
+      .prepare("SELECT * FROM signals WHERE group_id = ? ORDER BY received_at ASC")
+      .all(groupId) as SignalRow[];
+    return rows.map(toSignal);
+  },
   /** True if a signal with the same group, timestamp and text already exists. */
   existsSimilar(groupId: string, receivedAt: string, rawText: string): boolean {
     const row = db

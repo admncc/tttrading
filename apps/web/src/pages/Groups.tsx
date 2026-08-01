@@ -213,9 +213,14 @@ export function Groups({ groups, onChange }: { groups: Group[]; onChange: () => 
     <div>
       <div className="row-between">
         <h1 style={{ margin: 0 }}>Groups & Settings</h1>
-        <button className="primary" onClick={() => setCreating((v) => !v)}>
-          {creating ? "Close" : "+ New group"}
-        </button>
+        <div className="btn-row">
+          <button onClick={() => api.exportAll().catch((e) => alert(String(e)))}>
+            Export all (.txt)
+          </button>
+          <button className="primary" onClick={() => setCreating((v) => !v)}>
+            {creating ? "Close" : "+ New group"}
+          </button>
+        </div>
       </div>
 
       {creating && (
@@ -239,6 +244,9 @@ export function Groups({ groups, onChange }: { groups: Group[]; onChange: () => 
                 {!g.enabled && <span className="tag">disabled</span>}
               </div>
               <div className="btn-row">
+                <button onClick={() => api.exportGroup(g.id, g.name).catch((e) => alert(String(e)))}>
+                  Export
+                </button>
                 <button onClick={() => setEditing(g.id)}>Edit</button>
                 <button className="danger" onClick={() => remove(g.id)}>
                   Delete

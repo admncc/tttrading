@@ -347,6 +347,28 @@ export class HyperliquidConnector {
     }
   }
 
+  /** Historical OHLC candles for a symbol, oldest first. */
+  async getCandles(
+    symbol: string,
+    interval: string,
+    startMs: number,
+    endMs: number,
+  ): Promise<{ t: number; o: number; h: number; l: number; c: number }[]> {
+    const raw = (await this.info.candleSnapshot({
+      coin: symbol.toUpperCase(),
+      interval: interval as Parameters<typeof this.info.candleSnapshot>[0]["interval"],
+      startTime: startMs,
+      endTime: endMs,
+    })) as unknown as { t: number; o: string; h: string; l: string; c: string }[];
+    return raw.map((k) => ({
+      t: k.t,
+      o: Number(k.o),
+      h: Number(k.h),
+      l: Number(k.l),
+      c: Number(k.c),
+    }));
+  }
+
   /** Recent fills for the configured account (most recent first). */
   async getRecentFills(): Promise<FillLite[]> {
     if (!this.live && !config.hyperliquid.accountAddress) return [];

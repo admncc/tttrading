@@ -25,6 +25,7 @@ import {
 } from "../execution/engine.js";
 import { reconcileOnce, evaluateSimulated } from "../execution/monitor.js";
 import { backfillAll, backfillGroup } from "../telegram/backfill.js";
+import { exportAllText, exportGroupText, safeFilename } from "../export/text.js";
 import { broadcast, register, unregister, type SocketLike } from "../ws/hub.js";
 
 const groupSettingsSchema = z.object({
@@ -163,6 +164,24 @@ export async function buildServer() {
   app.post<{ Params: { id: string } }>("/api/groups/:id/backfill", async (req) => {
     const days = Number((req.body as { days?: number } | undefined)?.days) || 30;
     return backfillGroup(req.params.id, days);
+  });
+
+  // Export a channel's full message transcript (timestamp + text) as .txt.
+  app.get<{ Params: { id: string } }>("/api/groups/:id/export", async (req, reply) => {
+    const group = groupsRepo.get(req.params.id);
+    if (!group) return reply.code(404).send({ error: "not found" });
+    reply
+      .type("text/plain; charset=utf-8")
+      .header("Content-Disposition", `attachment; filename="${safeFilename(group.name)}"`);
+    return exportGroupText(group);
+  });
+
+  // Export all channels' transcripts as one .txt.
+  app.get("/api/export", async (_req, reply) => {
+    reply
+      .type("text/plain; charset=utf-8")
+      .header("Content-Disposition", 'attachment; filename="all-channels.txt"');
+    return exportAllText();
   });
 
   /* ------------------------------ signals ----------------------------- */
