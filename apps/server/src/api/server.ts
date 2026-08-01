@@ -42,6 +42,22 @@ const groupInputSchema = z.object({
 
 export async function buildServer() {
   const app = Fastify({ logger: false });
+
+  // Tolerate empty JSON bodies (e.g. DELETE / no-body POSTs) instead of 400.
+  app.addContentTypeParser(
+    "application/json",
+    { parseAs: "string" },
+    (_req, body, done) => {
+      const s = (body as string).trim();
+      if (!s) return done(null, {});
+      try {
+        done(null, JSON.parse(s));
+      } catch (err) {
+        done(err as Error);
+      }
+    },
+  );
+
   await app.register(cors, { origin: true });
   await app.register(websocket);
 

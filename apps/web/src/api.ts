@@ -27,9 +27,11 @@ export function setAuthErrorHandler(cb: () => void): void {
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const headers: Record<string, string> = {
-    "Content-Type": "application/json",
     ...(init?.headers as Record<string, string> | undefined),
   };
+  // Only declare a JSON body when we actually send one — otherwise Fastify
+  // rejects the empty body (DELETE, no-body POSTs) with a 400.
+  if (init?.body) headers["Content-Type"] = "application/json";
   if (token) headers.Authorization = `Bearer ${token}`;
   const res = await fetch(path, { ...init, headers });
   if (res.status === 401) {
