@@ -124,15 +124,96 @@ async function moveSlToBreakeven(trade: Trade, filledSize: number, slippage: num
   log.info(`Moved SL to break-even (${trade.entryPrice}) for ${trade.symbol} — ${remaining} left`);
 }
 
-/** Start the periodic reconciliation loop (no-op unless trading live). */
-export function startMonitor(): void {
-  if (!hyperliquid.live) {
-    log.info("Reconciliation monitor idle (not trading live).");
-    return;
+/**
+ * Evaluate shadow trades (blocked red signals) against the live price to decide
+ * whether they would have won or lost — this validates the risk classification.
+ * Mirrors the real management rules (TP scale-out + break-even after TP N).
+ */
+export async function evaluateShadows(): Promise<void> {
+  const shadows = tradesRepo.open().filter((t) => t.shadow);
+  if (shadows.length === 0) return;
+  let changed = false;
+  for (const trade of shadows) {
+    try {
+      if (await evaluateShadow(trade)) changed = true;
+    } catch (err) {
+      log.error(`shadow eval ${trade.symbol}:`, err instanceof Error ? err.message : err);
+    }
   }
+  if (changed) pushStats();
+}
+
+async function evaluateShadow(trade: Trade): Promise<boolean> {
+  const mid = await hyperliquid.getMidPrice(trade.symbol);
+  if (!mid || mid <= 0) return false;
+
+  const dir = trade.side === "long" ? 1 : -1;
+  const entry = trade.entryPrice;
+  const tps = trade.takeProfits ?? [];
+  const n = tps.length;
+  const fraction = n > 0 ? 1 / n : 0;
+
+  // How many TP levels the price has reached so far.
+  const hitTps = tps.filter((tp) => (trade.side === "long" ? mid >= tp : mid <= tp)).length;
+
+  const group = groupsRepo.get(trade.groupId);
+  const beAfter = group?.settings.breakevenAfterTp ?? 0;
+  const stopPrice = beAfter > 0 && hitTps >= beAfter ? entry : trade.stopLoss;
+  const stopHit =
+    stopPrice !== undefined && (trade.side === "long" ? mid <= stopPrice : mid >= stopPrice);
+  const allTpsHit = n > 0 && hitTps >= n;
+
+  if (!allTpsHit && !stopHit) {
+    // Not resolved yet — surface TP progress if it advanced.
+    if (hitTps !== (trade.tpFilledCount ?? 0)) {
+      const updated = tradesRepo.update(trade.id, { tpFilledCount: hitTps });
+      if (updated) broadcast({ type: "trade", trade: updated });
+      return true;
+    }
+    return false;
+  }
+
+  // Resolve: realized profit from hit TPs + remainder at the stop (or final TP).
+  let gross = 0;
+  for (let i = 0; i < hitTps; i++) gross += (tps[i]! - entry) * dir * fraction * trade.size;
+  let exitPrice: number;
+  if (allTpsHit) {
+    exitPrice = tps[n - 1]!;
+  } else {
+    const remainingFraction = Math.max(0, 1 - hitTps * fraction);
+    gross += (stopPrice! - entry) * dir * remainingFraction * trade.size;
+    exitPrice = stopPrice!;
+  }
+  const fees = trade.notionalUsd * 0.0007;
+  const realizedPnl = gross - fees;
+
+  const updated = tradesRepo.update(trade.id, {
+    status: "closed",
+    exitPrice,
+    realizedPnl,
+    fees,
+    tpFilledCount: hitTps,
+    closedAt: new Date().toISOString(),
+  });
+  if (updated) {
+    broadcast({ type: "trade", trade: updated });
+    log.info(
+      `Shadow resolved ${trade.symbol} ${trade.side} — would ${realizedPnl >= 0 ? "WIN" : "LOSE"} ` +
+        `${realizedPnl.toFixed(2)} USDC (block ${realizedPnl >= 0 ? "cost us" : "saved us"})`,
+    );
+  }
+  return true;
+}
+
+/** Start the periodic monitor loop: reconcile live trades + evaluate shadows. */
+export function startMonitor(): void {
   const interval = config.monitorIntervalMs;
-  log.info(`Reconciliation monitor running every ${Math.round(interval / 1000)}s.`);
-  timer = setInterval(() => void reconcileOnce(), interval);
+  const what = hyperliquid.live ? "reconcile + shadow eval" : "shadow eval";
+  log.info(`Monitor running every ${Math.round(interval / 1000)}s (${what}).`);
+  timer = setInterval(() => {
+    void reconcileOnce();
+    void evaluateShadows();
+  }, interval);
 }
 
 export function stopMonitor(): void {

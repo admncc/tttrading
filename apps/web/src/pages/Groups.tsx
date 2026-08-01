@@ -15,6 +15,7 @@ const BLANK: GroupInput = {
     autoSplitSingleTp: false,
     tpLevels: 3,
     breakevenAfterTp: 0,
+    blockRedTrades: false,
   },
 };
 
@@ -140,6 +141,16 @@ function GroupForm({
           </span>
         </div>
         <div className="field">
+          <label>Block red (high-risk) trades?</label>
+          <select
+            value={g.settings.blockRedTrades ? "1" : "0"}
+            onChange={(e) => setS({ blockRedTrades: e.target.value === "1" })}
+          >
+            <option value="0">No — execute all</option>
+            <option value="1">Yes — skip reds, track shadow</option>
+          </select>
+        </div>
+        <div className="field">
           <label>Allowed symbols (comma sep, blank = all)</label>
           <input
             value={g.settings.allowedSymbols?.join(", ") ?? ""}
@@ -240,6 +251,7 @@ export function Groups({ groups, onChange }: { groups: Group[]; onChange: () => 
               {(g.settings.maxSlippage * 100).toFixed(1)}% slippage ·{" "}
               {g.settings.autoSplitSingleTp ? `split→${g.settings.tpLevels} TP` : "TP as-is"}
               {g.settings.breakevenAfterTp > 0 && ` · BE after TP${g.settings.breakevenAfterTp}`}
+              {g.settings.blockRedTrades && " · blocks red"}
               {g.settings.allowedSymbols && g.settings.allowedSymbols.length > 0 && (
                 <> · {g.settings.allowedSymbols.join(", ")}</>
               )}

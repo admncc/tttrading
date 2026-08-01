@@ -27,6 +27,7 @@ export function seedDemo(): void {
       autoSplitSingleTp: false,
       tpLevels: 3,
       breakevenAfterTp: 0,
+      blockRedTrades: false,
     },
   });
 
@@ -43,6 +44,7 @@ export function seedDemo(): void {
       autoSplitSingleTp: false,
       tpLevels: 3,
       breakevenAfterTp: 0,
+      blockRedTrades: false,
       allowedSymbols: ["BTC", "ETH", "SOL"],
     },
   });
@@ -61,6 +63,7 @@ export function seedDemo(): void {
       autoSplitSingleTp: true,
       tpLevels: 3,
       breakevenAfterTp: 1,
+      blockRedTrades: true,
     },
   });
 

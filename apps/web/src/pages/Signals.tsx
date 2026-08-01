@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { Group, Signal } from "@tttrading/shared";
 import { api } from "../api.js";
 import { num, shortTime } from "../format.js";
+import { RiskDot } from "../components/Risk.js";
 
 function ParsedCell({ signal }: { signal: Signal }) {
   const p = signal.parsed;
@@ -90,7 +91,10 @@ export function Signals({
               pending.map((s) => (
                 <div key={s.id} className="row-between">
                   <div>
-                    <ParsedCell signal={s} />
+                    <span style={{ display: "inline-flex", gap: 8, alignItems: "center" }}>
+                      <RiskDot risk={s.risk} />
+                      <ParsedCell signal={s} />
+                    </span>
                     <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
                       {s.groupName} · {shortTime(s.receivedAt)}
                     </div>
@@ -116,6 +120,7 @@ export function Signals({
                   <tr>
                     <th>Time</th>
                     <th>Group</th>
+                    <th>Risk</th>
                     <th>Parsed</th>
                     <th>Status</th>
                   </tr>
@@ -125,6 +130,9 @@ export function Signals({
                     <tr key={s.id}>
                       <td className="muted">{shortTime(s.receivedAt)}</td>
                       <td>{s.groupName}</td>
+                      <td>
+                        <RiskDot risk={s.risk} />
+                      </td>
                       <td>
                         <ParsedCell signal={s} />
                       </td>
@@ -141,7 +149,7 @@ export function Signals({
                   ))}
                   {signals.length === 0 && (
                     <tr>
-                      <td colSpan={4} className="empty">
+                      <td colSpan={5} className="empty">
                         No signals yet.
                       </td>
                     </tr>

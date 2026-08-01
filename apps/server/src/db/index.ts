@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS signals (
   raw_text TEXT NOT NULL,
   status TEXT NOT NULL,
   parsed TEXT,                   -- JSON ParsedSignal
+  risk TEXT,                     -- JSON RiskRating
   error TEXT,
   trade_id TEXT,
   received_at TEXT NOT NULL,
@@ -54,6 +55,8 @@ CREATE TABLE IF NOT EXISTS trades (
   bracket_protected INTEGER,
   tp_filled_count INTEGER,
   sl_moved_to_breakeven INTEGER,
+  risk TEXT,                     -- JSON RiskRating
+  shadow INTEGER,
   error TEXT,
   opened_at TEXT NOT NULL,
   closed_at TEXT
@@ -76,20 +79,29 @@ function open(): Database.Database {
 
 /** Add columns introduced after the initial schema to pre-existing databases. */
 function migrate(database: Database.Database): void {
-  const columns = (database.prepare("PRAGMA table_info(trades)").all() as { name: string }[]).map(
-    (c) => c.name,
-  );
-  const additions: Record<string, string> = {
-    bracket_protected: "INTEGER",
-    sl_order_id: "TEXT",
-    tp_order_ids: "TEXT",
-    tp_filled_count: "INTEGER",
-    sl_moved_to_breakeven: "INTEGER",
+  const additions: Record<string, Record<string, string>> = {
+    trades: {
+      bracket_protected: "INTEGER",
+      sl_order_id: "TEXT",
+      tp_order_ids: "TEXT",
+      tp_filled_count: "INTEGER",
+      sl_moved_to_breakeven: "INTEGER",
+      risk: "TEXT",
+      shadow: "INTEGER",
+    },
+    signals: {
+      risk: "TEXT",
+    },
   };
-  for (const [name, type] of Object.entries(additions)) {
-    if (!columns.includes(name)) {
-      database.exec(`ALTER TABLE trades ADD COLUMN ${name} ${type}`);
-      log.info(`Migrated: added trades.${name}`);
+  for (const [table, cols] of Object.entries(additions)) {
+    const existing = (
+      database.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]
+    ).map((c) => c.name);
+    for (const [name, type] of Object.entries(cols)) {
+      if (!existing.includes(name)) {
+        database.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
+        log.info(`Migrated: added ${table}.${name}`);
+      }
     }
   }
 }

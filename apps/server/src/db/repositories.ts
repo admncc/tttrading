@@ -4,6 +4,7 @@ import type {
   GroupInput,
   GroupSettings,
   ParsedSignal,
+  RiskRating,
   Signal,
   SignalStatus,
   Trade,
@@ -44,6 +45,7 @@ interface SignalRow {
   raw_text: string;
   status: string;
   parsed: string | null;
+  risk: string | null;
   error: string | null;
   trade_id: string | null;
   received_at: string;
@@ -58,6 +60,7 @@ function toSignal(r: SignalRow): Signal {
     rawText: r.raw_text,
     status: r.status as SignalStatus,
     parsed: r.parsed ? (JSON.parse(r.parsed) as ParsedSignal) : undefined,
+    risk: r.risk ? (JSON.parse(r.risk) as RiskRating) : undefined,
     error: r.error ?? undefined,
     tradeId: r.trade_id ?? undefined,
     receivedAt: r.received_at,
@@ -89,6 +92,8 @@ interface TradeRow {
   bracket_protected: number | null;
   tp_filled_count: number | null;
   sl_moved_to_breakeven: number | null;
+  risk: string | null;
+  shadow: number | null;
   error: string | null;
   opened_at: string;
   closed_at: string | null;
@@ -120,6 +125,8 @@ function toTrade(r: TradeRow): Trade {
     tpFilledCount: r.tp_filled_count ?? undefined,
     slMovedToBreakeven:
       r.sl_moved_to_breakeven === null ? undefined : !!r.sl_moved_to_breakeven,
+    risk: r.risk ? (JSON.parse(r.risk) as RiskRating) : undefined,
+    shadow: r.shadow === null ? undefined : !!r.shadow,
     error: r.error ?? undefined,
     openedAt: r.opened_at,
     closedAt: r.closed_at ?? undefined,
@@ -194,6 +201,7 @@ export interface NewSignal {
   rawText: string;
   status: SignalStatus;
   parsed?: ParsedSignal;
+  risk?: RiskRating;
   error?: string;
 }
 
@@ -218,8 +226,8 @@ export const signals = {
     const ts = now();
     const id = nanoid();
     db.prepare(
-      `INSERT INTO signals (id, group_id, group_name, raw_text, status, parsed, error, received_at, updated_at)
-       VALUES (@id, @group_id, @group_name, @raw_text, @status, @parsed, @error, @received_at, @updated_at)`,
+      `INSERT INTO signals (id, group_id, group_name, raw_text, status, parsed, risk, error, received_at, updated_at)
+       VALUES (@id, @group_id, @group_name, @raw_text, @status, @parsed, @risk, @error, @received_at, @updated_at)`,
     ).run({
       id,
       group_id: input.groupId,
@@ -227,6 +235,7 @@ export const signals = {
       raw_text: input.rawText,
       status: input.status,
       parsed: input.parsed ? JSON.stringify(input.parsed) : null,
+      risk: input.risk ? JSON.stringify(input.risk) : null,
       error: input.error ?? null,
       received_at: ts,
       updated_at: ts,
@@ -274,6 +283,12 @@ export const trades = {
       .all() as TradeRow[];
     return rows.map(toTrade);
   },
+  forGroup(groupId: string): Trade[] {
+    const rows = db
+      .prepare("SELECT * FROM trades WHERE group_id = ? ORDER BY opened_at DESC")
+      .all(groupId) as TradeRow[];
+    return rows.map(toTrade);
+  },
   get(id: string): Trade | undefined {
     const row = db.prepare("SELECT * FROM trades WHERE id = ?").get(id) as TradeRow | undefined;
     return row ? toTrade(row) : undefined;
@@ -285,11 +300,11 @@ export const trades = {
       `INSERT INTO trades (id, signal_id, group_id, group_name, symbol, side, status, env,
         leverage, notional_usd, size, entry_price, exit_price, stop_loss, take_profits,
         realized_pnl, fees, exchange_order_id, sl_order_id, tp_order_ids, bracket_protected,
-        tp_filled_count, sl_moved_to_breakeven, error, opened_at, closed_at)
+        tp_filled_count, sl_moved_to_breakeven, risk, shadow, error, opened_at, closed_at)
        VALUES (@id, @signal_id, @group_id, @group_name, @symbol, @side, @status, @env,
         @leverage, @notional_usd, @size, @entry_price, @exit_price, @stop_loss, @take_profits,
         @realized_pnl, @fees, @exchange_order_id, @sl_order_id, @tp_order_ids, @bracket_protected,
-        @tp_filled_count, @sl_moved_to_breakeven, @error, @opened_at, @closed_at)`,
+        @tp_filled_count, @sl_moved_to_breakeven, @risk, @shadow, @error, @opened_at, @closed_at)`,
     ).run({
       id,
       signal_id: input.signalId ?? null,
@@ -315,6 +330,8 @@ export const trades = {
       tp_filled_count: input.tpFilledCount ?? null,
       sl_moved_to_breakeven:
         input.slMovedToBreakeven === undefined ? null : input.slMovedToBreakeven ? 1 : 0,
+      risk: input.risk ? JSON.stringify(input.risk) : null,
+      shadow: input.shadow === undefined ? null : input.shadow ? 1 : 0,
       error: input.error ?? null,
       opened_at: openedAt,
       closed_at: input.closedAt ?? null,

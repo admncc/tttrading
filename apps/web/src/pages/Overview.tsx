@@ -76,6 +76,30 @@ export function Overview({ stats }: { stats: DashboardStats | null }) {
         )}
       </div>
 
+      {stats.riskAudit.blocked > 0 && (
+        <div className="panel">
+          <h2>Risk classification audit (blocked red signals)</h2>
+          <div className="kpi-grid" style={{ marginBottom: 8 }}>
+            <Kpi label="Reds blocked" value={String(stats.riskAudit.blocked)} />
+            <Kpi label="Resolved" value={String(stats.riskAudit.resolved)} />
+            <Kpi
+              label="Would have lost"
+              value={`${stats.riskAudit.wouldLose}/${stats.riskAudit.resolved}`}
+            />
+            <Kpi
+              label="PnL avoided"
+              value={usd(stats.riskAudit.avoidedPnl)}
+              cls={pnlClass(stats.riskAudit.avoidedPnl)}
+            />
+          </div>
+          <div className="muted" style={{ fontSize: 12 }}>
+            {stats.riskAudit.avoidedPnl >= 0
+              ? "Blocking red trades has saved money — the classification is paying off."
+              : "Blocked reds would have been profitable — consider loosening the filter."}
+          </div>
+        </div>
+      )}
+
       <div className="grid-2">
         <div className="panel">
           <h2>Performance by Group</h2>

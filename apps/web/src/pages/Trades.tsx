@@ -2,12 +2,19 @@ import { useState } from "react";
 import type { Trade } from "@tttrading/shared";
 import { api } from "../api.js";
 import { num, pnlClass, shortTime, usd } from "../format.js";
+import { RiskDot } from "../components/Risk.js";
+
+type Filter = "all" | "open" | "closed" | "shadow";
 
 export function Trades({ trades, onChange }: { trades: Trade[]; onChange: () => void }) {
-  const [filter, setFilter] = useState<"all" | "open" | "closed">("all");
+  const [filter, setFilter] = useState<Filter>("all");
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  const shown = trades.filter((t) => (filter === "all" ? true : t.status === filter));
+  const shown = trades.filter((t) =>
+    filter === "shadow"
+      ? t.shadow
+      : !t.shadow && (filter === "all" ? true : t.status === filter),
+  );
 
   const close = async (id: string) => {
     setBusyId(id);
@@ -24,7 +31,7 @@ export function Trades({ trades, onChange }: { trades: Trade[]; onChange: () => 
       <div className="row-between">
         <h1 style={{ margin: 0 }}>Trades</h1>
         <div className="btn-row">
-          {(["all", "open", "closed"] as const).map((f) => (
+          {(["all", "open", "closed", "shadow"] as const).map((f) => (
             <button
               key={f}
               className={filter === f ? "primary" : "ghost"}
@@ -43,6 +50,7 @@ export function Trades({ trades, onChange }: { trades: Trade[]; onChange: () => 
               <tr>
                 <th>Opened</th>
                 <th>Group</th>
+                <th>Risk</th>
                 <th>Symbol</th>
                 <th>Side</th>
                 <th>Lev</th>
@@ -61,7 +69,17 @@ export function Trades({ trades, onChange }: { trades: Trade[]; onChange: () => 
                 <tr key={t.id}>
                   <td className="muted">{shortTime(t.openedAt)}</td>
                   <td>{t.groupName}</td>
-                  <td>{t.symbol}</td>
+                  <td>
+                    <RiskDot risk={t.risk} />
+                  </td>
+                  <td>
+                    {t.symbol}
+                    {t.shadow && (
+                      <span className="tag" title="Blocked red signal (not a real position)" style={{ marginLeft: 6 }}>
+                        shadow
+                      </span>
+                    )}
+                  </td>
                   <td>
                     <span className={`tag ${t.side}`}>{t.side}</span>
                   </td>
@@ -110,7 +128,7 @@ export function Trades({ trades, onChange }: { trades: Trade[]; onChange: () => 
                     <span className={`tag ${t.status}`}>{t.status}</span>
                   </td>
                   <td>
-                    {t.status === "open" && (
+                    {t.status === "open" && !t.shadow && (
                       <button disabled={busyId === t.id} onClick={() => close(t.id)}>
                         {busyId === t.id ? "…" : "Close"}
                       </button>
@@ -120,7 +138,7 @@ export function Trades({ trades, onChange }: { trades: Trade[]; onChange: () => 
               ))}
               {shown.length === 0 && (
                 <tr>
-                  <td colSpan={13} className="empty">
+                  <td colSpan={14} className="empty">
                     No trades.
                   </td>
                 </tr>

@@ -3,6 +3,7 @@ import type {
   EquityPoint,
   GroupPerformance,
   PerformanceStats,
+  RiskAudit,
   Trade,
 } from "@tttrading/shared";
 import { groups, trades as tradesRepo } from "../db/repositories.js";
@@ -70,17 +71,33 @@ function equityCurve(list: Trade[]): EquityPoint[] {
   });
 }
 
+function riskAudit(all: Trade[]): RiskAudit {
+  const shadows = all.filter((t) => t.shadow);
+  const resolved = shadows.filter((t) => t.status === "closed" && t.realizedPnl !== undefined);
+  const wouldWin = resolved.filter((t) => (t.realizedPnl ?? 0) >= 0).length;
+  const avoidedPnl = -resolved.reduce((s, t) => s + (t.realizedPnl ?? 0), 0);
+  return {
+    blocked: shadows.length,
+    resolved: resolved.length,
+    wouldWin,
+    wouldLose: resolved.length - wouldWin,
+    avoidedPnl: Number(avoidedPnl.toFixed(2)),
+  };
+}
+
 export function dashboard(): DashboardStats {
   const all = tradesRepo.list(5000);
-  const overall = computeStats(all);
+  // Shadow trades are hypothetical (blocked reds) — keep them out of real perf.
+  const real = all.filter((t) => !t.shadow);
+  const overall = computeStats(real);
 
   const byGroup: GroupPerformance[] = groups.list().map((g) => ({
     groupId: g.id,
     groupName: g.name,
-    stats: computeStats(all.filter((t) => t.groupId === g.id)),
+    stats: computeStats(real.filter((t) => t.groupId === g.id)),
   }));
 
-  return { overall, byGroup, equityCurve: equityCurve(all) };
+  return { overall, byGroup, equityCurve: equityCurve(real), riskAudit: riskAudit(all) };
 }
 
 /** Recompute and push the dashboard to all connected clients. */

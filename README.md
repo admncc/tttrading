@@ -184,9 +184,23 @@ In live mode a background monitor polls the exchange every
 
 Trigger a pass by hand with `POST /api/reconcile`.
 
+### Risk traffic light (Ampel)
+
+Every actionable signal is scored **green / yellow / red** from the channel's
+historical performance (win rate, profit factor, recent trend, sample size) plus
+signal characteristics (missing stop-loss, risk/reward, leverage). The score and
+the reasons behind it are shown on signals and trades in the desk.
+
+Per channel you can enable **"block red trades"**: red signals are not executed,
+but a **shadow trade** records what they *would* have done (using the same TP
+scale-out and break-even rules). The Overview shows a **classification audit** —
+how many blocked reds would have lost and the net PnL blocking avoided — so you
+can tell whether the filter is helping or costing you. Shadow trades are kept
+out of the real performance figures.
+
 ## Roadmap / not yet included
 
-- Risk "traffic light" scoring per channel from historical performance, with an
-  option to skip red trades while still tracking their outcome.
+- Authentication on the desk API (run on a trusted network for now).
+- Alerting (Telegram/email) on fills and errors.
 - Authentication on the desk API (run it on a trusted network for now).
 - Alerting (Telegram/email) on fills and errors.

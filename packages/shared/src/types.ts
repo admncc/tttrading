@@ -53,8 +53,27 @@ export interface GroupSettings {
    * TP2, and so on. Per channel, since providers scale out differently.
    */
   breakevenAfterTp: number;
+  /**
+   * When true, signals rated "red" (high risk) by the traffic-light system are
+   * NOT executed. Their hypothetical outcome is still tracked (shadow trade) so
+   * we can verify whether blocking them was the right call.
+   */
+  blockRedTrades: boolean;
   /** If set, ignore signals for symbols not in this allow-list. */
   allowedSymbols?: string[];
+}
+
+/** Traffic-light risk classification. */
+export type RiskLevel = "green" | "yellow" | "red";
+
+export interface RiskRating {
+  level: RiskLevel;
+  /** 0..100, higher = safer. */
+  score: number;
+  /** Human-readable factors behind the rating. */
+  reasons: string[];
+  /** Number of historical closed trades the channel score is based on. */
+  sampleSize: number;
 }
 
 /** Lifecycle of a signal as it flows through the system. */
@@ -64,6 +83,7 @@ export type SignalStatus =
   | "executed" // order placed -> trade created
   | "rejected" // dismissed by the user
   | "ignored" // filtered out (disabled group, symbol not allowed, ...)
+  | "blocked" // high-risk (red) signal not executed; tracked as a shadow trade
   | "failed" // parsing or execution error
   | "unparseable"; // message arrived but no signal could be extracted
 
@@ -89,6 +109,7 @@ export interface Signal {
   rawText: string;
   status: SignalStatus;
   parsed?: ParsedSignal;
+  risk?: RiskRating;
   error?: string;
   tradeId?: string;
   receivedAt: string;
@@ -132,6 +153,13 @@ export interface Trade {
   tpFilledCount?: number;
   /** Whether the stop-loss has been moved to break-even. */
   slMovedToBreakeven?: boolean;
+  /** Risk rating assigned at entry. */
+  risk?: RiskRating;
+  /**
+   * A shadow trade is NOT a real position — it records what a blocked (red)
+   * signal would have done, so we can measure whether blocking it was correct.
+   */
+  shadow?: boolean;
   error?: string;
   openedAt: string;
   closedAt?: string;
@@ -164,10 +192,25 @@ export interface EquityPoint {
   pnl: number; // cumulative realized PnL
 }
 
+/**
+ * How well the traffic-light did: outcomes of red signals we blocked (tracked
+ * as shadow trades). If blocked reds mostly would have lost, the classification
+ * is earning its keep.
+ */
+export interface RiskAudit {
+  blocked: number; // red signals blocked (shadow trades created)
+  resolved: number; // shadows that have concluded
+  wouldWin: number; // resolved shadows that would have been profitable
+  wouldLose: number; // resolved shadows that would have lost
+  /** Net PnL avoided by blocking (positive = blocking helped). */
+  avoidedPnl: number;
+}
+
 export interface DashboardStats {
   overall: PerformanceStats;
   byGroup: GroupPerformance[];
   equityCurve: EquityPoint[];
+  riskAudit: RiskAudit;
 }
 
 /** Messages broadcast over the WebSocket to the desk. */
