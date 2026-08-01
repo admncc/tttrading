@@ -4,6 +4,7 @@ import { log } from "../logger.js";
 import { groups as groupsRepo, signals as signalsRepo, trades as tradesRepo } from "../db/repositories.js";
 import { hyperliquid } from "../hyperliquid/connector.js";
 import { parseSignal } from "../signals/parser.js";
+import { expandTakeProfits } from "../signals/takeprofit.js";
 import { broadcast } from "../ws/hub.js";
 import { pushStats } from "../stats/service.js";
 
@@ -126,13 +127,22 @@ async function execute(signal: Signal, group: Group, parsed: ParsedSignal): Prom
     return failed;
   }
 
+  // If the provider gave only one target, split it into several TP levels per
+  // the group's settings. The stated entry (or the actual fill) is the base.
+  const entryRef = parsed.entry ?? result.filledPrice;
+  const takeProfits = expandTakeProfits(parsed.takeProfits, entryRef, parsed.side, {
+    autoSplit: group.settings.autoSplitSingleTp,
+    levels: group.settings.tpLevels,
+  });
+
   // Protect the position with reduce-only SL/TP trigger orders (live only).
+  // Size is scaled out evenly across the take-profit levels.
   const bracket = await hyperliquid.placeBracketOrders({
     symbol: parsed.symbol,
     side: parsed.side,
     size: result.size,
     stopLoss: parsed.stopLoss,
-    takeProfits: parsed.takeProfits,
+    takeProfits,
     slippage: maxSlippage,
   });
   if (bracket.error) log.warn(`Bracket orders for ${parsed.symbol} failed: ${bracket.error}`);
@@ -150,7 +160,7 @@ async function execute(signal: Signal, group: Group, parsed: ParsedSignal): Prom
     size: result.size,
     entryPrice: result.filledPrice,
     stopLoss: parsed.stopLoss,
-    takeProfits: parsed.takeProfits,
+    takeProfits: takeProfits.length ? takeProfits : undefined,
     exchangeOrderId: result.orderId,
     bracketOrderIds: bracket.orderIds.length ? bracket.orderIds : undefined,
     bracketProtected: bracket.protectedOnExchange,

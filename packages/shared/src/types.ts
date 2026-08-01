@@ -38,6 +38,15 @@ export interface GroupSettings {
   marginMode: "cross" | "isolated";
   /** Max acceptable slippage (fraction, e.g. 0.01 = 1%) for market entries. */
   maxSlippage: number;
+  /**
+   * When a signal gives only a single take-profit target, split the position
+   * into several equally-spaced TP levels between entry and that target
+   * (partial profit at each). Signals that already list multiple TPs are used
+   * as-is.
+   */
+  autoSplitSingleTp: boolean;
+  /** Number of TP levels to generate when auto-splitting a single target. */
+  tpLevels: number;
   /** If set, ignore signals for symbols not in this allow-list. */
   allowedSymbols?: string[];
 }

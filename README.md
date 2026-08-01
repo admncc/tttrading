@@ -121,7 +121,21 @@ without risking funds.
   SL/TP orders. Closing sends a reduce-only order (live) and cancels any
   resting SL/TP; in paper mode the exit is just recorded.
 - **Groups & Settings** – per-group leverage, trade size (USDC), execution mode
-  (auto / confirm), margin mode, max slippage, and an optional symbol allow-list.
+  (auto / confirm), margin mode, max slippage, single-TP auto-split, and an
+  optional symbol allow-list.
+
+### Take-profit auto-split
+
+Some providers post a single target and expect you to scale out over several
+levels; others give TP1–TP4 explicitly. Per group you can enable **auto-split**:
+when a signal carries only one take-profit, the desk generates N equally-spaced
+levels between the entry and that target and scales the position out evenly
+across them (e.g. 1/3 at each of 3 levels). Signals that already list multiple
+TPs are used as-is. This is engine-side, so it works whether the signal was
+parsed by regex or by the LLM.
+
+Example (single target → 3 levels): `SHORT $ETH Entry: CMP till 3361,
+Target 2721, SL 3457` becomes TP1 3147.67 / TP2 2934.33 / TP3 2721.00.
 
 ### Example: your requested setup
 

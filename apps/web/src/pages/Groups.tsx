@@ -12,6 +12,8 @@ const BLANK: GroupInput = {
     executionMode: "auto",
     marginMode: "cross",
     maxSlippage: 0.01,
+    autoSplitSingleTp: false,
+    tpLevels: 3,
   },
 };
 
@@ -100,6 +102,27 @@ function GroupForm({
             min={0}
             value={g.settings.maxSlippage * 100}
             onChange={(e) => setS({ maxSlippage: Number(e.target.value) / 100 })}
+          />
+        </div>
+        <div className="field">
+          <label>Split single TP into levels?</label>
+          <select
+            value={g.settings.autoSplitSingleTp ? "1" : "0"}
+            onChange={(e) => setS({ autoSplitSingleTp: e.target.value === "1" })}
+          >
+            <option value="0">No — use TPs as given</option>
+            <option value="1">Yes — auto-split one target</option>
+          </select>
+        </div>
+        <div className="field">
+          <label>TP levels (when splitting)</label>
+          <input
+            type="number"
+            min={2}
+            max={10}
+            value={g.settings.tpLevels}
+            disabled={!g.settings.autoSplitSingleTp}
+            onChange={(e) => setS({ tpLevels: Number(e.target.value) })}
           />
         </div>
         <div className="field">
@@ -200,7 +223,8 @@ export function Groups({ groups, onChange }: { groups: Group[]; onChange: () => 
             <div className="muted">
               {g.settings.leverage}x · {g.settings.tradeSizeUsd.toLocaleString()} USDC ·{" "}
               {g.settings.executionMode} · {g.settings.marginMode} ·{" "}
-              {(g.settings.maxSlippage * 100).toFixed(1)}% slippage
+              {(g.settings.maxSlippage * 100).toFixed(1)}% slippage ·{" "}
+              {g.settings.autoSplitSingleTp ? `split→${g.settings.tpLevels} TP` : "TP as-is"}
               {g.settings.allowedSymbols && g.settings.allowedSymbols.length > 0 && (
                 <> · {g.settings.allowedSymbols.join(", ")}</>
               )}

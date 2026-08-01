@@ -24,6 +24,8 @@ export function seedDemo(): void {
       executionMode: "auto",
       marginMode: "cross",
       maxSlippage: 0.01,
+      autoSplitSingleTp: false,
+      tpLevels: 3,
     },
   });
 
@@ -37,11 +39,29 @@ export function seedDemo(): void {
       executionMode: "confirm",
       marginMode: "isolated",
       maxSlippage: 0.008,
+      autoSplitSingleTp: false,
+      tpLevels: 3,
       allowedSymbols: ["BTC", "ETH", "SOL"],
     },
   });
 
-  const demoGroups = [alpha, swing];
+  // Provider that gives a single target -> we split it into 3 TP levels (10x).
+  const gauls = groups.create({
+    name: "Trader Gauls",
+    telegramChannel: "@tradergauls",
+    enabled: true,
+    settings: {
+      leverage: 10,
+      tradeSizeUsd: 1000,
+      executionMode: "confirm",
+      marginMode: "cross",
+      maxSlippage: 0.01,
+      autoSplitSingleTp: true,
+      tpLevels: 3,
+    },
+  });
+
+  const demoGroups = [alpha, swing, gauls];
 
   const symbols = ["BTC", "ETH", "SOL", "ARB", "AVAX", "LINK"];
   const basePrice: Record<string, number> = {

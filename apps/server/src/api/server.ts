@@ -22,6 +22,8 @@ const groupSettingsSchema = z.object({
   executionMode: z.enum(["auto", "confirm"]),
   marginMode: z.enum(["cross", "isolated"]),
   maxSlippage: z.number().min(0).max(0.2),
+  autoSplitSingleTp: z.boolean(),
+  tpLevels: z.number().int().min(1).max(10),
   allowedSymbols: z.array(z.string()).optional(),
 });
 

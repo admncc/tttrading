@@ -78,8 +78,8 @@ function extractTakeProfits(text: string): number[] {
  * be found.
  */
 export function parseWithRegex(text: string): ParsedSignal | null {
-  const isLong = /\b(long|buy|bull)\b/i.test(text) || /🟢|📈/.test(text);
-  const isShort = /\b(short|sell|bear)\b/i.test(text) || /🔴|📉/.test(text);
+  const isLong = /\b(long|buy|buying|bull(?:ish)?)\b/i.test(text) || /🟢|📈/.test(text);
+  const isShort = /\b(short|sell|selling|bear(?:ish)?)\b/i.test(text) || /🔴|📉/.test(text);
   if (isLong === isShort) return null; // none or ambiguous
   const side: TradeSide = isLong ? "long" : "short";
 
@@ -87,6 +87,8 @@ export function parseWithRegex(text: string): ParsedSignal | null {
   if (!symbol) return null;
 
   const entry = firstNumber(text, [
+    // "Entry: CMP till 3361" / "buy up till 0.245" -> the limit after "till".
+    /\btill\s*([0-9][0-9.,]*)/i,
     /\b(?:entry|enter|entradas?|einstieg)\b[:\s@]*([0-9][0-9.,]*)/i,
     /@\s*([0-9][0-9.,]*)/,
     /\bprice\b[:\s]*([0-9][0-9.,]*)/i,
