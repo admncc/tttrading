@@ -1,4 +1,5 @@
 import dotenv from "dotenv";
+import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import type { TradingEnv } from "@tttrading/shared";
@@ -56,7 +57,19 @@ export const config = {
     apiKey: process.env.ANTHROPIC_API_KEY || "",
     model: process.env.ANTHROPIC_MODEL || "claude-sonnet-5",
   },
+
+  auth: {
+    /** Desk password. Empty => authentication disabled. */
+    password: process.env.DESK_PASSWORD || "",
+    /** HMAC secret for session tokens; random per process if unset. */
+    secret: process.env.AUTH_SECRET || crypto.randomBytes(32).toString("hex"),
+    /** Session token lifetime in hours (default 1 week). */
+    tokenTtlHours: num(process.env.AUTH_TOKEN_TTL_HOURS, 168),
+  },
 } as const;
+
+/** Whether the desk API requires a login. */
+export const authEnabled = !!config.auth.password;
 
 export function hyperliquidReady(): boolean {
   return !config.isPaper && !!config.hyperliquid.privateKey;

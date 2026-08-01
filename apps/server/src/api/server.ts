@@ -3,7 +3,8 @@ import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import { z } from "zod";
 import type { WsEvent } from "@tttrading/shared";
-import { config } from "../config.js";
+import { config, authEnabled } from "../config.js";
+import { bearer, checkPassword, signToken, verifyToken } from "../auth.js";
 import { log } from "../logger.js";
 import { groups as groupsRepo, signals as signalsRepo, trades as tradesRepo } from "../db/repositories.js";
 import { dashboard } from "../stats/service.js";
@@ -42,11 +43,37 @@ export async function buildServer() {
   await app.register(cors, { origin: true });
   await app.register(websocket);
 
+  /* -------------------------------- auth ------------------------------ */
+  // Guard every /api route except health and login. WebSocket auth is handled
+  // inside the /ws handler (query token). No-op when auth is disabled.
+  app.addHook("onRequest", async (req, reply) => {
+    if (!authEnabled) return;
+    if (req.method === "OPTIONS") return;
+    const path = req.url.split("?")[0] ?? "";
+    if (!path.startsWith("/api/")) return;
+    if (path === "/api/health" || path === "/api/login") return;
+    if (!verifyToken(bearer(req.headers.authorization))) {
+      return reply.code(401).send({ error: "unauthorized" });
+    }
+  });
+
+  app.post("/api/login", async (req, reply) => {
+    if (!authEnabled) return { token: null, authRequired: false };
+    const schema = z.object({ password: z.string() });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: "password required" });
+    if (!checkPassword(parsed.data.password)) {
+      return reply.code(401).send({ error: "invalid password" });
+    }
+    return { token: signToken(), authRequired: true };
+  });
+
   /* ------------------------------ health ------------------------------ */
   app.get("/api/health", async () => ({
     ok: true,
     env: config.tradingEnv,
     live: hyperliquid.live,
+    authRequired: authEnabled,
     time: new Date().toISOString(),
   }));
 
@@ -140,8 +167,19 @@ export async function buildServer() {
   });
 
   /* -------------------------------- ws -------------------------------- */
-  app.get("/ws", { websocket: true }, (socket) => {
-    const sock = socket as unknown as SocketLike;
+  app.get("/ws", { websocket: true }, (socket, req) => {
+    const sock = socket as unknown as SocketLike & { close(): void };
+    if (authEnabled) {
+      const token = (req.query as { token?: string } | undefined)?.token;
+      if (!verifyToken(token)) {
+        try {
+          sock.close();
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
+    }
     register(sock);
     // Send a snapshot on connect.
     const snapshot: WsEvent = { type: "stats", stats: dashboard() };

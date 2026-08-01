@@ -198,9 +198,19 @@ how many blocked reds would have lost and the net PnL blocking avoided — so yo
 can tell whether the filter is helping or costing you. Shadow trades are kept
 out of the real performance figures.
 
+### Authentication
+
+Set `DESK_PASSWORD` to require a login for the desk. The API then protects every
+`/api` route (except `/api/health` and `/api/login`) and the WebSocket with a
+short signed session token (HMAC, no server-side session store). Log in from the
+desk; the token is kept in the browser and sent as a `Bearer` header. Set a
+stable `AUTH_SECRET` in production so tokens survive restarts, and
+`AUTH_TOKEN_TTL_HOURS` to control lifetime. Leave `DESK_PASSWORD` blank to
+disable auth for local development.
+
 ## Roadmap / not yet included
 
-- Authentication on the desk API (run on a trusted network for now).
 - Alerting (Telegram/email) on fills and errors.
+- Multi-user accounts / roles (current auth is a single shared password).
 - Authentication on the desk API (run it on a trusted network for now).
 - Alerting (Telegram/email) on fills and errors.

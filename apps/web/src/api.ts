@@ -7,11 +7,36 @@ import type {
   WsEvent,
 } from "@tttrading/shared";
 
+/* -------------------------------- auth -------------------------------- */
+
+const TOKEN_KEY = "tt_token";
+let token: string | null = localStorage.getItem(TOKEN_KEY);
+let onAuthError: (() => void) | null = null;
+
+export function setToken(t: string | null): void {
+  token = t;
+  if (t) localStorage.setItem(TOKEN_KEY, t);
+  else localStorage.removeItem(TOKEN_KEY);
+}
+export function getToken(): string | null {
+  return token;
+}
+export function setAuthErrorHandler(cb: () => void): void {
+  onAuthError = cb;
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
-  });
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(init?.headers as Record<string, string> | undefined),
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(path, { ...init, headers });
+  if (res.status === 401) {
+    setToken(null);
+    onAuthError?.();
+    throw new Error("unauthorized");
+  }
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`${res.status} ${res.statusText}: ${body}`);
@@ -20,7 +45,13 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  health: () => req<{ ok: boolean; env: string; live: boolean }>("/api/health"),
+  health: () =>
+    req<{ ok: boolean; env: string; live: boolean; authRequired: boolean }>("/api/health"),
+  login: (password: string) =>
+    req<{ token: string | null; authRequired: boolean }>("/api/login", {
+      method: "POST",
+      body: JSON.stringify({ password }),
+    }),
 
   groups: () => req<Group[]>("/api/groups"),
   createGroup: (g: GroupInput) => req<Group>("/api/groups", { method: "POST", body: JSON.stringify(g) }),
@@ -50,7 +81,8 @@ export function openWs(onEvent: (e: WsEvent) => void): () => void {
   let retry: ReturnType<typeof setTimeout> | undefined;
 
   const connect = () => {
-    ws = new WebSocket(`${proto}://${location.host}/ws`);
+    const q = token ? `?token=${encodeURIComponent(token)}` : "";
+    ws = new WebSocket(`${proto}://${location.host}/ws${q}`);
     ws.onmessage = (msg) => {
       try {
         onEvent(JSON.parse(msg.data) as WsEvent);

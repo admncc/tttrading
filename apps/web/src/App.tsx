@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import type { DashboardStats, Group, Signal, Trade } from "@tttrading/shared";
-import { api, openWs } from "./api.js";
+import { api, openWs, getToken, setToken, setAuthErrorHandler } from "./api.js";
 import { Overview } from "./pages/Overview.js";
 import { Trades } from "./pages/Trades.js";
 import { Signals } from "./pages/Signals.js";
 import { Groups } from "./pages/Groups.js";
+import { Login } from "./pages/Login.js";
 
 type Tab = "overview" | "trades" | "signals" | "groups";
 
@@ -23,6 +24,9 @@ export function App() {
   const [signals, setSignals] = useState<Signal[]>([]);
   const [trades, setTrades] = useState<Trade[]>([]);
 
+  // Auth: "loading" until we know whether login is required and whether we're in.
+  const [authState, setAuthState] = useState<"loading" | "in" | "out">("loading");
+
   const refresh = useCallback(async () => {
     const [h, s, g, sig, t] = await Promise.all([
       api.health().catch(() => null),
@@ -38,12 +42,34 @@ export function App() {
     setTrades(t);
   }, []);
 
+  // Determine auth state on mount, then load data if we're in.
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    setAuthErrorHandler(() => setAuthState("out"));
+    void (async () => {
+      const h = await api.health().catch(() => null);
+      if (h) setHealth({ env: h.env, live: h.live });
+      if (h && !h.authRequired) {
+        setAuthState("in");
+      } else if (getToken()) {
+        setAuthState("in"); // optimistic; a 401 will flip us to "out"
+      } else {
+        setAuthState("out");
+      }
+    })();
+  }, []);
 
-  // Live updates over WebSocket.
   useEffect(() => {
+    if (authState === "in") void refresh();
+  }, [authState, refresh]);
+
+  const logout = () => {
+    setToken(null);
+    setAuthState("out");
+  };
+
+  // Live updates over WebSocket (only while authenticated).
+  useEffect(() => {
+    if (authState !== "in") return;
     return openWs((e) => {
       switch (e.type) {
         case "stats":
@@ -84,7 +110,14 @@ export function App() {
           break;
       }
     });
-  }, []);
+  }, [authState]);
+
+  if (authState === "loading") {
+    return <div className="empty" style={{ paddingTop: 80 }}>Loading…</div>;
+  }
+  if (authState === "out") {
+    return <Login onSuccess={() => setAuthState("in")} />;
+  }
 
   return (
     <div className="app">
@@ -105,6 +138,11 @@ export function App() {
           <span className={`dot ${health?.live ? "live" : "sim"}`} />
           {health ? `${health.env}${health.live ? " · live" : " · simulated"}` : "connecting…"}
         </div>
+        {getToken() && (
+          <button className="ghost" style={{ marginTop: 8 }} onClick={logout}>
+            Log out
+          </button>
+        )}
       </aside>
 
       <main className="main">
