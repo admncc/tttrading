@@ -57,12 +57,18 @@ CREATE TABLE IF NOT EXISTS trades (
   sl_moved_to_breakeven INTEGER,
   risk TEXT,                     -- JSON RiskRating
   shadow INTEGER,
+  simulated INTEGER,
   error TEXT,
   opened_at TEXT NOT NULL,
   closed_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_trades_group ON trades(group_id);
 CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
+
+CREATE TABLE IF NOT EXISTS app_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `;
 
 function open(): Database.Database {
@@ -88,6 +94,7 @@ function migrate(database: Database.Database): void {
       sl_moved_to_breakeven: "INTEGER",
       risk: "TEXT",
       shadow: "INTEGER",
+      simulated: "INTEGER",
     },
     signals: {
       risk: "TEXT",

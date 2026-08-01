@@ -8,7 +8,12 @@ import type { WsEvent } from "@tttrading/shared";
 import { config, authEnabled } from "../config.js";
 import { bearer, checkPassword, signToken, verifyToken } from "../auth.js";
 import { log } from "../logger.js";
-import { groups as groupsRepo, signals as signalsRepo, trades as tradesRepo } from "../db/repositories.js";
+import {
+  groups as groupsRepo,
+  settings as settingsRepo,
+  signals as signalsRepo,
+  trades as tradesRepo,
+} from "../db/repositories.js";
 import { dashboard } from "../stats/service.js";
 import { hyperliquid } from "../hyperliquid/connector.js";
 import {
@@ -17,7 +22,7 @@ import {
   rejectSignal,
   submitManual,
 } from "../execution/engine.js";
-import { reconcileOnce, evaluateShadows } from "../execution/monitor.js";
+import { reconcileOnce, evaluateSimulated } from "../execution/monitor.js";
 import { broadcast, register, unregister, type SocketLike } from "../ws/hub.js";
 
 const groupSettingsSchema = z.object({
@@ -91,9 +96,23 @@ export async function buildServer() {
     ok: true,
     env: config.tradingEnv,
     live: hyperliquid.live,
+    shadowMode: settingsRepo.getShadowMode(),
     authRequired: authEnabled,
     time: new Date().toISOString(),
   }));
+
+  /* -------------------------- global settings ------------------------- */
+  app.get("/api/settings", async () => ({ shadowMode: settingsRepo.getShadowMode() }));
+
+  app.put("/api/settings", async (req, reply) => {
+    const parsed = z.object({ shadowMode: z.boolean() }).safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    settingsRepo.setShadowMode(parsed.data.shadowMode);
+    const shadowMode = settingsRepo.getShadowMode();
+    log.info(`Shadow (test) mode ${shadowMode ? "ENABLED" : "DISABLED — LIVE TRADING"}.`);
+    broadcast({ type: "settings", settings: { shadowMode } });
+    return { shadowMode };
+  });
 
   /* ------------------------------ groups ------------------------------ */
   app.get("/api/groups", async () => groupsRepo.list());
@@ -168,10 +187,10 @@ export async function buildServer() {
   /* ------------------------- stats & positions ------------------------ */
   app.get("/api/stats", async () => dashboard());
 
-  // Manually trigger a full monitor pass (reconcile live trades + shadows).
+  // Manually trigger a full monitor pass (reconcile live trades + simulated).
   app.post("/api/reconcile", async () => {
     await reconcileOnce();
-    await evaluateShadows();
+    await evaluateSimulated();
     return { ok: true };
   });
 

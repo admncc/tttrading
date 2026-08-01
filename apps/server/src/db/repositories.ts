@@ -94,6 +94,7 @@ interface TradeRow {
   sl_moved_to_breakeven: number | null;
   risk: string | null;
   shadow: number | null;
+  simulated: number | null;
   error: string | null;
   opened_at: string;
   closed_at: string | null;
@@ -127,6 +128,7 @@ function toTrade(r: TradeRow): Trade {
       r.sl_moved_to_breakeven === null ? undefined : !!r.sl_moved_to_breakeven,
     risk: r.risk ? (JSON.parse(r.risk) as RiskRating) : undefined,
     shadow: r.shadow === null ? undefined : !!r.shadow,
+    simulated: r.simulated === null ? undefined : !!r.simulated,
     error: r.error ?? undefined,
     openedAt: r.opened_at,
     closedAt: r.closed_at ?? undefined,
@@ -300,11 +302,11 @@ export const trades = {
       `INSERT INTO trades (id, signal_id, group_id, group_name, symbol, side, status, env,
         leverage, notional_usd, size, entry_price, exit_price, stop_loss, take_profits,
         realized_pnl, fees, exchange_order_id, sl_order_id, tp_order_ids, bracket_protected,
-        tp_filled_count, sl_moved_to_breakeven, risk, shadow, error, opened_at, closed_at)
+        tp_filled_count, sl_moved_to_breakeven, risk, shadow, simulated, error, opened_at, closed_at)
        VALUES (@id, @signal_id, @group_id, @group_name, @symbol, @side, @status, @env,
         @leverage, @notional_usd, @size, @entry_price, @exit_price, @stop_loss, @take_profits,
         @realized_pnl, @fees, @exchange_order_id, @sl_order_id, @tp_order_ids, @bracket_protected,
-        @tp_filled_count, @sl_moved_to_breakeven, @risk, @shadow, @error, @opened_at, @closed_at)`,
+        @tp_filled_count, @sl_moved_to_breakeven, @risk, @shadow, @simulated, @error, @opened_at, @closed_at)`,
     ).run({
       id,
       signal_id: input.signalId ?? null,
@@ -332,6 +334,7 @@ export const trades = {
         input.slMovedToBreakeven === undefined ? null : input.slMovedToBreakeven ? 1 : 0,
       risk: input.risk ? JSON.stringify(input.risk) : null,
       shadow: input.shadow === undefined ? null : input.shadow ? 1 : 0,
+      simulated: input.simulated === undefined ? null : input.simulated ? 1 : 0,
       error: input.error ?? null,
       opened_at: openedAt,
       closed_at: input.closedAt ?? null,
@@ -370,5 +373,31 @@ export const trades = {
   count(): number {
     const r = db.prepare("SELECT COUNT(*) AS c FROM trades").get() as { c: number };
     return r.c;
+  },
+};
+
+/* ---------------------------- global settings -------------------------- */
+
+function kvGet(key: string): string | undefined {
+  const row = db.prepare("SELECT value FROM app_settings WHERE key = ?").get(key) as
+    | { value: string }
+    | undefined;
+  return row?.value;
+}
+
+function kvSet(key: string, value: string): void {
+  db.prepare(
+    "INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+  ).run(key, value);
+}
+
+export const settings = {
+  /** Master test switch. Defaults to ON (safe) until explicitly disabled. */
+  getShadowMode(): boolean {
+    const v = kvGet("shadowMode");
+    return v === undefined ? true : v === "true";
+  },
+  setShadowMode(on: boolean): void {
+    kvSet("shadowMode", on ? "true" : "false");
   },
 };

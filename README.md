@@ -172,6 +172,16 @@ pnpm build
 pnpm start          # runs the built server (serve the web build separately)
 ```
 
+### Test mode (shadow mode)
+
+A desk-wide **TEST MODE** master switch (on by default) simulates the entire
+pipeline — signals are parsed, risk-scored, "executed" and closed at live prices
+(full SL/TP + break-even lifecycle) — but **no real orders are ever sent**,
+regardless of `TRADING_ENV` or a configured key. Simulated trades are tagged
+`sim` and still count in the stats so you can judge how the system performs.
+When you're confident, click **Go live** in the sidebar (with a confirmation) to
+start real trading. Flip it back anytime.
+
 ### Reconciliation & break-even
 
 In live mode a background monitor polls the exchange every

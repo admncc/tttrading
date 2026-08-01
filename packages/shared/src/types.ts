@@ -63,6 +63,16 @@ export interface GroupSettings {
   allowedSymbols?: string[];
 }
 
+/** Global (desk-wide) runtime settings. */
+export interface GlobalSettings {
+  /**
+   * Master test switch. When true, NO real orders are ever sent — every trade
+   * is simulated at the live price (full lifecycle incl. SL/TP), regardless of
+   * TRADING_ENV or a configured key. Turn off only when you're ready to go live.
+   */
+  shadowMode: boolean;
+}
+
 /** Traffic-light risk classification. */
 export type RiskLevel = "green" | "yellow" | "red";
 
@@ -155,6 +165,8 @@ export interface Trade {
   slMovedToBreakeven?: boolean;
   /** Risk rating assigned at entry. */
   risk?: RiskRating;
+  /** Order was simulated (shadow/test mode or no signing key) — no real fill. */
+  simulated?: boolean;
   /**
    * A shadow trade is NOT a real position — it records what a blocked (red)
    * signal would have done, so we can measure whether blocking it was correct.
@@ -218,6 +230,7 @@ export type WsEvent =
   | { type: "signal"; signal: Signal }
   | { type: "trade"; trade: Trade }
   | { type: "group"; group: Group }
+  | { type: "settings"; settings: GlobalSettings }
   | { type: "stats"; stats: DashboardStats }
   | { type: "log"; level: "info" | "warn" | "error"; message: string; t: string };
 

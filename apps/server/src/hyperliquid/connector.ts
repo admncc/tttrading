@@ -2,6 +2,7 @@ import * as hl from "@nktkas/hyperliquid";
 import { privateKeyToAccount } from "viem/accounts";
 import type { TradeSide } from "@tttrading/shared";
 import { config, hyperliquidReady } from "../config.js";
+import { settings } from "../db/repositories.js";
 import { log } from "../logger.js";
 
 export interface AssetInfo {
@@ -89,6 +90,14 @@ export class HyperliquidConnector {
         `Hyperliquid connector in ${config.tradingEnv} mode (no signing) — orders are simulated.`,
       );
     }
+  }
+
+  /**
+   * True when orders must be simulated rather than sent: either the global
+   * shadow/test switch is on, or there's no signing capability (paper/no key).
+   */
+  simulating(): boolean {
+    return settings.getShadowMode() || !this.live;
   }
 
   private accountAddress(): `0x${string}` {
@@ -205,8 +214,8 @@ export class HyperliquidConnector {
     const slip = req.maxSlippage;
     const limitPx = roundPx(mid * (isBuy ? 1 + slip : 1 - slip), asset.szDecimals);
 
-    if (!this.live || !this.exchange) {
-      // Paper / unsigned: simulate a fill at mid.
+    if (this.simulating() || !this.exchange) {
+      // Shadow/test/unsigned: simulate a fill at mid.
       return { ok: true, filledPrice: mid, size, simulated: true };
     }
 
@@ -257,7 +266,7 @@ export class HyperliquidConnector {
     if (stopLoss === undefined && tps.length === 0) {
       return { tpOrderIds: [], protectedOnExchange: false };
     }
-    if (!this.live || !this.exchange) {
+    if (this.simulating() || !this.exchange) {
       return { tpOrderIds: [], protectedOnExchange: false };
     }
 

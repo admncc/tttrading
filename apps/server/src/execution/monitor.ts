@@ -19,7 +19,9 @@ let timer: ReturnType<typeof setInterval> | undefined;
  */
 export async function reconcileOnce(): Promise<void> {
   if (!hyperliquid.live) return;
-  const open = tradesRepo.open();
+  // Only real positions are reconciled against the exchange; simulated ones
+  // (shadow/test mode) are resolved by evaluateSimulated().
+  const open = tradesRepo.open().filter((t) => !t.simulated);
   if (open.length === 0) return;
 
   let fills: FillLite[];
@@ -127,25 +129,26 @@ async function moveSlToBreakeven(trade: Trade, filledSize: number, slippage: num
 }
 
 /**
- * Evaluate shadow trades (blocked red signals) against the live price to decide
- * whether they would have won or lost — this validates the risk classification.
- * Mirrors the real management rules (TP scale-out + break-even after TP N).
+ * Resolve all simulated open trades against the live price — both shadow trades
+ * (blocked reds) and normal trades placed in shadow/test mode. Mirrors the real
+ * management rules (TP scale-out + break-even after TP N), so the full lifecycle
+ * plays out without touching the exchange.
  */
-export async function evaluateShadows(): Promise<void> {
-  const shadows = tradesRepo.open().filter((t) => t.shadow);
-  if (shadows.length === 0) return;
+export async function evaluateSimulated(): Promise<void> {
+  const sims = tradesRepo.open().filter((t) => t.simulated || t.shadow);
+  if (sims.length === 0) return;
   let changed = false;
-  for (const trade of shadows) {
+  for (const trade of sims) {
     try {
-      if (await evaluateShadow(trade)) changed = true;
+      if (await evaluateSimulatedTrade(trade)) changed = true;
     } catch (err) {
-      log.error(`shadow eval ${trade.symbol}:`, err instanceof Error ? err.message : err);
+      log.error(`sim eval ${trade.symbol}:`, err instanceof Error ? err.message : err);
     }
   }
   if (changed) pushStats();
 }
 
-async function evaluateShadow(trade: Trade): Promise<boolean> {
+async function evaluateSimulatedTrade(trade: Trade): Promise<boolean> {
   const mid = await hyperliquid.getMidPrice(trade.symbol);
   if (!mid || mid <= 0) return false;
 
@@ -199,10 +202,18 @@ async function evaluateShadow(trade: Trade): Promise<boolean> {
   });
   if (updated) {
     broadcast({ type: "trade", trade: updated });
-    log.info(
-      `Shadow resolved ${trade.symbol} ${trade.side} — would ${realizedPnl >= 0 ? "WIN" : "LOSE"} ` +
-        `${realizedPnl.toFixed(2)} USDC (block ${realizedPnl >= 0 ? "cost us" : "saved us"})`,
-    );
+    if (trade.shadow) {
+      log.info(
+        `Shadow resolved ${trade.symbol} ${trade.side} — would ${realizedPnl >= 0 ? "WIN" : "LOSE"} ` +
+          `${realizedPnl.toFixed(2)} USDC (block ${realizedPnl >= 0 ? "cost us" : "saved us"})`,
+      );
+    } else {
+      alertClosed(updated);
+      log.info(
+        `Simulated close ${trade.symbol} ${trade.side} — PnL ${realizedPnl.toFixed(2)} USDC ` +
+          `(${hitTps}/${tps.length} TP)`,
+      );
+    }
   }
   return true;
 }
@@ -210,11 +221,11 @@ async function evaluateShadow(trade: Trade): Promise<boolean> {
 /** Start the periodic monitor loop: reconcile live trades + evaluate shadows. */
 export function startMonitor(): void {
   const interval = config.monitorIntervalMs;
-  const what = hyperliquid.live ? "reconcile + shadow eval" : "shadow eval";
+  const what = hyperliquid.live ? "reconcile + simulated eval" : "simulated eval";
   log.info(`Monitor running every ${Math.round(interval / 1000)}s (${what}).`);
   timer = setInterval(() => {
     void reconcileOnce();
-    void evaluateShadows();
+    void evaluateSimulated();
   }, interval);
 }
 

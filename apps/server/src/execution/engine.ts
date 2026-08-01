@@ -160,6 +160,7 @@ async function createShadowTrade(
     tpFilledCount: 0,
     risk,
     shadow: true,
+    simulated: true,
   });
   signalsRepo.update(signalId, { tradeId: trade.id });
   broadcast({ type: "trade", trade });
@@ -252,6 +253,7 @@ async function execute(
     tpFilledCount: 0,
     slMovedToBreakeven: false,
     risk,
+    simulated: result.simulated,
   });
 
   const executed = signalsRepo.update(signal.id, { status: "executed", tradeId: trade.id })!;
@@ -310,7 +312,7 @@ export async function closeTrade(tradeId: string, exitPriceOverride?: number) {
     await hyperliquid.cancelOrders(trade.symbol, restingIds);
   }
 
-  if (hyperliquid.live) {
+  if (!trade.simulated && hyperliquid.live) {
     const result = await hyperliquid.placeMarketOrder({
       symbol: trade.symbol,
       side: trade.side === "long" ? "short" : "long", // reduce

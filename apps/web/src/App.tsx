@@ -20,7 +20,9 @@ const TABS: { id: Tab; label: string }[] = [
 
 export function App() {
   const [tab, setTab] = useState<Tab>("overview");
-  const [health, setHealth] = useState<{ env: string; live: boolean } | null>(null);
+  const [health, setHealth] = useState<{ env: string; live: boolean; shadowMode: boolean } | null>(
+    null,
+  );
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [groups, setGroups] = useState<Group[]>([]);
   const [signals, setSignals] = useState<Signal[]>([]);
@@ -37,7 +39,7 @@ export function App() {
       api.signals().catch(() => []),
       api.trades().catch(() => []),
     ]);
-    if (h) setHealth({ env: h.env, live: h.live });
+    if (h) setHealth({ env: h.env, live: h.live, shadowMode: h.shadowMode });
     if (s) setStats(s);
     setGroups(g);
     setSignals(sig);
@@ -49,7 +51,7 @@ export function App() {
     setAuthErrorHandler(() => setAuthState("out"));
     void (async () => {
       const h = await api.health().catch(() => null);
-      if (h) setHealth({ env: h.env, live: h.live });
+      if (h) setHealth({ env: h.env, live: h.live, shadowMode: h.shadowMode });
       if (h && !h.authRequired) {
         setAuthState("in");
       } else if (getToken()) {
@@ -67,6 +69,21 @@ export function App() {
   const logout = () => {
     setToken(null);
     setAuthState("out");
+  };
+
+  const toggleShadow = async () => {
+    if (!health) return;
+    const goingLive = health.shadowMode; // currently on -> turning off = live
+    if (goingLive) {
+      const ok = confirm(
+        "Disable TEST mode and allow REAL orders?\n\n" +
+          "From now on, incoming signals can place live trades on Hyperliquid " +
+          "(per your TRADING_ENV and key). Continue?",
+      );
+      if (!ok) return;
+    }
+    const res = await api.updateSettings(!health.shadowMode);
+    setHealth((h) => (h ? { ...h, shadowMode: res.shadowMode } : h));
   };
 
   // Live updates over WebSocket (only while authenticated).
@@ -110,6 +127,9 @@ export function App() {
             return [...prev, e.group];
           });
           break;
+        case "settings":
+          setHealth((h) => (h ? { ...h, shadowMode: e.settings.shadowMode } : h));
+          break;
       }
     });
   }, [authState]);
@@ -137,9 +157,25 @@ export function App() {
           </div>
         ))}
         <div className="env-badge">
-          <span className={`dot ${health?.live ? "live" : "sim"}`} />
-          {health ? `${health.env}${health.live ? " · live" : " · simulated"}` : "connecting…"}
+          <span className={`dot ${health && !health.shadowMode && health.live ? "live" : "sim"}`} />
+          {health
+            ? `${health.env}${health.shadowMode ? " · TEST" : health.live ? " · LIVE" : " · simulated"}`
+            : "connecting…"}
         </div>
+        {health && (
+          <button
+            className={health.shadowMode ? "primary" : "danger"}
+            style={{ marginTop: 8 }}
+            onClick={toggleShadow}
+            title={
+              health.shadowMode
+                ? "Currently simulating everything. Click to go live."
+                : "Live trading is ON. Click to switch back to test mode."
+            }
+          >
+            {health.shadowMode ? "Go live →" : "← Back to test mode"}
+          </button>
+        )}
         {getToken() && (
           <button className="ghost" style={{ marginTop: 8 }} onClick={logout}>
             Log out
@@ -148,6 +184,12 @@ export function App() {
       </aside>
 
       <main className="main">
+        {health?.shadowMode && (
+          <div className="test-banner">
+            🧪 <strong>TEST MODE</strong> — signals are processed and simulated at live prices, but
+            <strong> no real orders</strong> are sent. Flip “Go live” in the sidebar when you're ready.
+          </div>
+        )}
         {tab === "overview" && <Overview stats={stats} />}
         {tab === "signals" && (
           <Signals signals={signals} groups={groups} onChange={refresh} />

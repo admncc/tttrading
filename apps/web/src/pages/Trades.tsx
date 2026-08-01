@@ -74,11 +74,15 @@ export function Trades({ trades, onChange }: { trades: Trade[]; onChange: () => 
                   </td>
                   <td>
                     {t.symbol}
-                    {t.shadow && (
+                    {t.shadow ? (
                       <span className="tag" title="Blocked red signal (not a real position)" style={{ marginLeft: 6 }}>
                         shadow
                       </span>
-                    )}
+                    ) : t.simulated ? (
+                      <span className="tag pending" title="Simulated (test mode) — no real order" style={{ marginLeft: 6 }}>
+                        sim
+                      </span>
+                    ) : null}
                   </td>
                   <td>
                     <span className={`tag ${t.side}`}>{t.side}</span>
