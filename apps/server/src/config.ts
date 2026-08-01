@@ -79,6 +79,15 @@ export const config = {
 
   /** Directory of the built web app to serve in production (if present). */
   webDist: process.env.WEB_DIST || path.resolve(__dirname, "../../web/dist"),
+
+  selfUpdate: {
+    /** Allow the "Update" button to pull + rebuild. Off by default (security). */
+    enabled: bool(process.env.ALLOW_SELF_UPDATE, false),
+    /** Path to the git checkout to update (bind-mounted in Docker). */
+    repoDir: process.env.REPO_DIR || path.resolve(__dirname, "../../.."),
+    /** Override the update command; empty => sensible default (see update.ts). */
+    command: process.env.UPDATE_COMMAND || "",
+  },
 } as const;
 
 /** Whether the desk API requires a login. */

@@ -6,6 +6,7 @@ import fastifyStatic from "@fastify/static";
 import { z } from "zod";
 import type { WsEvent } from "@tttrading/shared";
 import { config, authEnabled } from "../config.js";
+import { checkUpdates, runUpdate } from "../system/update.js";
 import { bearer, checkPassword, signToken, verifyToken } from "../auth.js";
 import { log } from "../logger.js";
 import {
@@ -23,6 +24,7 @@ import {
   submitManual,
 } from "../execution/engine.js";
 import { reconcileOnce, evaluateSimulated } from "../execution/monitor.js";
+import { backfillAll, backfillGroup } from "../telegram/backfill.js";
 import { broadcast, register, unregister, type SocketLike } from "../ws/hub.js";
 
 const groupSettingsSchema = z.object({
@@ -98,8 +100,21 @@ export async function buildServer() {
     live: hyperliquid.live,
     shadowMode: settingsRepo.getShadowMode(),
     authRequired: authEnabled,
+    updateEnabled: config.selfUpdate.enabled,
     time: new Date().toISOString(),
   }));
+
+  /* ------------------------------ updates ----------------------------- */
+  app.get("/api/update/check", async () => checkUpdates());
+
+  app.post("/api/update", async (_req, reply) => {
+    if (!config.selfUpdate.enabled) {
+      return reply.code(403).send({ error: "self-update disabled" });
+    }
+    const res = runUpdate();
+    if (!res.started) return reply.code(500).send(res);
+    return { ok: true, message: "Update started — the desk will restart shortly." };
+  });
 
   /* -------------------------- global settings ------------------------- */
   app.get("/api/settings", async () => ({ shadowMode: settingsRepo.getShadowMode() }));
@@ -137,6 +152,17 @@ export async function buildServer() {
   app.delete<{ Params: { id: string } }>("/api/groups/:id", async (req) => {
     groupsRepo.remove(req.params.id);
     return { ok: true };
+  });
+
+  // Import channel history for analysis (parsed + risk-scored, never executed).
+  app.post("/api/backfill", async (req) => {
+    const days = Number((req.body as { days?: number } | undefined)?.days) || 30;
+    return backfillAll(days);
+  });
+
+  app.post<{ Params: { id: string } }>("/api/groups/:id/backfill", async (req) => {
+    const days = Number((req.body as { days?: number } | undefined)?.days) || 30;
+    return backfillGroup(req.params.id, days);
   });
 
   /* ------------------------------ signals ----------------------------- */

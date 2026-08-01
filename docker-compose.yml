@@ -13,6 +13,16 @@ services:
       PORT: "4000"
       DB_PATH: /data/tttrading.sqlite
       WEB_DIST: /app/apps/web/dist
+      # In-app "Update" button (git pull + rebuild). See the security note below.
+      ALLOW_SELF_UPDATE: "true"
+      REPO_DIR: /repo
     volumes:
       # Persist the SQLite database outside the container.
       - ./data:/data
+      # --- Self-update (optional) --------------------------------------
+      # Lets the "Update" button run `git pull` + rebuild from inside the
+      # container. This mounts the Docker socket, which grants the container
+      # root-equivalent control of the host — only enable on a server you
+      # trust. Remove these two lines (and ALLOW_SELF_UPDATE above) to disable.
+      - ./:/repo
+      - /var/run/docker.sock:/var/run/docker.sock

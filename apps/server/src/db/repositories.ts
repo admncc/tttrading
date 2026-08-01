@@ -205,6 +205,8 @@ export interface NewSignal {
   parsed?: ParsedSignal;
   risk?: RiskRating;
   error?: string;
+  /** Override the timestamp (e.g. original date for backfilled messages). */
+  receivedAt?: string;
 }
 
 export const signals = {
@@ -225,7 +227,7 @@ export const signals = {
     return row ? toSignal(row) : undefined;
   },
   create(input: NewSignal): Signal {
-    const ts = now();
+    const ts = input.receivedAt ?? now();
     const id = nanoid();
     db.prepare(
       `INSERT INTO signals (id, group_id, group_name, raw_text, status, parsed, risk, error, received_at, updated_at)

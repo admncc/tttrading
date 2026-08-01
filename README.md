@@ -225,10 +225,22 @@ the user session used for reading) to receive alerts on fills, errors and
 optionally blocked red trades. Toggle with `ALERT_ON_FILL` / `ALERT_ON_ERROR` /
 `ALERT_ON_BLOCKED`. A "started" message confirms the setup on boot.
 
-### Messages view
+### Messages view & history backfill
 
 The **Messages** tab shows the raw feed of everything the tracked channels post
-(not just parsed signals), filterable by channel — handy for tuning parsing.
+(not just parsed signals), filterable by channel — handy for tuning parsing. Use
+**Import last N days** to backfill channel history: past messages are pulled,
+parsed and risk-scored (stored as `backfill` signals) for analysis — they are
+never executed and create no trades.
+
+### Self-update (the "Update" button)
+
+With `ALLOW_SELF_UPDATE=true` the sidebar shows **Check for updates** /
+**Update & restart**, which run `git pull` + `docker compose up -d --build` from
+the checkout. In Docker this requires the repo and the Docker socket mounted
+(both preconfigured in `docker-compose.yml`). ⚠️ The Docker socket grants the
+container root-equivalent control of the host — only enable this on a server you
+trust, and remove the socket mount to disable.
 
 ## Deployment
 

@@ -48,14 +48,31 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   health: () =>
-    req<{ ok: boolean; env: string; live: boolean; shadowMode: boolean; authRequired: boolean }>(
-      "/api/health",
-    ),
+    req<{
+      ok: boolean;
+      env: string;
+      live: boolean;
+      shadowMode: boolean;
+      authRequired: boolean;
+      updateEnabled: boolean;
+    }>("/api/health"),
   getSettings: () => req<{ shadowMode: boolean }>("/api/settings"),
   updateSettings: (shadowMode: boolean) =>
     req<{ shadowMode: boolean }>("/api/settings", {
       method: "PUT",
       body: JSON.stringify({ shadowMode }),
+    }),
+
+  checkUpdate: () =>
+    req<{ enabled: boolean; current?: string; behind?: number; commits?: string[]; error?: string }>(
+      "/api/update/check",
+    ),
+  applyUpdate: () => req<{ ok: boolean; message: string }>("/api/update", { method: "POST" }),
+
+  backfill: (days: number) =>
+    req<{ groupId: string; groupName: string; imported: number; error?: string }[]>("/api/backfill", {
+      method: "POST",
+      body: JSON.stringify({ days }),
     }),
   login: (password: string) =>
     req<{ token: string | null; authRequired: boolean }>("/api/login", {

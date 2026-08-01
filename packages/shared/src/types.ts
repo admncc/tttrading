@@ -94,6 +94,7 @@ export type SignalStatus =
   | "rejected" // dismissed by the user
   | "ignored" // filtered out (disabled group, symbol not allowed, ...)
   | "blocked" // high-risk (red) signal not executed; tracked as a shadow trade
+  | "backfill" // imported from channel history for analysis; never executed
   | "failed" // parsing or execution error
   | "unparseable"; // message arrived but no signal could be extracted
 

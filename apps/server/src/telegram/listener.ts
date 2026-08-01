@@ -9,7 +9,12 @@ import { handleIncoming } from "../execution/engine.js";
 
 let client: TelegramClient | null = null;
 
-function normalizeChannel(channel: string): string {
+/** The connected Telegram client, or null when the listener isn't running. */
+export function getTelegramClient(): TelegramClient | null {
+  return client;
+}
+
+export function normalizeChannel(channel: string): string {
   return channel.replace(/^@/, "").replace(/^https:\/\/t\.me\//, "").toLowerCase();
 }
 

@@ -31,6 +31,33 @@ export function App() {
   // Auth: "loading" until we know whether login is required and whether we're in.
   const [authState, setAuthState] = useState<"loading" | "in" | "out">("loading");
 
+  const [updateEnabled, setUpdateEnabled] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<string | null>(null);
+  const [updating, setUpdating] = useState(false);
+
+  const checkUpdate = async () => {
+    setUpdateInfo("checking…");
+    try {
+      const r = await api.checkUpdate();
+      if (r.error) setUpdateInfo(`error: ${r.error}`);
+      else if ((r.behind ?? 0) === 0) setUpdateInfo(`up to date (${r.current ?? "?"})`);
+      else setUpdateInfo(`${r.behind} update(s) available`);
+    } catch (e) {
+      setUpdateInfo(`error: ${e instanceof Error ? e.message : e}`);
+    }
+  };
+
+  const applyUpdate = async () => {
+    if (!confirm("Pull the latest code and rebuild? The desk will restart (~1–2 min).")) return;
+    setUpdating(true);
+    setUpdateInfo("updating — the desk will restart…");
+    try {
+      await api.applyUpdate();
+    } catch {
+      /* the container is being recreated; the request may not return */
+    }
+  };
+
   const refresh = useCallback(async () => {
     const [h, s, g, sig, t] = await Promise.all([
       api.health().catch(() => null),
@@ -51,7 +78,10 @@ export function App() {
     setAuthErrorHandler(() => setAuthState("out"));
     void (async () => {
       const h = await api.health().catch(() => null);
-      if (h) setHealth({ env: h.env, live: h.live, shadowMode: h.shadowMode });
+      if (h) {
+        setHealth({ env: h.env, live: h.live, shadowMode: h.shadowMode });
+        setUpdateEnabled(h.updateEnabled);
+      }
       if (h && !h.authRequired) {
         setAuthState("in");
       } else if (getToken()) {
@@ -176,6 +206,26 @@ export function App() {
             {health.shadowMode ? "Go live →" : "← Back to test mode"}
           </button>
         )}
+        {updateEnabled && (
+          <div style={{ marginTop: 8 }}>
+            <button className="ghost" style={{ width: "100%" }} onClick={checkUpdate} disabled={updating}>
+              Check for updates
+            </button>
+            {updateInfo && (
+              <div className="muted" style={{ fontSize: 11, margin: "6px 2px" }}>
+                {updateInfo}
+              </div>
+            )}
+            <button
+              className="primary"
+              style={{ width: "100%", marginTop: 4 }}
+              onClick={applyUpdate}
+              disabled={updating}
+            >
+              {updating ? "Updating…" : "Update & restart"}
+            </button>
+          </div>
+        )}
         {getToken() && (
           <button className="ghost" style={{ marginTop: 8 }} onClick={logout}>
             Log out
@@ -194,7 +244,9 @@ export function App() {
         {tab === "signals" && (
           <Signals signals={signals} groups={groups} onChange={refresh} />
         )}
-        {tab === "messages" && <Messages signals={signals} groups={groups} />}
+        {tab === "messages" && (
+          <Messages signals={signals} groups={groups} onChange={refresh} />
+        )}
         {tab === "trades" && <Trades trades={trades} onChange={refresh} />}
         {tab === "groups" && <Groups groups={groups} onChange={refresh} />}
       </main>
