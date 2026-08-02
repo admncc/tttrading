@@ -333,15 +333,24 @@ async function applyManagement(
   if (!group.enabled) return null;
 
   const openForGroup = tradesRepo.open().filter((t) => t.groupId === group.id && !t.shadow);
+  const groupWorking = tradesRepo.working().filter((t) => t.groupId === group.id && !t.shadow);
+
+  // Resolve the target symbol. Prefer the one the classifier tagged ($BTC/#BTC/
+  // BTC-USDT); otherwise derive it by matching the message against the coins the
+  // group actually HOLDS (case-insensitive) — so a bare "Btc moving nicely… move
+  // SL to 62000" binds to the open BTC position. This is precise: it only ever
+  // matches a symbol we truly have a position/order in, so unrelated chatter
+  // can't select a target.
+  const held = [...new Set([...openForGroup, ...groupWorking].map((t) => t.symbol.toUpperCase()))];
+  const sym =
+    action.symbol?.toUpperCase() ??
+    held.find((c) => new RegExp(`\\b${c.replace(/[^A-Z0-9]/g, "")}\\b`, "i").test(rawText));
+
   // An SL move / break-even may also target a still-resting limit order (the
   // default entry mode) — updating its planned stop so the bracket uses the new
   // level on fill. Partial/close/tp only make sense on an already-open position.
   const slKind = action.kind === "sl_move" || action.kind === "sl_breakeven";
-  const workingForGroup = slKind
-    ? tradesRepo.working().filter((t) => t.groupId === group.id && !t.shadow)
-    : [];
-  const manageable = [...openForGroup, ...workingForGroup];
-  const sym = action.symbol?.toUpperCase();
+  const manageable = slKind ? [...openForGroup, ...groupWorking] : openForGroup;
   // Only a full `close` (retraction / invalidation) REQUIRES an explicit symbol —
   // stray chatter containing a close word must never flatten a live position.
   // Everything else (SL move / break-even, partial book, TP progress) may fall
@@ -351,7 +360,7 @@ async function applyManagement(
   // wrong-side check, so it can't be abused into an instant stop-out.
   const requireExplicitSymbol = action.kind === "close";
   const targets = sym
-    ? manageable.filter((t) => t.symbol === sym)
+    ? manageable.filter((t) => t.symbol.toUpperCase() === sym)
     : !requireExplicitSymbol && manageable.length === 1
       ? manageable
       : [];
@@ -360,9 +369,7 @@ async function applyManagement(
   // limit order for that symbol, so an abandoned setup can't fill later.
   let canceledWorking = 0;
   if (action.kind === "close" && sym) {
-    const workingForSym = tradesRepo
-      .working()
-      .filter((t) => t.groupId === group.id && t.symbol === sym && !t.shadow);
+    const workingForSym = groupWorking.filter((t) => t.symbol.toUpperCase() === sym);
     for (const w of workingForSym) {
       await cancelWorkingTrade(w.id, `management: ${action.note}`);
       canceledWorking++;
