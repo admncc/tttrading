@@ -1,4 +1,5 @@
 import { config, alertsEnabled, authEnabled } from "./config.js";
+import { hyperliquidReady } from "./config.js";
 import { log, addLogSink } from "./logger.js";
 import { logs as logsRepo } from "./db/repositories.js";
 import { sendAlert } from "./alerts/notifier.js";
@@ -22,6 +23,16 @@ async function main(): Promise<void> {
     }
     broadcast({ type: "log", entry });
   });
+
+  // Fail closed: never run a real-money-capable instance with an open API.
+  if (hyperliquidReady() && !authEnabled) {
+    log.error(
+      "REFUSING TO START: a Hyperliquid signing key is configured but DESK_PASSWORD is empty. " +
+        "An unauthenticated API could place/close orders and move funds. " +
+        "Set DESK_PASSWORD (or unset HL_PRIVATE_KEY / use TRADING_ENV=paper for keyless dev).",
+    );
+    process.exit(1);
+  }
 
   seedDemo();
 

@@ -82,11 +82,14 @@ async function reconcileTrade(trade: Trade, byOid: Map<string, FillLite[]>): Pro
     // resolved it while we awaited fills.
     const fresh = tradesRepo.get(trade.id);
     if (!fresh || fresh.status !== "open" || closing.has(trade.id)) return false;
+    // A partialClose may have landed since we captured `trade`; only proceed if
+    // the fills actually cover the CURRENT remaining size, and bank from fresh.
+    if (closedSize < fresh.size * 0.999) return false;
     const notional = tradeFills.reduce((s, f) => s + f.price * f.size, 0);
-    const exitPrice = closedSize > 0 ? notional / closedSize : trade.entryPrice;
+    const exitPrice = closedSize > 0 ? notional / closedSize : fresh.entryPrice;
     // Fold in profit/fees banked from earlier partial exits ("book X%").
-    const bankedPnl = trade.bankedPnl ?? 0;
-    const bankedFees = trade.bankedFees ?? 0;
+    const bankedPnl = fresh.bankedPnl ?? 0;
+    const bankedFees = fresh.bankedFees ?? 0;
     const updated = tradesRepo.update(trade.id, {
       status: "closed",
       exitPrice,
@@ -138,6 +141,7 @@ async function moveSlToBreakeven(trade: Trade, filledSize: number, slippage: num
     stopLoss: trade.entryPrice, // break-even
     takeProfits: [],
     slippage,
+    force: true, // real position — place even when the global test switch is on
   });
   if (!res.protectedOnExchange || !res.slOrderId) {
     log.warn(

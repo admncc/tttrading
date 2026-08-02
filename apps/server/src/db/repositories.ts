@@ -549,10 +549,17 @@ export const settings = {
     const arr: number[] = raw ? (JSON.parse(raw) as number[]) : [];
     if (arr.includes(msgId)) return false;
     arr.push(msgId);
-    // Keep the most recent 2000 ids per group (ids are monotonically increasing).
-    const trimmed = arr.length > 2000 ? arr.slice(arr.length - 2000) : arr;
+    // Keep the HIGHEST 2000 ids (paging appends newest-first, so trim by id, not
+    // by insertion order, or a big gap-recovery could evict newer ids).
+    const trimmed =
+      arr.length > 2000 ? [...new Set(arr)].sort((a, b) => a - b).slice(-2000) : arr;
     kvSet(key, JSON.stringify(trimmed));
     return true;
+  },
+  /** Create the seen-set (empty) so a group counts as primed even with 0 msgs. */
+  ensureTelegramSeen(groupId: string): void {
+    const key = `seenMsgs:${groupId}`;
+    if (kvGet(key) === undefined) kvSet(key, "[]");
   },
   /** Mark a message id as already seen without processing (startup priming). */
   markTelegramMessageSeen(groupId: string, msgId: number): void {

@@ -11,19 +11,24 @@ interface Settings {
 
 export function RiskControls() {
   const [s, setS] = useState<Settings | null>(null);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [ready, setReady] = useState<Awaited<ReturnType<typeof api.readiness>> | null>(null);
 
   const load = () =>
-    api.getSettings().then((d) =>
-      setS({
-        tradingPaused: d.tradingPaused,
-        dailyLossLimitUsd: d.dailyLossLimitUsd,
-        maxOpenTrades: d.maxOpenTrades,
-        maxExposureUsd: d.maxExposureUsd,
-      }),
-    );
+    api
+      .getSettings()
+      .then((d) => {
+        setS({
+          tradingPaused: d.tradingPaused,
+          dailyLossLimitUsd: d.dailyLossLimitUsd,
+          maxOpenTrades: d.maxOpenTrades,
+          maxExposureUsd: d.maxExposureUsd,
+        });
+        setLoadErr(null);
+      })
+      .catch((e) => setLoadErr(e instanceof Error ? e.message : String(e)));
   useEffect(() => {
     void load();
     api.readiness().then(setReady).catch(() => {});
@@ -57,7 +62,25 @@ export function RiskControls() {
     }
   };
 
-  if (!s) return null;
+  if (!s) {
+    if (loadErr) {
+      return (
+        <div className="panel">
+          <div className="row-between">
+            <h2 style={{ margin: 0 }}>Risk &amp; safety</h2>
+            <button className="danger" disabled={busy} onClick={() => void kill()}>
+              🛑 Kill-switch
+            </button>
+          </div>
+          <div className="neg" style={{ fontSize: 12, marginTop: 8 }}>
+            Could not load settings: {loadErr}{" "}
+            <button className="ghost" onClick={() => void load()}>Retry</button>
+          </div>
+        </div>
+      );
+    }
+    return null;
+  }
 
   return (
     <div className="panel">

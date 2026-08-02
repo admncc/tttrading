@@ -188,7 +188,7 @@ export function Analytics() {
           <div className="kpi-grid">
             <Kpi label="Realized PnL" value={usd(o!.realizedPnl)} cls={pnlClass(o!.realizedPnl)} />
             <Kpi label="Win Rate" value={pct(o!.winRate)} />
-            <Kpi label="Profit Factor" value={Number.isFinite(o!.profitFactor) ? o!.profitFactor.toFixed(2) : "∞"} />
+            <Kpi label="Profit Factor" value={Number.isNaN(o!.profitFactor) ? "—" : Number.isFinite(o!.profitFactor) ? o!.profitFactor.toFixed(2) : "∞"} />
             <Kpi label="Expectancy / trade" value={usd(o!.expectancy)} cls={pnlClass(o!.expectancy)} />
             <Kpi label="Avg RR" value={o!.rrSampleSize ? `${o!.avgRR}R` : "—"} cls={pnlClass(o!.avgRR)} />
             <Kpi label="Avg Win" value={usd(o!.avgWin)} cls="pos" />

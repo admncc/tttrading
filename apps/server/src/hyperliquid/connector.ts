@@ -296,24 +296,26 @@ export class HyperliquidConnector {
     if (size <= 0) {
       return { ok: false, filledPrice: mid, size: 0, simulated: !this.live, error: "Computed size is 0" };
     }
-    // Hyperliquid rejects orders below ~$10 notional. Guard opens only — a
-    // reduce-only close of a small remaining position must always be allowed.
-    if (!req.reduceOnly && size * mid < 10) {
+    // Aggressive limit price so the IOC order crosses the book.
+    const slip = req.maxSlippage;
+    const limitPx = roundPx(mid * (isBuy ? 1 + slip : 1 - slip), asset.szDecimals);
+    // Hyperliquid rejects orders below ~$10 notional, evaluated at the ORDER
+    // price. Guard opens only — a reduce-only close of a small remaining
+    // position must always be allowed.
+    if (!req.reduceOnly && size * limitPx < 10) {
       return {
         ok: false,
         filledPrice: mid,
         size: 0,
         simulated: !this.live,
-        error: `Order value ${(size * mid).toFixed(2)} below Hyperliquid's $10 minimum`,
+        error: `Order value ${(size * limitPx).toFixed(2)} below Hyperliquid's $10 minimum`,
       };
     }
-    // Aggressive limit price so the IOC order crosses the book.
-    const slip = req.maxSlippage;
-    const limitPx = roundPx(mid * (isBuy ? 1 + slip : 1 - slip), asset.szDecimals);
 
-    // Simulate unless there's a signing key AND (test mode is off OR this is a
-    // forced management order on an already-real position).
-    if (!this.exchange || (this.simulating() && !req.force)) {
+    // `force` bypasses the test switch ONLY for reduce-only orders (managing an
+    // already-real position); it can never open a new live position in test mode.
+    const forceReal = !!req.force && !!req.reduceOnly;
+    if (!this.exchange || (this.simulating() && !forceReal)) {
       return { ok: true, filledPrice: mid, size, simulated: true };
     }
 
@@ -560,12 +562,13 @@ function parseOrderResponse(res: HlOrderResponse): ParsedOrder {
   const statuses = res.response?.data?.statuses ?? [];
   for (const s of statuses) {
     if ("filled" in s) {
-      return {
-        ok: true,
-        filledPrice: Number(s.filled.avgPx),
-        filledSize: Number(s.filled.totalSz),
-        orderId: String(s.filled.oid),
-      };
+      const filledPrice = Number(s.filled.avgPx);
+      const filledSize = Number(s.filled.totalSz);
+      // Guard against a malformed fill payload polluting PnL math downstream.
+      if (!Number.isFinite(filledPrice) || filledPrice <= 0 || !Number.isFinite(filledSize)) {
+        return { ok: false, filledPrice: 0, error: "malformed fill response" };
+      }
+      return { ok: true, filledPrice, filledSize, orderId: String(s.filled.oid) };
     }
     // An IOC order that rests did NOT fill immediately — treat as no fill.
     if ("resting" in s) {

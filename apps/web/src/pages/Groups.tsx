@@ -73,7 +73,12 @@ function AiSettings() {
             onChange={(e) => {
               const on = e.target.checked;
               setAutoRefine(on);
-              void api.updateSettings({ autoRefine: on }).catch(() => {});
+              void api
+                .updateSettings({ autoRefine: on })
+                .catch(() => {
+                  setAutoRefine(!on); // revert the checkbox on failure
+                  setMsg("Failed to save auto-refine.");
+                });
             }}
           />
           Auto-refine channel instructions (AI updates them on a schedule)
@@ -157,7 +162,10 @@ function GroupForm({
             type="number"
             min={1}
             value={g.settings.leverage}
-            onChange={(e) => setS({ leverage: Number(e.target.value) })}
+            onChange={(e) => {
+              const n = Number(e.target.value);
+              if (Number.isFinite(n) && n > 0) setS({ leverage: n });
+            }}
           />
         </div>
         <div className="field">
@@ -178,7 +186,10 @@ function GroupForm({
               type="number"
               min={1}
               value={g.settings.tradeSizeUsd}
-              onChange={(e) => setS({ tradeSizeUsd: Number(e.target.value) })}
+              onChange={(e) => {
+                const n = Number(e.target.value);
+                if (Number.isFinite(n) && n > 0) setS({ tradeSizeUsd: n });
+              }}
             />
           </div>
         ) : (

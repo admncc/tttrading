@@ -59,7 +59,7 @@ function signalStatus(s: Signal, trade?: Trade): { label: string; cls: string; t
   switch (s.status) {
     case "executed":
       return trade?.simulated
-        ? { label: "PAUSED (TEST MODE)", cls: "pending", title: "Simulated — no real order sent" }
+        ? { label: "SIMULATED", cls: "pending", title: "Test mode — no real order sent" }
         : { label: "SUCCESSFUL", cls: "executed" };
     case "failed":
       return { label: `FAILED${paren(s.error)}`, cls: "rejected", title: s.error };
@@ -119,7 +119,7 @@ export function Overview({
         <Kpi label="Open" value={String(o.openTrades)} />
         <Kpi
           label="Profit Factor"
-          value={Number.isFinite(o.profitFactor) ? o.profitFactor.toFixed(2) : "∞"}
+          value={Number.isNaN(o.profitFactor) ? "—" : Number.isFinite(o.profitFactor) ? o.profitFactor.toFixed(2) : "∞"}
         />
         <Kpi label="Avg PnL / trade" value={usd(o.avgPnl)} cls={pnlClass(o.avgPnl)} />
         <Kpi label="Best" value={usd(o.bestTrade)} cls="pos" />

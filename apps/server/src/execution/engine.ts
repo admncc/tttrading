@@ -303,12 +303,18 @@ async function applyManagement(
   rawText: string,
   action: ManagementAction,
 ): Promise<Signal | null> {
+  // Don't let messages manage positions of a channel the operator disabled.
+  if (!group.enabled) return null;
+
   const openForGroup = tradesRepo.open().filter((t) => t.groupId === group.id && !t.shadow);
   const sym = action.symbol?.toUpperCase();
-  // Target by symbol; if no symbol and exactly one open trade, target that.
+  // Destructive actions REQUIRE an explicit symbol — never fall back to "the one
+  // open trade", so stray chatter containing a trigger word can't close/alter a
+  // live position. Only the informational tp_hit may use the single-trade fallback.
+  const destructive = action.kind !== "tp_hit";
   const targets = sym
     ? openForGroup.filter((t) => t.symbol === sym)
-    : openForGroup.length === 1
+    : !destructive && openForGroup.length === 1
       ? openForGroup
       : [];
 
@@ -336,7 +342,27 @@ async function applyManagement(
     } else if (action.kind === "sl_breakeven") {
       await moveStop(t, t.entryPrice, true);
     } else if (action.kind === "sl_move" && action.newStop !== undefined) {
-      await moveStop(t, action.newStop, false);
+      // Only accept a stop on the PROTECTIVE side of the market — a long's stop
+      // must sit below price, a short's above — else reject (a message like
+      // "SL to 999999" would otherwise force an instant stop-out).
+      let price = t.entryPrice;
+      try {
+        const mid = await hyperliquid.getMidPrice(t.symbol);
+        if (mid && mid > 0) price = mid;
+      } catch {
+        /* use entry as the reference */
+      }
+      const ok = t.side === "long" ? action.newStop < price : action.newStop > price;
+      if (ok) {
+        await moveStop(t, action.newStop, false);
+      } else {
+        event(
+          "manage",
+          `Rejected SL move for ${t.symbol}: ${action.newStop} is on the wrong side of ${price}`,
+          { newStop: action.newStop, price, side: t.side },
+          { level: "warn", groupId: group.id },
+        );
+      }
     } else if (action.kind === "partial_close") {
       await partialClose(t, action.fraction ?? 0);
       if (action.alsoBreakeven) {
@@ -344,11 +370,14 @@ async function applyManagement(
         if (fresh) await moveStop(fresh, fresh.entryPrice, true);
       }
     } else if (action.kind === "tp_hit") {
-      // Clamp to the number of TP levels so a stray "TP hit" message can't
-      // fabricate a TP leg that closeTrade would later bank profit for.
-      const cap = t.takeProfits?.length ?? 0;
-      const next = Math.min((t.tpFilledCount ?? 0) + 1, cap || (t.tpFilledCount ?? 0) + 1);
-      tradesRepo.update(t.id, { tpFilledCount: next });
+      // Only advance the TP counter for SIMULATED trades — for live trades,
+      // reconciliation from real fills is the sole authority (a stray "TP hit"
+      // message must not fabricate banked profit). Clamp to the TP count.
+      if (t.simulated) {
+        const cap = t.takeProfits?.length ?? 0;
+        const next = Math.min((t.tpFilledCount ?? 0) + 1, cap || (t.tpFilledCount ?? 0) + 1);
+        tradesRepo.update(t.id, { tpFilledCount: next });
+      }
     }
     const u = tradesRepo.get(t.id);
     if (u) broadcast({ type: "trade", trade: u });
@@ -505,13 +534,23 @@ export async function closeAllTrades(): Promise<{ closed: number }> {
  * fixed, percent-of-equity, or fixed-risk-from-SL. Falls back to the fixed
  * tradeSizeUsd whenever the inputs for a dynamic mode aren't available.
  */
+/** Absolute per-trade notional ceiling — a backstop against dynamic-sizing blowups. */
+const MAX_ORDER_NOTIONAL = 10_000_000;
+/** Floor on the SL distance used for risk sizing, so a near-entry SL can't blow up size. */
+const MIN_STOP_DIST = 0.002; // 0.2%
+
 async function effectiveNotional(group: Group, parsed: ParsedSignal): Promise<number> {
   const s = group.settings;
   const mode = s.sizingMode ?? "fixed";
+  // Never exceed a sane multiple of the channel's own fixed size, nor the hard cap.
+  const cap = Math.min(MAX_ORDER_NOTIONAL, Math.max(s.tradeSizeUsd * 10, s.tradeSizeUsd));
+  const clamp = (n: number) => Math.min(Math.max(0, n), cap);
+
   if (mode === "percentEquity" && (s.riskValue ?? 0) > 0) {
+    const pct = Math.min(s.riskValue as number, 100); // margin can't exceed 100% of equity
     try {
       const equity = (await hyperliquid.getAccountSummary())?.accountValue ?? 0;
-      if (equity > 0) return equity * ((s.riskValue as number) / 100) * s.leverage;
+      if (equity > 0) return clamp(equity * (pct / 100) * s.leverage);
     } catch {
       /* no equity reading — fall back */
     }
@@ -527,12 +566,12 @@ async function effectiveNotional(group: Group, parsed: ParsedSignal): Promise<nu
       }
     }
     if (ref && ref > 0) {
-      const stopDist = Math.abs(ref - parsed.stopLoss) / ref;
-      if (stopDist > 0) return (s.riskValue as number) / stopDist;
+      const stopDist = Math.max(Math.abs(ref - parsed.stopLoss) / ref, MIN_STOP_DIST);
+      return clamp((s.riskValue as number) / stopDist);
     }
     return s.tradeSizeUsd;
   }
-  return s.tradeSizeUsd;
+  return Math.min(s.tradeSizeUsd, MAX_ORDER_NOTIONAL);
 }
 
 /** Place the order for a signal and record the resulting trade. */
@@ -767,6 +806,10 @@ export async function placeTestOrder(params: {
   if (!(notionalUsd > 0)) return { ok: false, error: "size must be > 0" };
   if (!(leverage >= 1)) return { ok: false, error: "leverage must be >= 1" };
 
+  // A test order is still a new entry — respect the kill-switch and risk limits.
+  const block = preTradeGate(notionalUsd);
+  if (block) return { ok: false, error: block };
+
   try {
     const asset = await hyperliquid.getAsset(symbol);
     if (!asset) return { ok: false, error: `Crypto NOT found: ${symbol} is not listed on Hyperliquid` };
@@ -882,7 +925,15 @@ export async function closeTrade(tradeId: string, exitPriceOverride?: number) {
         reduceOnly: true, // never flip into an opposite position
         force: true, // real position → close on the exchange even in test mode
       });
-      if (result.ok) exitPrice = result.filledPrice;
+      if (!result.ok) {
+        // The exchange did NOT reduce the position — do not mark it closed, or
+        // the desk would show a flat trade while a live position runs on with
+        // its SL/TP already cancelled above.
+        log.error(`closeTrade: exchange close failed for ${trade.symbol}: ${result.error}`);
+        alertError(`close ${trade.symbol} (${trade.groupName})`, result.error ?? "unknown");
+        return tradesRepo.get(tradeId);
+      }
+      exitPrice = result.filledPrice;
     }
 
     const dir = trade.side === "long" ? 1 : -1;

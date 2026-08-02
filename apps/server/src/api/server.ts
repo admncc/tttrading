@@ -17,6 +17,7 @@ import {
   trades as tradesRepo,
 } from "../db/repositories.js";
 import { dashboard, analytics } from "../stats/service.js";
+import { sanitizedBackup } from "../db/index.js";
 import { sendReport } from "../alerts/report.js";
 import { hyperliquid } from "../hyperliquid/connector.js";
 import {
@@ -37,7 +38,7 @@ import { broadcast, register, unregister, type SocketLike } from "../ws/hub.js";
 
 const groupSettingsSchema = z.object({
   leverage: z.number().positive().max(100),
-  tradeSizeUsd: z.number().positive(),
+  tradeSizeUsd: z.number().positive().max(10_000_000),
   executionMode: z.enum(["auto", "confirm"]),
   marginMode: z.enum(["cross", "isolated"]),
   maxSlippage: z.number().min(0).max(0.2),
@@ -46,15 +47,15 @@ const groupSettingsSchema = z.object({
   breakevenAfterTp: z.number().int().min(0).max(10),
   blockRedTrades: z.boolean(),
   sizingMode: z.enum(["fixed", "percentEquity", "riskPerTrade"]).optional(),
-  riskValue: z.number().min(0).max(1e9).optional(),
+  riskValue: z.number().min(0).max(1_000_000).optional(),
   symbolCooldownMinutes: z.number().min(0).max(100000).optional(),
   instructions: z.string().max(8000).optional(),
-  allowedSymbols: z.array(z.string()).optional(),
+  allowedSymbols: z.array(z.string().max(20)).max(500).optional(),
 });
 
 const groupInputSchema = z.object({
-  name: z.string().min(1),
-  telegramChannel: z.string().min(1),
+  name: z.string().min(1).max(200),
+  telegramChannel: z.string().min(1).max(200),
   enabled: z.boolean(),
   settings: groupSettingsSchema,
 });
@@ -77,11 +78,15 @@ export async function buildServer() {
     },
   );
 
-  const corsOrigin = config.corsOrigin
-    ? config.corsOrigin === "*"
-      ? true
-      : config.corsOrigin.split(",").map((s) => s.trim())
-    : false; // same-origin only (desk is served from this API)
+  // Reject the reflect-all wildcard — require an explicit host allow-list, else
+  // same-origin only (the desk is served from this API, so that's the safe default).
+  if (config.corsOrigin === "*") {
+    log.warn('CORS_ORIGIN="*" is not allowed (reflects every origin) — using same-origin only.');
+  }
+  const corsOrigin =
+    config.corsOrigin && config.corsOrigin !== "*"
+      ? config.corsOrigin.split(",").map((s) => s.trim())
+      : false;
   await app.register(cors, { origin: corsOrigin });
   await app.register(websocket);
 
@@ -231,9 +236,11 @@ export async function buildServer() {
     return { env: config.tradingEnv, accountValue, checks, ready: checks.every((c) => c.ok) };
   });
 
-  // Download a full backup of the SQLite database.
+  // Download a backup of the SQLite database, with the desk-stored Anthropic
+  // key stripped. Fails closed without a desk password (it carries trade data).
   app.get("/api/backup", async (_req, reply) => {
-    const buf = fs.readFileSync(config.dbPath);
+    if (!authEnabled) return reply.code(403).send({ error: "Set DESK_PASSWORD to enable backups." });
+    const buf = sanitizedBackup();
     const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
     reply
       .type("application/octet-stream")
@@ -316,6 +323,7 @@ export async function buildServer() {
 
   // Export a channel's full message transcript (timestamp + text) as .txt.
   app.get<{ Params: { id: string } }>("/api/groups/:id/export", async (req, reply) => {
+    if (!authEnabled) return reply.code(403).send({ error: "Set DESK_PASSWORD to enable exports." });
     const group = groupsRepo.get(req.params.id);
     if (!group) return reply.code(404).send({ error: "not found" });
     reply
@@ -326,6 +334,7 @@ export async function buildServer() {
 
   // Export all channels' transcripts as one .txt.
   app.get("/api/export", async (_req, reply) => {
+    if (!authEnabled) return reply.code(403).send({ error: "Set DESK_PASSWORD to enable exports." });
     reply
       .type("text/plain; charset=utf-8")
       .header("Content-Disposition", 'attachment; filename="all-channels.txt"');
@@ -358,7 +367,7 @@ export async function buildServer() {
 
   // Paste a raw message to test parsing + execution against a group.
   app.post("/api/signals/simulate", async (req, reply) => {
-    const schema = z.object({ groupId: z.string(), text: z.string().min(1) });
+    const schema = z.object({ groupId: z.string().max(64), text: z.string().min(1).max(20000) });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     const signal = await submitManual(parsed.data.groupId, parsed.data.text);

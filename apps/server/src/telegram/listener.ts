@@ -78,15 +78,17 @@ const POLL_LIMIT = 30;
 /** Max messages to page back per group per cycle when covering a gap. */
 const MAX_CATCHUP = 200;
 
-/** Resolved-entity cache so we don't call getDialogs() every poll. */
+/** Resolved-entity cache so we don't call getDialogs() every poll. Keyed by the
+ *  channel STRING so editing a group's channel naturally uses a fresh entry. */
 const entityCache = new Map<string, unknown>();
 let polling = false;
+let pollStartedAt = 0;
 
 async function resolveEntityCached(tg: TelegramClient, g: { id: string; telegramChannel: string }): Promise<unknown> {
-  const cached = entityCache.get(g.id);
+  const cached = entityCache.get(g.telegramChannel);
   if (cached) return cached;
   const entity = await resolveEntity(tg, g.telegramChannel);
-  entityCache.set(g.id, entity);
+  entityCache.set(g.telegramChannel, entity);
   return entity;
 }
 
@@ -154,8 +156,8 @@ async function onMessage(event: NewMessageEvent): Promise<void> {
     await handleIncoming(group, text);
     gh(group.id).lastMessageAt = new Date().toISOString();
   } catch (err) {
-    // Release the claim so the catch-up poller can retry this message.
-    if (typeof msgId === "number") settingsRepo.unclaimTelegramMessage(group.id, msgId);
+    // Keep the claim (at-most-once): handleIncoming may already have placed a
+    // real order before throwing, so retrying could DOUBLE a live position.
     log.error("Failed to handle Telegram message:", err instanceof Error ? err.message : err);
   }
 }
@@ -176,6 +178,7 @@ async function primeGroups(tg: TelegramClient): Promise<void> {
         const id = (m as { id?: number }).id;
         if (typeof id === "number") settingsRepo.markTelegramMessageSeen(g.id, id);
       }
+      settingsRepo.ensureTelegramSeen(g.id); // mark primed even if 0 messages
     } catch (err) {
       log.warn(`Telegram prime ${g.name} failed:`, err instanceof Error ? err.message : err);
     }
@@ -191,8 +194,15 @@ async function primeGroups(tg: TelegramClient): Promise<void> {
 async function pollOnce(): Promise<void> {
   const tg = client;
   if (!tg) return;
-  if (polling) return; // skip if the previous cycle is still running
+  // Watchdog: if a previous cycle is still marked running but has exceeded a
+  // generous timeout (a hung getMessages), assume it's wedged and start fresh —
+  // otherwise the catch-up net silently stays off forever.
+  if (polling) {
+    if (Date.now() - pollStartedAt < POLL_INTERVAL_MS * 5) return;
+    log.warn("Telegram poll cycle exceeded watchdog timeout — restarting it.");
+  }
   polling = true;
+  pollStartedAt = Date.now();
   try {
     await pollCycle(tg);
   } finally {
@@ -227,6 +237,7 @@ async function pollCycle(tg: TelegramClient): Promise<void> {
           const id = (m as { id?: number }).id;
           if (typeof id === "number") settingsRepo.markTelegramMessageSeen(g.id, id);
         }
+        settingsRepo.ensureTelegramSeen(g.id); // primed even if the channel is empty
         gh(g.id).lastPolledAt = new Date().toISOString();
         log.info(`Primed new group ${g.name} (${recent.length} msgs marked seen).`);
         continue;
@@ -267,18 +278,18 @@ async function pollCycle(tg: TelegramClient): Promise<void> {
       // Process oldest-first so ordering matches how they were sent.
       fresh.sort((a, b) => a.id - b.id);
       for (const f of fresh) {
-        logEvent("message", `Catch-up: recovered missed message from ${g.name}`, { msgId: f.id }, {
-          groupId: g.id,
-        });
         try {
+          logEvent("message", `Catch-up: recovered missed message from ${g.name}`, { msgId: f.id }, {
+            groupId: g.id,
+          });
           await handleIncoming(g, f.text);
           const h = gh(g.id);
           h.lastMessageAt = new Date().toISOString();
           h.recoveredCount++;
         } catch (err) {
-          // Transient failure — release the claim so a later poll can retry it.
-          settingsRepo.unclaimTelegramMessage(g.id, f.id);
-          log.error("Catch-up handleIncoming failed (will retry):", err instanceof Error ? err.message : err);
+          // Keep the claim (at-most-once): a retry could double a live position
+          // if the order already went through before the throw.
+          log.error("Catch-up handleIncoming failed:", err instanceof Error ? err.message : err);
         }
       }
       const h = gh(g.id);

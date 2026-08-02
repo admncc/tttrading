@@ -131,3 +131,18 @@ function migrate(database: Database.Database): void {
 }
 
 export const db: Database.Database = open();
+
+/**
+ * Serialize the database with secrets stripped, for the desk backup download.
+ * Removes the desk-stored Anthropic key so a backup file never carries it.
+ */
+export function sanitizedBackup(): Buffer {
+  const snapshot = db.serialize();
+  const tmp = new Database(snapshot);
+  try {
+    tmp.prepare("DELETE FROM app_settings WHERE key = 'anthropicKey'").run();
+    return tmp.serialize();
+  } finally {
+    tmp.close();
+  }
+}
