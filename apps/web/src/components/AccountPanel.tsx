@@ -11,6 +11,13 @@ export function AccountPanel() {
   const [amount, setAmount] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  // Test order inputs (defaults: ETH, 10 USDC, 4x).
+  const [toSymbol, setToSymbol] = useState("ETH");
+  const [toUsd, setToUsd] = useState("10");
+  const [toLev, setToLev] = useState("4");
+  const [toSide, setToSide] = useState<"long" | "short">("long");
+  const [toBusy, setToBusy] = useState(false);
+  const [toMsg, setToMsg] = useState<string | null>(null);
 
   const load = () => api.account().then(setA).catch(() => {});
   useEffect(() => {
@@ -43,6 +50,31 @@ export function AccountPanel() {
       setMsg(`Failed: ${e instanceof Error ? e.message : e}`);
     } finally {
       setBusy(false);
+    }
+  };
+
+  const placeTest = async () => {
+    const usd = Number(toUsd);
+    const lev = Number(toLev);
+    const sym = toSymbol.trim().toUpperCase();
+    if (!sym) return setToMsg("Enter a symbol.");
+    if (!Number.isFinite(usd) || usd <= 0) return setToMsg("Enter a valid USDC size.");
+    if (!Number.isFinite(lev) || lev < 1) return setToMsg("Leverage must be ≥ 1.");
+    const real = a && !a.simulating;
+    const warn = real
+      ? `Place a REAL ${toSide} order: ${usd} USDC ${sym} at ${lev}x on ${a?.env}?`
+      : `Place a SIMULATED ${toSide} order (test mode): ${usd} USDC ${sym} at ${lev}x?`;
+    if (!confirm(warn)) return;
+    setToBusy(true);
+    setToMsg(null);
+    try {
+      const t = await api.testOrder(sym, toSide, usd, lev);
+      setToMsg(`Order placed: ${toSide} ${sym} @ ${t.entryPrice}${t.simulated ? " (simulated)" : ""}. See the Trades tab to manage/close it.`);
+      await load();
+    } catch (e) {
+      setToMsg(`Failed: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setToBusy(false);
     }
   };
 
@@ -146,6 +178,60 @@ export function AccountPanel() {
                 </button>
               )}
               {msg && <span className="muted" style={{ fontSize: 12 }}>{msg}</span>}
+            </div>
+          </div>
+
+          <div
+            style={{
+              borderTop: "1px solid var(--border)",
+              paddingTop: 14,
+              marginBottom: a.positions.length ? 16 : 0,
+            }}
+          >
+            <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
+              Place a one-off <strong>test order</strong>. It appears in the Trades tab and can be
+              closed there.{" "}
+              {a.simulating ? (
+                <span className="tag pending">will be SIMULATED (test mode on)</span>
+              ) : (
+                <span className="tag executed">will be a REAL {a.env} order</span>
+              )}
+            </div>
+            <div className="btn-row" style={{ alignItems: "center", flexWrap: "wrap" }}>
+              <input
+                style={{ maxWidth: 90 }}
+                placeholder="Symbol"
+                value={toSymbol}
+                onChange={(e) => setToSymbol(e.target.value)}
+              />
+              <input
+                style={{ maxWidth: 110 }}
+                type="number"
+                min={1}
+                placeholder="USDC"
+                value={toUsd}
+                onChange={(e) => setToUsd(e.target.value)}
+              />
+              <input
+                style={{ maxWidth: 90 }}
+                type="number"
+                min={1}
+                placeholder="Lev x"
+                value={toLev}
+                onChange={(e) => setToLev(e.target.value)}
+              />
+              <select
+                style={{ maxWidth: 110 }}
+                value={toSide}
+                onChange={(e) => setToSide(e.target.value as "long" | "short")}
+              >
+                <option value="long">Buy / long</option>
+                <option value="short">Sell / short</option>
+              </select>
+              <button className="primary" disabled={toBusy} onClick={() => void placeTest()}>
+                {toBusy ? "Placing…" : "Place test order"}
+              </button>
+              {toMsg && <span className="muted" style={{ fontSize: 12 }}>{toMsg}</span>}
             </div>
           </div>
 

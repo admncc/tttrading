@@ -21,6 +21,7 @@ import { hyperliquid } from "../hyperliquid/connector.js";
 import {
   closeTrade,
   confirmSignal,
+  placeTestOrder,
   rejectSignal,
   submitManual,
 } from "../execution/engine.js";
@@ -353,6 +354,28 @@ export async function buildServer() {
       if (!res.ok) return reply.code(400).send({ error: res.error });
       log.info(`Transferred ${amount} USDC ${toPerp ? "spot→perp" : "perp→spot"}.`);
       return { ok: true };
+    },
+  );
+
+  // Place a one-off test order from the desk (respects the global test switch).
+  app.post<{ Body: { symbol?: string; side?: string; notionalUsd?: number; leverage?: number } }>(
+    "/api/test-order",
+    async (req, reply) => {
+      const b = req.body ?? {};
+      const symbol = typeof b.symbol === "string" ? b.symbol : "";
+      const side = b.side === "short" ? "short" : "long";
+      const notionalUsd = Number(b.notionalUsd);
+      const leverage = Number(b.leverage);
+      if (!symbol) return reply.code(400).send({ error: "symbol required" });
+      if (!Number.isFinite(notionalUsd) || notionalUsd <= 0) {
+        return reply.code(400).send({ error: "notionalUsd must be > 0" });
+      }
+      if (!Number.isFinite(leverage) || leverage < 1) {
+        return reply.code(400).send({ error: "leverage must be >= 1" });
+      }
+      const res = await placeTestOrder({ symbol, side, notionalUsd, leverage });
+      if (!res.ok) return reply.code(400).send({ error: res.error });
+      return res.trade;
     },
   );
 

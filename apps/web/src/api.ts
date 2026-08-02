@@ -130,6 +130,11 @@ export const api = {
 
   telegramHealth: () => req<TelegramHealth>("/api/telegram/health"),
   account: () => req<AccountInfo>("/api/account"),
+  testOrder: (symbol: string, side: "long" | "short", notionalUsd: number, leverage: number) =>
+    req<Trade>("/api/test-order", {
+      method: "POST",
+      body: JSON.stringify({ symbol, side, notionalUsd, leverage }),
+    }),
   transferUsd: (amount: number, toPerp: boolean) =>
     req<{ ok: boolean }>("/api/account/transfer", {
       method: "POST",

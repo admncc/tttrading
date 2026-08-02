@@ -1,4 +1,4 @@
-import type { Group, ParsedSignal, RiskRating, Signal, Trade } from "@tttrading/shared";
+import type { Group, ParsedSignal, RiskRating, Signal, Trade, TradeSide } from "@tttrading/shared";
 import { config } from "../config.js";
 import { log, event } from "../logger.js";
 import { groups as groupsRepo, signals as signalsRepo, trades as tradesRepo } from "../db/repositories.js";
@@ -577,6 +577,77 @@ async function execute(
   broadcast({ type: "trade", trade });
   pushStats();
   return executed;
+}
+
+/**
+ * Place a one-off test order straight from the desk (not tied to a channel).
+ * Creates a tracked Trade so it shows up in the Trades area and can be closed
+ * there like any other. Respects the global shadow/test switch: simulated when
+ * test mode is on, real when live.
+ */
+export async function placeTestOrder(params: {
+  symbol: string;
+  side: TradeSide;
+  notionalUsd: number;
+  leverage: number;
+}): Promise<{ ok: boolean; error?: string; trade?: Trade }> {
+  const symbol = params.symbol.trim().toUpperCase();
+  const { side, notionalUsd, leverage } = params;
+  if (!symbol) return { ok: false, error: "symbol required" };
+  if (!(notionalUsd > 0)) return { ok: false, error: "size must be > 0" };
+  if (!(leverage >= 1)) return { ok: false, error: "leverage must be >= 1" };
+
+  try {
+    const asset = await hyperliquid.getAsset(symbol);
+    if (!asset) return { ok: false, error: `Crypto NOT found: ${symbol} is not listed on Hyperliquid` };
+  } catch {
+    /* metadata unavailable — let the order path surface any error */
+  }
+
+  const result = await hyperliquid.placeMarketOrder({
+    symbol,
+    side,
+    notionalUsd,
+    leverage,
+    marginMode: "cross",
+    maxSlippage: 0.01,
+  });
+  if (!result.ok) {
+    event(
+      "exec",
+      `Test order FAILED ${side} ${symbol}: ${result.error}`,
+      { error: result.error, simulated: result.simulated },
+      { level: "error" },
+    );
+    return { ok: false, error: result.error };
+  }
+
+  const trade = tradesRepo.create({
+    groupId: "manual",
+    groupName: "Manual test",
+    symbol,
+    side,
+    status: "open",
+    env: config.tradingEnv,
+    leverage,
+    notionalUsd,
+    size: result.size,
+    entryPrice: result.filledPrice,
+    exchangeOrderId: result.orderId,
+    tpFilledCount: 0,
+    slMovedToBreakeven: false,
+    simulated: result.simulated,
+  });
+  event(
+    "exec",
+    `Test order ${side} ${symbol} (${result.simulated ? "sim" : "live"}) @ ${result.filledPrice}`,
+    { tradeId: trade.id, size: trade.size, notionalUsd, leverage },
+    {},
+  );
+  alertOpened(trade);
+  broadcast({ type: "trade", trade });
+  pushStats();
+  return { ok: true, trade };
 }
 
 /**
