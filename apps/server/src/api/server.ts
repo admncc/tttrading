@@ -169,14 +169,15 @@ export async function buildServer() {
   app.get("/api/settings", async () => settingsPayload());
 
   app.put("/api/settings", async (req, reply) => {
+    if (!authEnabled) return reply.code(403).send({ error: "Set DESK_PASSWORD to change settings." });
     const schema = z.object({
       shadowMode: z.boolean().optional(),
       tradingPaused: z.boolean().optional(),
       dailyLossLimitUsd: z.number().min(0).max(1e9).optional(),
       maxOpenTrades: z.number().int().min(0).max(1000).optional(),
       maxExposureUsd: z.number().min(0).max(1e9).optional(),
-      anthropicKey: z.string().optional(), // "" clears the desk-stored key
-      anthropicModel: z.string().optional(),
+      anthropicKey: z.string().max(500).optional(), // "" clears the desk-stored key
+      anthropicModel: z.string().max(100).optional(),
       autoRefine: z.boolean().optional(),
     });
     const parsed = schema.safeParse(req.body);

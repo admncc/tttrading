@@ -22,7 +22,7 @@ export interface ManagementAction {
 
 // "invalidated"/"stopped"/"closed"/"cut"/"off the table" => close a live trade.
 const RE_CLOSE =
-  /\b(invalidated|stopped\s*out|got\s*stopped|\bstopped\b|clos(?:e|ed|ing)\b|cut(?:ting)?\b|exit(?:ed|ing)?\b|off\s+the\s+table|left\s+without\s+us|took\s+profit\s+and\s+clos)/i;
+  /\b(invalidated|stopped\s*out|got\s*stopped|\bstopped\b|clos(?:e|ed|ing)\b|cancel(?:led|ed|ing)?\b|cut(?:ting)?\b|exit(?:ed|ing)?\b|off\s+the\s+table|left\s+without\s+us|took\s+profit\s+and\s+clos)/i;
 // "risk free" / "move SL to entry / breakeven".
 const RE_BE =
   /\b(break\s*even|risk[-\s]?free)\b|\bmov\w+\b[^.\n]{0,40}\b(?:sl|stop|invalidation)\b[^.\n]{0,25}\b(?:entry|break\s*even|be)\b/i;

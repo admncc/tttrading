@@ -24,7 +24,9 @@ export async function reconcileOnce(): Promise<void> {
   // (shadow/test mode) are resolved by evaluateSimulated().
   // Skip trades a manual close/partial is actively working on (race guard).
   const open = tradesRepo.open().filter((t) => !t.simulated && !closing.has(t.id));
-  if (open.length === 0) return;
+  const working = tradesRepo.working().filter((t) => !t.simulated);
+  // Nothing to reconcile if there are neither open positions NOR working orders.
+  if (open.length === 0 && working.length === 0) return;
 
   let fills: FillLite[];
   try {
@@ -49,7 +51,7 @@ export async function reconcileOnce(): Promise<void> {
       log.error(`reconcile ${trade.symbol} (${trade.id}):`, err instanceof Error ? err.message : err);
     }
   }
-  await reconcileWorking(byOid);
+  await reconcileWorking(byOid, working);
   if (changed) pushStats();
 }
 
@@ -57,22 +59,61 @@ export async function reconcileOnce(): Promise<void> {
  * Live working (resting limit) orders: promote to a position when the entry
  * order fills, or cancel once the channel's limit timeout elapses.
  */
-async function reconcileWorking(byOid: Map<string, FillLite[]>): Promise<void> {
-  const working = tradesRepo.list(10000).filter((t) => t.status === "working" && !t.simulated);
+async function reconcileWorking(byOid: Map<string, FillLite[]>, working: Trade[]): Promise<void> {
+  if (working.length === 0) return;
+  // Resting order ids still open on the exchange (best-effort; empty on error).
+  let openOids: Set<string> | undefined;
+  try {
+    openOids = await hyperliquid.getOpenOrderIds();
+  } catch {
+    openOids = undefined;
+  }
+
   for (const t of working) {
+    if (closing.has(t.id)) continue;
     try {
       const fills = t.exchangeOrderId ? byOid.get(t.exchangeOrderId) ?? [] : [];
-      if (fills.length > 0) {
-        const size = fills.reduce((s, f) => s + f.size, 0);
+      const size = fills.reduce((s, f) => s + f.size, 0);
+      // Promote only once the cumulative fill covers (nearly) the full order —
+      // a partial fill would otherwise orphan the unfilled remainder.
+      if (size >= t.size * 0.999 && size > 0) {
         const notional = fills.reduce((s, f) => s + f.price * f.size, 0);
-        const avg = size > 0 ? notional / size : t.entryPrice;
-        await promoteWorkingToOpen(t.id, avg, size);
+        await promoteWorkingToOpen(t.id, notional / size, size);
         continue;
       }
+
+      // Timeout: 0 (or negative) means "never expire".
       const timeoutH = groupsRepo.get(t.groupId)?.settings.limitTimeoutHours ?? 168;
-      if (Date.now() - new Date(t.openedAt).getTime() > timeoutH * 3_600_000) {
-        await cancelWorkingTrade(t.id, `limit timeout (${timeoutH}h)`);
+      const expired = timeoutH > 0 && Date.now() - new Date(t.openedAt).getTime() > timeoutH * 3_600_000;
+
+      // If the order is no longer resting on the exchange but we saw no fill in
+      // the recent window (e.g. it filled during downtime), cross-check the
+      // account's positions and promote from there instead of orphaning it.
+      if (openOids && t.exchangeOrderId && !openOids.has(t.exchangeOrderId)) {
+        try {
+          const positions = await hyperliquid.getPositions();
+          const pos = positions.find(
+            (p) => p.symbol.toUpperCase() === t.symbol.toUpperCase() && p.size !== 0 &&
+              (t.side === "long" ? p.size > 0 : p.size < 0),
+          );
+          if (pos) {
+            await promoteWorkingToOpen(t.id, pos.entryPrice || t.entryPrice, Math.abs(pos.size));
+            continue;
+          }
+        } catch {
+          /* positions unavailable — fall through */
+        }
+        // Not resting and no matching position → the order is truly gone.
+        if (size > 0) {
+          const notional = fills.reduce((s, f) => s + f.price * f.size, 0);
+          await promoteWorkingToOpen(t.id, notional / size, size);
+        } else if (expired) {
+          await cancelWorkingTrade(t.id, `limit expired (not resting, no position)`);
+        }
+        continue;
       }
+
+      if (expired) await cancelWorkingTrade(t.id, `limit timeout (${timeoutH}h)`);
     } catch (err) {
       log.error(`working ${t.symbol} (${t.id}):`, err instanceof Error ? err.message : err);
     }
@@ -211,11 +252,12 @@ export async function evaluateSimulated(): Promise<void> {
 /** Simulated working (resting limit) orders: fill when the mid crosses the
  *  limit, or cancel after the channel's timeout. */
 async function evaluateWorkingSim(): Promise<void> {
-  const working = tradesRepo.list(10000).filter((t) => t.status === "working" && t.simulated);
+  const working = tradesRepo.working().filter((t) => t.simulated);
   for (const t of working) {
+    if (closing.has(t.id)) continue;
     try {
       const timeoutH = groupsRepo.get(t.groupId)?.settings.limitTimeoutHours ?? 168;
-      if (Date.now() - new Date(t.openedAt).getTime() > timeoutH * 3_600_000) {
+      if (timeoutH > 0 && Date.now() - new Date(t.openedAt).getTime() > timeoutH * 3_600_000) {
         await cancelWorkingTrade(t.id, `limit timeout (${timeoutH}h)`);
         continue;
       }
@@ -321,6 +363,8 @@ export function startMonitor(): void {
       try {
         await reconcileOnce();
         await evaluateSimulated();
+      } catch (err) {
+        log.error("monitor tick:", err instanceof Error ? err.message : err);
       } finally {
         ticking = false;
       }

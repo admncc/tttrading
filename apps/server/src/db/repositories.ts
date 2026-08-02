@@ -309,6 +309,20 @@ export const trades = {
       .all() as TradeRow[];
     return rows.map(toTrade);
   },
+  /** Resting limit entry orders (status='working'), newest first. */
+  working(): Trade[] {
+    const rows = db
+      .prepare("SELECT * FROM trades WHERE status = 'working' ORDER BY opened_at DESC")
+      .all() as TradeRow[];
+    return rows.map(toTrade);
+  },
+  /** Open positions + working orders (for exposure/limit checks). */
+  activeAndWorking(): Trade[] {
+    const rows = db
+      .prepare("SELECT * FROM trades WHERE status IN ('open','working') ORDER BY opened_at DESC")
+      .all() as TradeRow[];
+    return rows.map(toTrade);
+  },
   forGroup(groupId: string): Trade[] {
     const rows = db
       .prepare("SELECT * FROM trades WHERE group_id = ? ORDER BY opened_at DESC")

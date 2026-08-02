@@ -193,7 +193,7 @@ function GroupForm({
             }}
           />
           <span className="muted" style={{ fontSize: 11 }}>
-            cancel unfilled after this (default 168 = 7d)
+            cancel unfilled after this (default 168 = 7d; 0 = never)
           </span>
         </div>
         <div className="field">

@@ -100,7 +100,7 @@ export function Overview({
   let openUpnl = 0;
   let marked = 0;
   for (const t of openTrades) {
-    const mark = prices[t.symbol];
+    const mark = prices[t.symbol.toUpperCase()];
     if (mark && mark > 0) {
       const dir = t.side === "long" ? 1 : -1;
       openUpnl += (mark - t.entryPrice) * dir * t.size + ((t.bankedPnl ?? 0) - (t.bankedFees ?? 0));

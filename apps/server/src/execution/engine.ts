@@ -318,18 +318,36 @@ async function applyManagement(
       ? openForGroup
       : [];
 
+  // A "close" (retraction / invalidation) should also cancel a still-resting
+  // limit order for that symbol, so an abandoned setup can't fill later.
+  let canceledWorking = 0;
+  if (action.kind === "close" && sym) {
+    const workingForSym = tradesRepo
+      .working()
+      .filter((t) => t.groupId === group.id && t.symbol === sym && !t.shadow);
+    for (const w of workingForSym) {
+      await cancelWorkingTrade(w.id, `management: ${action.note}`);
+      canceledWorking++;
+    }
+  }
+
   if (targets.length === 0) {
     const signal = signalsRepo.create({
       groupId: group.id,
       groupName: group.name,
       rawText,
       status: "managed",
-      error: `${action.note} — no open ${sym ?? ""} position`.trim(),
+      error:
+        canceledWorking > 0
+          ? `${action.note} — canceled ${canceledWorking} working ${sym} order(s)`
+          : `${action.note} — no open ${sym ?? ""} position`.trim(),
     });
     event(
       "manage",
-      `Management (${action.note}) — no matching open position${sym ? ` for ${sym}` : ""}`,
-      { kind: action.kind },
+      canceledWorking > 0
+        ? `Canceled ${canceledWorking} working ${sym} order(s) (${action.note})`
+        : `Management (${action.note}) — no matching open position${sym ? ` for ${sym}` : ""}`,
+      { kind: action.kind, canceledWorking },
       { groupId: group.id, signalId: signal.id },
     );
     broadcast({ type: "signal", signal });
@@ -483,9 +501,7 @@ function preTradeGate(newNotional: number): string | null {
   if (g.tradingPaused) return "trading paused (kill-switch)";
 
   // Count open positions AND resting working orders (reserved capital).
-  const active = tradesRepo
-    .list(10000)
-    .filter((t) => (t.status === "open" || t.status === "working") && !t.shadow);
+  const active = tradesRepo.activeAndWorking().filter((t) => !t.shadow);
   if (g.maxOpenTrades > 0 && active.length >= g.maxOpenTrades) {
     return `max open trades reached (${active.length}/${g.maxOpenTrades})`;
   }
@@ -528,7 +544,7 @@ export async function closeAllTrades(): Promise<{ closed: number; canceled: numb
       log.error(`closeAll ${t.symbol}:`, err instanceof Error ? err.message : err);
     }
   }
-  const working = tradesRepo.list(10000).filter((t) => t.status === "working" && !t.shadow);
+  const working = tradesRepo.working().filter((t) => !t.shadow);
   let canceled = 0;
   for (const t of working) {
     try {
@@ -644,7 +660,7 @@ async function execute(
   try {
     const asset = await hyperliquid.getAsset(parsed.symbol);
     if (!asset) {
-      const reason = `Crypto NOT found: ${parsed.symbol} is not listed on Hyperliquid`;
+      const reason = `Crypto NOT found: ${parsed.symbol} is not listed on Hyperliquid ${config.tradingEnv} perps`;
       const failed = signalsRepo.update(signal.id, { status: "failed", error: reason })!;
       event(
         "exec",
@@ -755,11 +771,21 @@ async function recordFilledEntry(
     autoSplit: group.settings.autoSplitSingleTp,
     levels: group.settings.tpLevels,
   });
+  // Drop a stop-loss that sits on the wrong side of the actual fill — it would
+  // trigger instantly (a long's stop must be below the fill; a short's above).
+  let stopLoss = parsed.stopLoss;
+  if (stopLoss !== undefined) {
+    const wrongSide = parsed.side === "long" ? stopLoss >= fill.filledPrice : stopLoss <= fill.filledPrice;
+    if (wrongSide) {
+      event("exec", `Dropping SL ${stopLoss} — wrong side of fill ${fill.filledPrice} for ${parsed.side} ${parsed.symbol}`, { stopLoss, fill: fill.filledPrice }, { level: "warn", groupId: group.id, signalId: signal.id });
+      stopLoss = undefined;
+    }
+  }
   const bracket = await hyperliquid.placeBracketOrders({
     symbol: parsed.symbol,
     side: parsed.side,
     size: fill.filledSize,
-    stopLoss: parsed.stopLoss,
+    stopLoss,
     takeProfits,
     slippage: group.settings.maxSlippage,
   });
@@ -779,7 +805,7 @@ async function recordFilledEntry(
     notionalUsd,
     size: fill.filledSize,
     entryPrice: fill.filledPrice,
-    stopLoss: parsed.stopLoss,
+    stopLoss,
     takeProfits: takeProfits.length ? takeProfits : undefined,
     exchangeOrderId: fill.orderId,
     slOrderId: bracket.slOrderId,
@@ -817,11 +843,45 @@ async function executeLimit(
   risk: RiskRating | undefined,
   notionalUsd: number,
 ): Promise<Signal> {
+  const entry = parsed.entry!;
+
+  // Don't place a limit that would cross the market far beyond maxSlippage —
+  // that degenerates into an unbounded market sweep at a chased price.
+  try {
+    const mid = await hyperliquid.getMidPrice(parsed.symbol);
+    if (mid && mid > 0) {
+      const tol = group.settings.maxSlippage;
+      const crossesFar =
+        parsed.side === "long" ? entry > mid * (1 + tol) : entry < mid * (1 - tol);
+      if (crossesFar) {
+        const reason = `limit entry ${entry} too far past market ${mid} (would chase)`;
+        const failed = signalsRepo.update(signal.id, { status: "failed", error: reason })!;
+        event("exec", `SKIP limit ${parsed.side} ${parsed.symbol}: ${reason}`, { entry, mid }, { level: "warn", groupId: group.id, signalId: signal.id });
+        broadcast({ type: "signal", signal: failed });
+        return failed;
+      }
+    }
+  } catch {
+    /* no price feed — proceed */
+  }
+
+  // Dedup: don't stack a second resting order for the same symbol+side.
+  const dup = tradesRepo
+    .working()
+    .find((t) => t.groupId === group.id && t.symbol === parsed.symbol && t.side === parsed.side && !t.shadow);
+  if (dup) {
+    const reason = `duplicate: a working ${parsed.side} ${parsed.symbol} order already rests`;
+    const ignored = signalsRepo.update(signal.id, { status: "ignored", error: reason })!;
+    event("exec", `Skip duplicate working order ${parsed.symbol}`, { reason }, { level: "warn", groupId: group.id, signalId: signal.id });
+    broadcast({ type: "signal", signal: ignored });
+    return ignored;
+  }
+
   const res = await hyperliquid.placeLimitOrder({
     symbol: parsed.symbol,
     side: parsed.side,
     notionalUsd,
-    price: parsed.entry!,
+    price: entry,
     leverage: group.settings.leverage,
     marginMode: group.settings.marginMode,
   });
@@ -901,19 +961,31 @@ export async function promoteWorkingToOpen(
     const t = tradesRepo.get(tradeId);
     if (!t || t.status !== "working") return t;
     const size = filledSize > 0 ? filledSize : t.size;
+    const entryPrice = filledPrice > 0 ? filledPrice : t.entryPrice;
+    // Defensive: cancel any residual resting entry order so it can't fill again
+    // into an untracked position (real trades only).
+    if (!t.simulated && hyperliquid.live && t.exchangeOrderId) {
+      try {
+        await hyperliquid.cancelOrders(t.symbol, [t.exchangeOrderId]);
+      } catch {
+        /* best-effort */
+      }
+    }
+    const slippage = groupsRepo.get(t.groupId)?.settings.maxSlippage ?? 0.01;
     const bracket = await hyperliquid.placeBracketOrders({
       symbol: t.symbol,
       side: t.side,
       size,
       stopLoss: t.stopLoss,
       takeProfits: t.takeProfits ?? [],
-      slippage: 0.01,
-      force: true,
+      slippage,
+      force: !t.simulated, // real brackets only for a real position — never in test mode
     });
     const updated = tradesRepo.update(tradeId, {
       status: "open",
-      entryPrice: filledPrice > 0 ? filledPrice : t.entryPrice,
+      entryPrice,
       size,
+      notionalUsd: entryPrice * size, // reflect the ACTUAL filled notional
       slOrderId: bracket.slOrderId,
       tpOrderIds: bracket.tpOrderIds.length ? bracket.tpOrderIds : undefined,
       bracketProtected: bracket.protectedOnExchange,
@@ -930,22 +1002,28 @@ export async function promoteWorkingToOpen(
   }
 }
 
-/** Cancel an expired/aborted working limit order. */
+/** Cancel an expired/aborted working limit order. Guarded against a concurrent promote. */
 export async function cancelWorkingTrade(tradeId: string, reason: string): Promise<void> {
-  const t = tradesRepo.get(tradeId);
-  if (!t || t.status !== "working") return;
-  if (!t.simulated && hyperliquid.live && t.exchangeOrderId) {
-    try {
-      await hyperliquid.cancelOrders(t.symbol, [t.exchangeOrderId]);
-    } catch (err) {
-      log.warn(`cancelWorking ${t.symbol}:`, err instanceof Error ? err.message : err);
+  if (closing.has(tradeId)) return; // a promote/close is in flight — don't clobber it
+  closing.add(tradeId);
+  try {
+    const t = tradesRepo.get(tradeId);
+    if (!t || t.status !== "working") return; // re-checked under the guard
+    if (!t.simulated && hyperliquid.live && t.exchangeOrderId) {
+      try {
+        await hyperliquid.cancelOrders(t.symbol, [t.exchangeOrderId]);
+      } catch (err) {
+        log.warn(`cancelWorking ${t.symbol}:`, err instanceof Error ? err.message : err);
+      }
     }
-  }
-  const updated = tradesRepo.update(tradeId, { status: "canceled", error: reason });
-  if (updated) {
-    event("exec", `Working order canceled (${reason}) ${t.side} ${t.symbol}`, { tradeId }, { level: "warn", groupId: t.groupId });
-    broadcast({ type: "trade", trade: updated });
-    pushStats();
+    const updated = tradesRepo.update(tradeId, { status: "canceled", error: reason });
+    if (updated) {
+      event("exec", `Working order canceled (${reason}) ${t.side} ${t.symbol}`, { tradeId }, { level: "warn", groupId: t.groupId });
+      broadcast({ type: "trade", trade: updated });
+      pushStats();
+    }
+  } finally {
+    closing.delete(tradeId);
   }
 }
 
@@ -973,7 +1051,7 @@ export async function placeTestOrder(params: {
 
   try {
     const asset = await hyperliquid.getAsset(symbol);
-    if (!asset) return { ok: false, error: `Crypto NOT found: ${symbol} is not listed on Hyperliquid` };
+    if (!asset) return { ok: false, error: `Crypto NOT found: ${symbol} is not listed on Hyperliquid ${config.tradingEnv} perps` };
   } catch {
     /* metadata unavailable — let the order path surface any error */
   }

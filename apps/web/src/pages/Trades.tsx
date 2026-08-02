@@ -149,15 +149,15 @@ export function Trades({
                     )}
                   </td>
                   <td className="muted">
-                    {t.status === "open" && prices[t.symbol] ? num(prices[t.symbol]) : "—"}
+                    {t.status === "open" && prices[t.symbol.toUpperCase()] ? num(prices[t.symbol.toUpperCase()]) : "—"}
                   </td>
                   <td>{t.exitPrice !== undefined ? num(t.exitPrice) : "—"}</td>
-                  <td className={pnlClass(t.realizedPnl ?? unrealized(t, prices[t.symbol]) ?? netBanked(t))}>
+                  <td className={pnlClass(t.realizedPnl ?? unrealized(t, prices[t.symbol.toUpperCase()]) ?? netBanked(t))}>
                     {t.realizedPnl !== undefined ? (
                       usd(t.realizedPnl)
-                    ) : unrealized(t, prices[t.symbol]) !== undefined ? (
+                    ) : unrealized(t, prices[t.symbol.toUpperCase()]) !== undefined ? (
                       <span title="Live unrealized PnL (incl. banked partials)">
-                        {usd(unrealized(t, prices[t.symbol])!)}
+                        {usd(unrealized(t, prices[t.symbol.toUpperCase()])!)}
                         <span className="muted" style={{ fontSize: 11 }}> uPnL</span>
                       </span>
                     ) : netBanked(t) !== undefined ? (

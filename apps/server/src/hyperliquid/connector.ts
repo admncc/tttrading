@@ -151,6 +151,16 @@ export class HyperliquidConnector {
     return this.assets.get(symbol.toUpperCase());
   }
 
+  /** Set of resting order ids (as strings) for the configured account. */
+  async getOpenOrderIds(): Promise<Set<string>> {
+    const addr = this.publicAddress();
+    if (!addr) return new Set();
+    const orders = (await this.info.openOrders({ user: addr as `0x${string}` })) as unknown as {
+      oid: number;
+    }[];
+    return new Set(orders.map((o) => String(o.oid)));
+  }
+
   /** Current mid price for a symbol. */
   async getMidPrice(symbol: string): Promise<number | undefined> {
     const mids = (await this.info.allMids()) as unknown as Record<string, string>;
@@ -403,7 +413,8 @@ export class HyperliquidConnector {
 
     const size = roundSize(req.notionalUsd / req.price, asset.szDecimals);
     if (size <= 0) return { ok: false, size: 0, simulated: sim, error: "Computed size is 0" };
-    const limitPx = roundPx(req.price, asset.szDecimals);
+    // Round conservatively so the resting price never drifts toward the market.
+    const limitPx = roundLimitPx(req.price, asset.szDecimals, req.side);
     if (size * limitPx < 10) {
       return { ok: false, size: 0, simulated: sim, error: `Order value ${(size * limitPx).toFixed(2)} below Hyperliquid's $10 minimum` };
     }
@@ -427,7 +438,17 @@ export class HyperliquidConnector {
           const fp = Number(s.filled.avgPx);
           const fs = Number(s.filled.totalSz);
           if (!Number.isFinite(fp) || fp <= 0) return { ok: false, size: 0, simulated: false, error: "malformed fill response" };
-          return { ok: true, status: "filled", orderId: String(s.filled.oid), filledPrice: fp, size: Number.isFinite(fs) && fs > 0 ? fs : size, simulated: false };
+          const filledSize = Number.isFinite(fs) && fs > 0 ? fs : size;
+          // A partial immediate cross rests the remainder under the same oid —
+          // cancel it so no untracked, unprotected residual position can appear.
+          if (filledSize < size * 0.999) {
+            try {
+              await this.cancelOrders(req.symbol, [String(s.filled.oid)]);
+            } catch {
+              /* best-effort */
+            }
+          }
+          return { ok: true, status: "filled", orderId: String(s.filled.oid), filledPrice: fp, size: filledSize, simulated: false };
         }
         if ("error" in s) return { ok: false, size: 0, simulated: false, error: s.error };
       }
@@ -681,6 +702,21 @@ export function roundPx(px: number, szDecimals: number): number {
   const sig = Number(px.toPrecision(5));
   const factor = 10 ** maxDecimals;
   return Math.round(sig * factor) / factor;
+}
+
+/**
+ * Round a RESTING limit entry price conservatively so tick-rounding never nudges
+ * it toward/through the market: floor for a buy, ceil for a sell.
+ */
+export function roundLimitPx(px: number, szDecimals: number, side: TradeSide): number {
+  if (px <= 0) return px;
+  if (px >= 100000) return side === "long" ? Math.floor(px) : Math.ceil(px);
+  const maxDecimals = Math.max(0, 6 - szDecimals);
+  const sig = Number(px.toPrecision(5));
+  const factor = 10 ** maxDecimals;
+  return side === "long"
+    ? Math.floor(sig * factor) / factor
+    : Math.ceil(sig * factor) / factor;
 }
 
 export const hyperliquid = new HyperliquidConnector();
