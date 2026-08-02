@@ -358,15 +358,17 @@ export async function buildServer() {
     };
     if (!base.address) return { ...base, positions: [] };
     try {
-      const [summary, positions] = await Promise.all([
+      const [summary, positions, spotUsdc] = await Promise.all([
         hyperliquid.getAccountSummary(),
         hyperliquid.getPositions(),
+        hyperliquid.getSpotUsdc().catch(() => null),
       ]);
       return {
         ...base,
         accountValue: summary?.accountValue,
         withdrawable: summary?.withdrawable,
         totalMarginUsed: summary?.totalMarginUsed,
+        spotUsdc: spotUsdc ?? undefined,
         positions,
       };
     } catch (err) {

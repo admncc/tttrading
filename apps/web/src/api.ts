@@ -17,6 +17,7 @@ export interface AccountInfo {
   accountValue?: number;
   withdrawable?: number;
   totalMarginUsed?: number;
+  spotUsdc?: number;
   positions: {
     symbol: string;
     size: number;

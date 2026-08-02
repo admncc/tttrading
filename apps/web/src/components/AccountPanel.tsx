@@ -53,12 +53,12 @@ export function AccountPanel() {
               </div>
             </div>
             <div className="kpi">
-              <div className="label">Account value</div>
+              <div className="label">Perps equity</div>
               <div className="value">{a.accountValue !== undefined ? usd(a.accountValue) : "—"}</div>
             </div>
             <div className="kpi">
-              <div className="label">Withdrawable</div>
-              <div className="value">{a.withdrawable !== undefined ? usd(a.withdrawable) : "—"}</div>
+              <div className="label">Spot / unified USDC</div>
+              <div className="value">{a.spotUsdc !== undefined ? usd(a.spotUsdc) : "—"}</div>
             </div>
             <div className="kpi">
               <div className="label">Margin used</div>

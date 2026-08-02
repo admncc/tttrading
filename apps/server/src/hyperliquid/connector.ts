@@ -201,6 +201,17 @@ export class HyperliquidConnector {
     };
   }
 
+  /** Spot USDC balance (the unified/spot wallet) for the configured account. */
+  async getSpotUsdc(): Promise<number | null> {
+    const address = this.publicAddress();
+    if (!address) return null;
+    const state = (await this.info.spotClearinghouseState({
+      user: address as `0x${string}`,
+    })) as unknown as { balances?: { coin: string; total?: string }[] };
+    const usdc = state.balances?.find((b) => b.coin?.toUpperCase() === "USDC");
+    return usdc ? Number(usdc.total ?? 0) : 0;
+  }
+
   private async setLeverage(
     asset: AssetInfo,
     leverage: number,
