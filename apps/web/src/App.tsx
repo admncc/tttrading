@@ -35,6 +35,7 @@ export function App() {
   const [signals, setSignals] = useState<Signal[]>([]);
   const [trades, setTrades] = useState<Trade[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [prices, setPrices] = useState<Record<string, number>>({});
 
   const reloadLogs = useCallback(() => {
     api.logs(500).then(setLogs).catch(() => {});
@@ -71,18 +72,20 @@ export function App() {
   };
 
   const refresh = useCallback(async () => {
-    const [h, s, g, sig, t] = await Promise.all([
+    const [h, s, g, sig, t, p] = await Promise.all([
       api.health().catch(() => null),
       api.stats().catch(() => null),
       api.groups().catch(() => []),
       api.signals().catch(() => []),
       api.trades().catch(() => []),
+      api.prices().catch(() => ({})),
     ]);
     if (h) setHealth({ env: h.env, live: h.live, shadowMode: h.shadowMode, tradingPaused: h.tradingPaused });
     if (s) setStats(s);
     setGroups(g);
     setSignals(sig);
     setTrades(t);
+    setPrices(p);
   }, []);
 
   // Determine auth state on mount, then load data if we're in.
@@ -177,6 +180,9 @@ export function App() {
         case "log":
           setLogs((prev) => [e.entry, ...prev].slice(0, 800));
           break;
+        case "prices":
+          setPrices(e.prices);
+          break;
       }
     }, () => {
       // On (re)connect, re-sync full state — events missed while the socket was
@@ -268,7 +274,7 @@ export function App() {
             positions still run. Resume under Overview → Risk &amp; safety.
           </div>
         )}
-        {tab === "overview" && <Overview stats={stats} signals={signals} trades={trades} />}
+        {tab === "overview" && <Overview stats={stats} signals={signals} trades={trades} prices={prices} />}
         {tab === "analytics" && <Analytics />}
         {tab === "signals" && (
           <Signals signals={signals} groups={groups} onChange={refresh} />
@@ -276,7 +282,7 @@ export function App() {
         {tab === "messages" && (
           <Messages signals={signals} groups={groups} onChange={refresh} />
         )}
-        {tab === "trades" && <Trades trades={trades} onChange={refresh} />}
+        {tab === "trades" && <Trades trades={trades} prices={prices} onChange={refresh} />}
         {tab === "groups" && <Groups groups={groups} onChange={refresh} />}
         {tab === "logs" && <Logs logs={logs} onReload={reloadLogs} />}
       </main>

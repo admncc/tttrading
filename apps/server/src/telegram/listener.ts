@@ -72,7 +72,7 @@ export function getListenerHealth(): ListenerHealth {
 }
 
 /** How often the catch-up poller sweeps each channel for missed messages. */
-const POLL_INTERVAL_MS = 60_000;
+const POLL_INTERVAL_MS = 30_000;
 /** How many recent messages to fetch per channel per poll / prime. */
 const POLL_LIMIT = 30;
 /** Max messages to page back per group per cycle when covering a gap. */

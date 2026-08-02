@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type TelegramHealth } from "../api.js";
-import { timeAgo } from "../format.js";
+import { timeAgo, dateTimeSec } from "../format.js";
 
 /** Is the given ISO timestamp within `maxMs` of now? */
 function fresh(iso: string | null | undefined, maxMs: number): boolean {
@@ -16,9 +16,9 @@ export function ListenerHealth() {
     let alive = true;
     const load = () => api.telegramHealth().then((d) => alive && setH(d)).catch(() => {});
     void load();
-    const poll = setInterval(load, 30_000);
-    // Re-render every 20s so the relative "ago" labels stay current.
-    const tick = setInterval(() => setTick((t) => t + 1), 20_000);
+    const poll = setInterval(load, 10_000);
+    // Re-render every 10s so the relative "ago" labels stay current.
+    const tick = setInterval(() => setTick((t) => t + 1), 10_000);
     return () => {
       alive = false;
       clearInterval(poll);
@@ -56,7 +56,9 @@ export function ListenerHealth() {
           {statusText}
           <span className="muted">
             {" · "}poll every {h.pollIntervalSec}s
-            {h.lastPollCycleAt ? ` · last sweep ${timeAgo(h.lastPollCycleAt)}` : ""}
+            {h.lastPollCycleAt
+              ? ` · last sweep ${dateTimeSec(h.lastPollCycleAt)} (${timeAgo(h.lastPollCycleAt)})`
+              : ""}
           </span>
         </span>
       </div>
@@ -77,8 +79,12 @@ export function ListenerHealth() {
                 <td>
                   {g.name} <span className="muted">{g.channel}</span>
                 </td>
-                <td className="muted">{g.lastMessageAt ? timeAgo(g.lastMessageAt) : "—"}</td>
-                <td className="muted">{g.lastPolledAt ? timeAgo(g.lastPolledAt) : "—"}</td>
+                <td className="muted" title={g.lastMessageAt ? dateTimeSec(g.lastMessageAt) : ""}>
+                  {g.lastMessageAt ? timeAgo(g.lastMessageAt) : "—"}
+                </td>
+                <td className="muted" title={g.lastPolledAt ? timeAgo(g.lastPolledAt) : ""}>
+                  {g.lastPolledAt ? dateTimeSec(g.lastPolledAt) : "—"}
+                </td>
                 <td>{g.recoveredCount > 0 ? g.recoveredCount : <span className="muted">0</span>}</td>
                 <td>
                   {g.lastError ? (

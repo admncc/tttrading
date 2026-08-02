@@ -158,6 +158,17 @@ export class HyperliquidConnector {
     return raw ? Number(raw) : undefined;
   }
 
+  /** All current mid prices, symbol -> price (finite values only). */
+  async getAllMids(): Promise<Record<string, number>> {
+    const mids = (await this.info.allMids()) as unknown as Record<string, string>;
+    const out: Record<string, number> = {};
+    for (const [sym, raw] of Object.entries(mids)) {
+      const n = Number(raw);
+      if (Number.isFinite(n) && n > 0) out[sym.toUpperCase()] = n;
+    }
+    return out;
+  }
+
   /** Open positions for the configured account. */
   async getPositions(): Promise<Position[]> {
     if (!this.live && !config.hyperliquid.accountAddress) return [];

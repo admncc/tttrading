@@ -82,13 +82,28 @@ export function Overview({
   stats,
   signals,
   trades,
+  prices,
 }: {
   stats: DashboardStats | null;
   signals: Signal[];
   trades: Trade[];
+  prices: Record<string, number>;
 }) {
   if (!stats) return <div className="empty">Loading…</div>;
   const o = stats.overall;
+
+  // Live unrealized PnL across open (non-shadow) trades from current marks.
+  const openTrades = trades.filter((t) => t.status === "open" && !t.shadow);
+  let openUpnl = 0;
+  let marked = 0;
+  for (const t of openTrades) {
+    const mark = prices[t.symbol];
+    if (mark && mark > 0) {
+      const dir = t.side === "long" ? 1 : -1;
+      openUpnl += (mark - t.entryPrice) * dir * t.size + ((t.bankedPnl ?? 0) - (t.bankedFees ?? 0));
+      marked++;
+    }
+  }
 
   // Latest 10 messages across all channels (signals arrive newest-first).
   const feed = [...signals]
@@ -117,6 +132,11 @@ export function Overview({
         <Kpi label="Win Rate" value={pct(o.winRate)} />
         <Kpi label="Trades" value={String(o.trades)} />
         <Kpi label="Open" value={String(o.openTrades)} />
+        <Kpi
+          label="Open uPnL"
+          value={marked > 0 ? usd(openUpnl) : "—"}
+          cls={marked > 0 ? pnlClass(openUpnl) : ""}
+        />
         <Kpi
           label="Profit Factor"
           value={Number.isNaN(o.profitFactor) ? "—" : Number.isFinite(o.profitFactor) ? o.profitFactor.toFixed(2) : "∞"}

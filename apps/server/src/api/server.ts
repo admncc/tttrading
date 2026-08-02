@@ -31,6 +31,7 @@ import {
 import { reconcileOnce, evaluateSimulated } from "../execution/monitor.js";
 import { backfillAll, backfillGroup } from "../telegram/backfill.js";
 import { getListenerHealth } from "../telegram/listener.js";
+import { getPrices } from "../market/ticker.js";
 import { backtestGroup } from "../backtest/engine.js";
 import { suggestChannelInstructions } from "../signals/llm.js";
 import { exportAllText, exportGroupText, safeFilename } from "../export/text.js";
@@ -472,6 +473,9 @@ export async function buildServer() {
       return res.trade;
     },
   );
+
+  // Latest mark prices for open-trade symbols (for live unrealized PnL).
+  app.get("/api/prices", async () => getPrices());
 
   app.get("/api/positions", async () => {
     try {

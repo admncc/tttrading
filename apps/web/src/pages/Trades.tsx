@@ -12,7 +12,22 @@ function netBanked(t: Trade): number | undefined {
   return (t.bankedPnl ?? 0) - (t.bankedFees ?? 0);
 }
 
-export function Trades({ trades, onChange }: { trades: Trade[]; onChange: () => void }) {
+/** Live unrealized PnL for an open trade from the current mark price. */
+function unrealized(t: Trade, mark: number | undefined): number | undefined {
+  if (t.status !== "open" || !mark || mark <= 0) return undefined;
+  const dir = t.side === "long" ? 1 : -1;
+  return (mark - t.entryPrice) * dir * t.size + (netBanked(t) ?? 0);
+}
+
+export function Trades({
+  trades,
+  prices,
+  onChange,
+}: {
+  trades: Trade[];
+  prices: Record<string, number>;
+  onChange: () => void;
+}) {
   const [filter, setFilter] = useState<Filter>("all");
   const [busyId, setBusyId] = useState<string | null>(null);
 
@@ -66,6 +81,7 @@ export function Trades({ trades, onChange }: { trades: Trade[]; onChange: () => 
                 <th>Size</th>
                 <th>Entry</th>
                 <th>SL / TP</th>
+                <th>Mark</th>
                 <th>Exit</th>
                 <th>PnL</th>
                 <th>Status</th>
@@ -132,10 +148,18 @@ export function Trades({ trades, onChange }: { trades: Trade[]; onChange: () => 
                       </span>
                     )}
                   </td>
+                  <td className="muted">
+                    {t.status === "open" && prices[t.symbol] ? num(prices[t.symbol]) : "—"}
+                  </td>
                   <td>{t.exitPrice !== undefined ? num(t.exitPrice) : "—"}</td>
-                  <td className={pnlClass(t.realizedPnl ?? netBanked(t))}>
+                  <td className={pnlClass(t.realizedPnl ?? unrealized(t, prices[t.symbol]) ?? netBanked(t))}>
                     {t.realizedPnl !== undefined ? (
                       usd(t.realizedPnl)
+                    ) : unrealized(t, prices[t.symbol]) !== undefined ? (
+                      <span title="Live unrealized PnL (incl. banked partials)">
+                        {usd(unrealized(t, prices[t.symbol])!)}
+                        <span className="muted" style={{ fontSize: 11 }}> uPnL</span>
+                      </span>
                     ) : netBanked(t) !== undefined ? (
                       <span title="Realized so far from partial exits (position still open)">
                         {usd(netBanked(t)!)}
@@ -159,7 +183,7 @@ export function Trades({ trades, onChange }: { trades: Trade[]; onChange: () => 
               ))}
               {shown.length === 0 && (
                 <tr>
-                  <td colSpan={14} className="empty">
+                  <td colSpan={15} className="empty">
                     No trades.
                   </td>
                 </tr>

@@ -29,6 +29,17 @@ export function timeAgo(iso: string): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
+/** Full local date + time to the second, e.g. "Aug 2, 14:03:07". */
+export function dateTimeSec(iso: string): string {
+  return new Date(iso).toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
 export function shortTime(iso: string): string {
   return new Date(iso).toLocaleString([], {
     month: "short",

@@ -153,6 +153,7 @@ export const api = {
 
   telegramHealth: () => req<TelegramHealth>("/api/telegram/health"),
   account: () => req<AccountInfo>("/api/account"),
+  prices: () => req<Record<string, number>>("/api/prices"),
   sendReport: (period: "daily" | "weekly") =>
     req<{ ok: boolean; period: string }>(`/api/report/send?period=${period}`, { method: "POST" }),
   analytics: (opts: { from?: string; to?: string; includeShadow?: boolean } = {}) => {

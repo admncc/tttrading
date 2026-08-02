@@ -52,6 +52,9 @@ export const config = {
   /** How often the reconciliation monitor polls the exchange (live only). */
   monitorIntervalMs: num(process.env.MONITOR_INTERVAL_MS, 15000),
 
+  /** How often to pull mark prices for open trades (live unrealized PnL). */
+  priceTickerMs: num(process.env.PRICE_TICKER_MS, 300000),
+
   hyperliquid: {
     /** Private key of the Hyperliquid API/agent wallet (0x...). */
     privateKey: process.env.HL_PRIVATE_KEY || "",

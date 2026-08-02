@@ -342,7 +342,8 @@ export type WsEvent =
   | { type: "group"; group: Group }
   | { type: "settings"; settings: GlobalSettings }
   | { type: "stats"; stats: DashboardStats }
-  | { type: "log"; entry: LogEntry };
+  | { type: "log"; entry: LogEntry }
+  | { type: "prices"; prices: Record<string, number> };
 
 /** Payload to create/update a group from the desk. */
 export interface GroupInput {
