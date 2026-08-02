@@ -1,7 +1,12 @@
 import type { Group, ParsedSignal, RiskRating, Signal, Trade, TradeSide } from "@tttrading/shared";
 import { config } from "../config.js";
 import { log, event } from "../logger.js";
-import { groups as groupsRepo, signals as signalsRepo, trades as tradesRepo } from "../db/repositories.js";
+import {
+  groups as groupsRepo,
+  signals as signalsRepo,
+  trades as tradesRepo,
+  settings as settingsRepo,
+} from "../db/repositories.js";
 import { hyperliquid } from "../hyperliquid/connector.js";
 import { parseSignal } from "../signals/parser.js";
 import { classifyManagement, type ManagementAction } from "../signals/management.js";
@@ -439,6 +444,62 @@ export function rejectSignal(signalId: string): Signal | undefined {
   return updated;
 }
 
+/**
+ * Global risk gate applied before any new entry: kill-switch pause, max open
+ * trades, max total exposure, and daily loss limit. Returns a block reason or
+ * null when the trade may proceed.
+ */
+function preTradeGate(newNotional: number): string | null {
+  const g = settingsRepo.getGlobalSettings();
+  if (g.tradingPaused) return "trading paused (kill-switch)";
+
+  const open = tradesRepo.open().filter((t) => !t.shadow);
+  if (g.maxOpenTrades > 0 && open.length >= g.maxOpenTrades) {
+    return `max open trades reached (${open.length}/${g.maxOpenTrades})`;
+  }
+  if (g.maxExposureUsd > 0) {
+    const exposure = open.reduce((s, t) => s + t.notionalUsd, 0);
+    if (exposure + newNotional > g.maxExposureUsd) {
+      return `max exposure would be exceeded (${(exposure + newNotional).toFixed(0)} > ${g.maxExposureUsd})`;
+    }
+  }
+  if (g.dailyLossLimitUsd > 0) {
+    const start = new Date();
+    start.setUTCHours(0, 0, 0, 0);
+    const iso = start.toISOString();
+    const todayPnl = tradesRepo
+      .list(10000)
+      .filter(
+        (t) =>
+          !t.shadow &&
+          t.status === "closed" &&
+          (t.closedAt ?? "") >= iso &&
+          Number.isFinite(t.realizedPnl),
+      )
+      .reduce((s, t) => s + (t.realizedPnl as number), 0);
+    if (todayPnl <= -g.dailyLossLimitUsd) {
+      return `daily loss limit hit (${todayPnl.toFixed(2)} today, limit −${g.dailyLossLimitUsd})`;
+    }
+  }
+  return null;
+}
+
+/** Close every open (non-shadow) trade — used by the kill-switch. */
+export async function closeAllTrades(): Promise<{ closed: number }> {
+  const open = tradesRepo.open().filter((t) => !t.shadow);
+  let closed = 0;
+  for (const t of open) {
+    try {
+      const r = await closeTrade(t.id);
+      if (r?.status === "closed") closed++;
+    } catch (err) {
+      log.error(`closeAll ${t.symbol}:`, err instanceof Error ? err.message : err);
+    }
+  }
+  event("exec", `Kill-switch: closed ${closed}/${open.length} open trades`, { closed }, { level: "warn" });
+  return { closed };
+}
+
 /** Place the order for a signal and record the resulting trade. */
 async function execute(
   signal: Signal,
@@ -447,6 +508,19 @@ async function execute(
   risk?: RiskRating,
 ): Promise<Signal> {
   const { leverage, tradeSizeUsd, marginMode, maxSlippage } = group.settings;
+
+  // Global risk gate (kill-switch / limits) — applies to every new entry.
+  const block = preTradeGate(tradeSizeUsd);
+  if (block) {
+    const ignored = signalsRepo.update(signal.id, { status: "ignored", error: block })!;
+    event("exec", `Entry blocked (${block}) for ${parsed.symbol}`, { reason: block }, {
+      level: "warn",
+      groupId: group.id,
+      signalId: signal.id,
+    });
+    broadcast({ type: "signal", signal: ignored });
+    return ignored;
+  }
 
   // Guard: the symbol must exist on the exchange. Some tickers a channel posts
   // aren't listed on Hyperliquid — record FAILED (Crypto NOT found) rather than

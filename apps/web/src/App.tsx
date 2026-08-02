@@ -24,9 +24,12 @@ const TABS: { id: Tab; label: string }[] = [
 
 export function App() {
   const [tab, setTab] = useState<Tab>("overview");
-  const [health, setHealth] = useState<{ env: string; live: boolean; shadowMode: boolean } | null>(
-    null,
-  );
+  const [health, setHealth] = useState<{
+    env: string;
+    live: boolean;
+    shadowMode: boolean;
+    tradingPaused?: boolean;
+  } | null>(null);
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [groups, setGroups] = useState<Group[]>([]);
   const [signals, setSignals] = useState<Signal[]>([]);
@@ -75,7 +78,7 @@ export function App() {
       api.signals().catch(() => []),
       api.trades().catch(() => []),
     ]);
-    if (h) setHealth({ env: h.env, live: h.live, shadowMode: h.shadowMode });
+    if (h) setHealth({ env: h.env, live: h.live, shadowMode: h.shadowMode, tradingPaused: h.tradingPaused });
     if (s) setStats(s);
     setGroups(g);
     setSignals(sig);
@@ -88,7 +91,7 @@ export function App() {
     void (async () => {
       const h = await api.health().catch(() => null);
       if (h) {
-        setHealth({ env: h.env, live: h.live, shadowMode: h.shadowMode });
+        setHealth({ env: h.env, live: h.live, shadowMode: h.shadowMode, tradingPaused: h.tradingPaused });
         setUpdateEnabled(h.updateEnabled);
       }
       if (h && !h.authRequired) {
@@ -121,7 +124,7 @@ export function App() {
       );
       if (!ok) return;
     }
-    const res = await api.updateSettings(!health.shadowMode);
+    const res = await api.updateSettings({ shadowMode: !health.shadowMode });
     setHealth((h) => (h ? { ...h, shadowMode: res.shadowMode } : h));
   };
 
@@ -167,7 +170,9 @@ export function App() {
           });
           break;
         case "settings":
-          setHealth((h) => (h ? { ...h, shadowMode: e.settings.shadowMode } : h));
+          setHealth((h) =>
+            h ? { ...h, shadowMode: e.settings.shadowMode, tradingPaused: e.settings.tradingPaused } : h,
+          );
           break;
         case "log":
           setLogs((prev) => [e.entry, ...prev].slice(0, 800));
@@ -255,6 +260,12 @@ export function App() {
           <div className="test-banner">
             🧪 <strong>TEST MODE</strong> — signals are processed and simulated at live prices, but
             <strong> no real orders</strong> are sent. Flip “Go live” in the sidebar when you're ready.
+          </div>
+        )}
+        {health?.tradingPaused && (
+          <div className="test-banner" style={{ borderColor: "rgba(239,68,68,0.4)", color: "#ef4444", background: "rgba(239,68,68,0.1)" }}>
+            ⏸ <strong>TRADING PAUSED</strong> — no new entries are opened (kill-switch). Existing
+            positions still run. Resume under Overview → Risk &amp; safety.
           </div>
         )}
         {tab === "overview" && <Overview stats={stats} signals={signals} trades={trades} />}

@@ -500,6 +500,29 @@ export const settings = {
   setShadowMode(on: boolean): void {
     kvSet("shadowMode", on ? "true" : "false");
   },
+  /** Kill-switch: block new entries while existing trades keep running. */
+  getTradingPaused(): boolean {
+    return kvGet("tradingPaused") === "true";
+  },
+  setTradingPaused(on: boolean): void {
+    kvSet("tradingPaused", on ? "true" : "false");
+  },
+  getRiskLimit(key: "dailyLossLimitUsd" | "maxOpenTrades" | "maxExposureUsd"): number {
+    const v = Number(kvGet(key));
+    return Number.isFinite(v) && v > 0 ? v : 0;
+  },
+  setRiskLimit(key: "dailyLossLimitUsd" | "maxOpenTrades" | "maxExposureUsd", value: number): void {
+    kvSet(key, String(Number.isFinite(value) && value > 0 ? value : 0));
+  },
+  getGlobalSettings(): import("@tttrading/shared").GlobalSettings {
+    return {
+      shadowMode: this.getShadowMode(),
+      tradingPaused: this.getTradingPaused(),
+      dailyLossLimitUsd: this.getRiskLimit("dailyLossLimitUsd"),
+      maxOpenTrades: this.getRiskLimit("maxOpenTrades"),
+      maxExposureUsd: this.getRiskLimit("maxExposureUsd"),
+    };
+  },
   /** Anthropic API key set via the desk (empty string => not set). */
   getAnthropicKey(): string {
     return kvGet("anthropicKey") ?? "";

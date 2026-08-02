@@ -77,6 +77,14 @@ export interface GlobalSettings {
    * TRADING_ENV or a configured key. Turn off only when you're ready to go live.
    */
   shadowMode: boolean;
+  /** Kill-switch: when true, NO new entries are opened (existing trades run). */
+  tradingPaused: boolean;
+  /** Auto-pause new entries once realized PnL today is below −this. 0 = off. */
+  dailyLossLimitUsd: number;
+  /** Refuse new entries when this many trades are already open. 0 = off. */
+  maxOpenTrades: number;
+  /** Refuse new entries when open notional would exceed this. 0 = off. */
+  maxExposureUsd: number;
 }
 
 /** Traffic-light risk classification. */

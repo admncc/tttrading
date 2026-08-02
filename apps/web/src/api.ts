@@ -93,21 +93,41 @@ export const api = {
       env: string;
       live: boolean;
       shadowMode: boolean;
+      tradingPaused: boolean;
       authRequired: boolean;
       updateEnabled: boolean;
     }>("/api/health"),
   getSettings: () =>
     req<{
       shadowMode: boolean;
+      tradingPaused: boolean;
+      dailyLossLimitUsd: number;
+      maxOpenTrades: number;
+      maxExposureUsd: number;
       anthropicConfigured: boolean;
       anthropicKeySource: string;
       anthropicModel: string;
     }>("/api/settings"),
-  updateSettings: (shadowMode: boolean) =>
+  updateSettings: (patch: {
+    shadowMode?: boolean;
+    tradingPaused?: boolean;
+    dailyLossLimitUsd?: number;
+    maxOpenTrades?: number;
+    maxExposureUsd?: number;
+  }) =>
     req<{ shadowMode: boolean }>("/api/settings", {
       method: "PUT",
-      body: JSON.stringify({ shadowMode }),
+      body: JSON.stringify(patch),
     }),
+  killSwitch: () => req<{ ok: boolean; closed: number }>("/api/kill", { method: "POST" }),
+  readiness: () =>
+    req<{
+      env: string;
+      accountValue?: number;
+      ready: boolean;
+      checks: { key: string; ok: boolean; label: string }[];
+    }>("/api/readiness"),
+  downloadBackup: () => downloadFile("/api/backup", "tttrading-backup.sqlite"),
   saveAnthropic: (anthropicKey: string | undefined, anthropicModel: string | undefined) =>
     req<{ anthropicConfigured: boolean; anthropicModel: string }>("/api/settings", {
       method: "PUT",

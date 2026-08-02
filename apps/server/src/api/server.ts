@@ -20,6 +20,7 @@ import { dashboard, analytics } from "../stats/service.js";
 import { sendReport } from "../alerts/report.js";
 import { hyperliquid } from "../hyperliquid/connector.js";
 import {
+  closeAllTrades,
   closeTrade,
   confirmSignal,
   placeTestOrder,
@@ -126,6 +127,7 @@ export async function buildServer() {
     env: config.tradingEnv,
     live: hyperliquid.live,
     shadowMode: settingsRepo.getShadowMode(),
+    tradingPaused: settingsRepo.getTradingPaused(),
     authRequired: authEnabled,
     updateEnabled: config.selfUpdate.enabled,
     time: new Date().toISOString(),
@@ -144,38 +146,93 @@ export async function buildServer() {
   });
 
   /* -------------------------- global settings ------------------------- */
-  app.get("/api/settings", async () => ({
-    shadowMode: settingsRepo.getShadowMode(),
+  const settingsPayload = () => ({
+    ...settingsRepo.getGlobalSettings(),
     // Never expose the key itself — only whether one is configured (desk or env).
     anthropicConfigured: !!(settingsRepo.getAnthropicKey() || config.anthropic.apiKey),
     anthropicKeySource: settingsRepo.getAnthropicKey() ? "desk" : config.anthropic.apiKey ? "env" : "none",
     anthropicModel: settingsRepo.getAnthropicModel() || config.anthropic.model,
-  }));
+  });
+  app.get("/api/settings", async () => settingsPayload());
 
   app.put("/api/settings", async (req, reply) => {
     const schema = z.object({
       shadowMode: z.boolean().optional(),
+      tradingPaused: z.boolean().optional(),
+      dailyLossLimitUsd: z.number().min(0).max(1e9).optional(),
+      maxOpenTrades: z.number().int().min(0).max(1000).optional(),
+      maxExposureUsd: z.number().min(0).max(1e9).optional(),
       anthropicKey: z.string().optional(), // "" clears the desk-stored key
       anthropicModel: z.string().optional(),
     });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
-    const { shadowMode, anthropicKey, anthropicModel } = parsed.data;
-    if (shadowMode !== undefined) {
-      settingsRepo.setShadowMode(shadowMode);
-      log.info(`Shadow (test) mode ${shadowMode ? "ENABLED" : "DISABLED — LIVE TRADING"}.`);
-      broadcast({ type: "settings", settings: { shadowMode } });
+    const d = parsed.data;
+    if (d.shadowMode !== undefined) {
+      settingsRepo.setShadowMode(d.shadowMode);
+      log.info(`Shadow (test) mode ${d.shadowMode ? "ENABLED" : "DISABLED — LIVE TRADING"}.`);
     }
-    if (anthropicKey !== undefined) {
-      settingsRepo.setAnthropicKey(anthropicKey.trim());
-      log.info(`Anthropic key ${anthropicKey.trim() ? "updated via desk" : "cleared"}.`);
+    if (d.tradingPaused !== undefined) {
+      settingsRepo.setTradingPaused(d.tradingPaused);
+      log.info(`Trading ${d.tradingPaused ? "PAUSED (kill-switch)" : "resumed"}.`);
     }
-    if (anthropicModel !== undefined) settingsRepo.setAnthropicModel(anthropicModel.trim());
-    return {
-      shadowMode: settingsRepo.getShadowMode(),
-      anthropicConfigured: !!(settingsRepo.getAnthropicKey() || config.anthropic.apiKey),
-      anthropicModel: settingsRepo.getAnthropicModel() || config.anthropic.model,
-    };
+    if (d.dailyLossLimitUsd !== undefined) settingsRepo.setRiskLimit("dailyLossLimitUsd", d.dailyLossLimitUsd);
+    if (d.maxOpenTrades !== undefined) settingsRepo.setRiskLimit("maxOpenTrades", d.maxOpenTrades);
+    if (d.maxExposureUsd !== undefined) settingsRepo.setRiskLimit("maxExposureUsd", d.maxExposureUsd);
+    if (d.anthropicKey !== undefined) {
+      settingsRepo.setAnthropicKey(d.anthropicKey.trim());
+      log.info(`Anthropic key ${d.anthropicKey.trim() ? "updated via desk" : "cleared"}.`);
+    }
+    if (d.anthropicModel !== undefined) settingsRepo.setAnthropicModel(d.anthropicModel.trim());
+    broadcast({ type: "settings", settings: settingsRepo.getGlobalSettings() });
+    return settingsPayload();
+  });
+
+  // Kill-switch: close all open positions AND pause new entries.
+  app.post("/api/kill", async (_req, reply) => {
+    if (!authEnabled) return reply.code(403).send({ error: "Set DESK_PASSWORD to enable the kill-switch." });
+    settingsRepo.setTradingPaused(true);
+    const res = await closeAllTrades();
+    broadcast({ type: "settings", settings: settingsRepo.getGlobalSettings() });
+    log.warn(`KILL-SWITCH activated — trading paused, closed ${res.closed} trades.`);
+    return { ok: true, ...res };
+  });
+
+  // Mainnet-readiness checklist for the desk (before flipping to live).
+  app.get("/api/readiness", async () => {
+    const g = settingsRepo.getGlobalSettings();
+    let accountValue: number | undefined;
+    try {
+      accountValue = (await hyperliquid.getAccountSummary())?.accountValue;
+    } catch {
+      /* ignore */
+    }
+    const checks = [
+      { key: "signingKey", ok: hyperliquid.live, label: "Signing key configured" },
+      {
+        key: "accountAddress",
+        ok: !!config.hyperliquid.accountAddress || hyperliquid.live,
+        label: "Account address set",
+      },
+      { key: "balance", ok: (accountValue ?? 0) > 0, label: "Perps account funded" },
+      {
+        key: "riskLimits",
+        ok: g.dailyLossLimitUsd > 0 || g.maxExposureUsd > 0 || g.maxOpenTrades > 0,
+        label: "At least one risk limit set",
+      },
+      { key: "notPaused", ok: !g.tradingPaused, label: "Trading not paused" },
+    ];
+    return { env: config.tradingEnv, accountValue, checks, ready: checks.every((c) => c.ok) };
+  });
+
+  // Download a full backup of the SQLite database.
+  app.get("/api/backup", async (_req, reply) => {
+    const buf = fs.readFileSync(config.dbPath);
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+    reply
+      .type("application/octet-stream")
+      .header("Content-Disposition", `attachment; filename="tttrading-backup-${stamp}.sqlite"`);
+    return buf;
   });
 
   /* ------------------------------ groups ------------------------------ */
