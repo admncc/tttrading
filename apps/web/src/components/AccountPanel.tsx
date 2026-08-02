@@ -13,7 +13,7 @@ export function AccountPanel() {
   const [msg, setMsg] = useState<string | null>(null);
   // Test order inputs (defaults: ETH, 10 USDC, 4x).
   const [toSymbol, setToSymbol] = useState("ETH");
-  const [toUsd, setToUsd] = useState("10");
+  const [toUsd, setToUsd] = useState("15");
   const [toLev, setToLev] = useState("4");
   const [toSide, setToSide] = useState<"long" | "short">("long");
   const [toBusy, setToBusy] = useState(false);
@@ -190,7 +190,7 @@ export function AccountPanel() {
           >
             <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
               Place a one-off <strong>test order</strong>. It appears in the Trades tab and can be
-              closed there.{" "}
+              closed there. Hyperliquid requires a minimum order value of ~$10, so use ≥ 12 USDC.{" "}
               {a.simulating ? (
                 <span className="tag pending">will be SIMULATED (test mode on)</span>
               ) : (
