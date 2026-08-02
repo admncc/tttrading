@@ -91,6 +91,12 @@ export const api = {
       body: JSON.stringify({ horizonDays }),
     }),
 
+  suggestInstructions: (id: string) =>
+    req<{ instructions: string; rationale: string; sampleSize: number; error?: string }>(
+      `/api/groups/${id}/suggest-instructions`,
+      { method: "POST" },
+    ),
+
   backfill: (days: number) =>
     req<{ groupId: string; groupName: string; imported: number; error?: string }[]>("/api/backfill", {
       method: "POST",

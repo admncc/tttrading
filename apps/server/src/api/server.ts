@@ -27,6 +27,7 @@ import {
 import { reconcileOnce, evaluateSimulated } from "../execution/monitor.js";
 import { backfillAll, backfillGroup } from "../telegram/backfill.js";
 import { backtestGroup } from "../backtest/engine.js";
+import { suggestChannelInstructions } from "../signals/llm.js";
 import { exportAllText, exportGroupText, safeFilename } from "../export/text.js";
 import { broadcast, register, unregister, type SocketLike } from "../ws/hub.js";
 
@@ -216,6 +217,36 @@ export async function buildServer() {
     const interval = typeof body?.interval === "string" ? body.interval : "1h";
     return backtestGroup(req.params.id, horizon, interval);
   });
+
+  // Ask the AI to propose improved per-channel parsing instructions, learned
+  // from the channel's real message history. Returns a suggestion for review —
+  // it is NOT applied automatically (the desk saves it if the user accepts).
+  app.post<{ Params: { id: string } }>(
+    "/api/groups/:id/suggest-instructions",
+    async (req, reply) => {
+      const group = groupsRepo.get(req.params.id);
+      if (!group) return reply.code(404).send({ error: "not found" });
+      const history = signalsRepo.forGroup(group.id);
+      // Newest first, so the sample reflects the channel's current style.
+      const samples = history
+        .slice()
+        .reverse()
+        .map((s) => ({
+          text: s.rawText,
+          type:
+            s.status === "managed"
+              ? "trade-change"
+              : s.parsed && s.status !== "unparseable"
+                ? "signal"
+                : "info",
+        }));
+      return suggestChannelInstructions(
+        group.name,
+        group.settings.instructions ?? "",
+        samples,
+      );
+    },
+  );
 
   // Export a channel's full message transcript (timestamp + text) as .txt.
   app.get<{ Params: { id: string } }>("/api/groups/:id/export", async (req, reply) => {

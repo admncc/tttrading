@@ -328,11 +328,75 @@ function BacktestPanel({ r }: { r: BacktestResult }) {
   );
 }
 
+interface Suggestion {
+  instructions: string;
+  rationale: string;
+  sampleSize: number;
+  error?: string;
+}
+
+/** Panel showing an AI-suggested set of channel instructions for review. */
+function SuggestionPanel({
+  s,
+  current,
+  busy,
+  onApply,
+  onDismiss,
+}: {
+  s: Suggestion;
+  current: string;
+  busy: boolean;
+  onApply: (text: string) => void;
+  onDismiss: () => void;
+}) {
+  const [text, setText] = useState(s.instructions);
+  if (s.error) {
+    return (
+      <div className="panel" style={{ background: "var(--panel-2)", margin: "0 0 10px", padding: 14 }}>
+        <div className="neg">AI suggestion failed: {s.error}</div>
+        <div className="btn-row" style={{ marginTop: 8 }}>
+          <button className="ghost" onClick={onDismiss}>Dismiss</button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="panel" style={{ background: "var(--panel-2)", margin: "0 0 10px", padding: 14 }}>
+      <div style={{ marginBottom: 8 }}>
+        <strong>AI-suggested instructions</strong>{" "}
+        <span className="muted" style={{ fontSize: 12 }}>
+          from {s.sampleSize} messages · review &amp; edit before applying
+        </span>
+      </div>
+      {s.rationale && (
+        <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
+          {s.rationale}
+        </div>
+      )}
+      <textarea rows={8} value={text} onChange={(e) => setText(e.target.value)} />
+      <div className="btn-row" style={{ marginTop: 8 }}>
+        <button className="primary" disabled={busy || !text.trim()} onClick={() => onApply(text.trim())}>
+          {busy ? "Applying…" : "Apply to channel"}
+        </button>
+        <button className="ghost" onClick={onDismiss}>Dismiss</button>
+        {current.trim() && (
+          <span className="muted" style={{ fontSize: 11, alignSelf: "center" }}>
+            replaces the current instructions
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function Groups({ groups, onChange }: { groups: Group[]; onChange: () => void }) {
   const [editing, setEditing] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [results, setResults] = useState<Record<string, BacktestResult>>({});
   const [analyzing, setAnalyzing] = useState<string | null>(null);
+  const [suggestions, setSuggestions] = useState<Record<string, Suggestion>>({});
+  const [suggesting, setSuggesting] = useState<string | null>(null);
+  const [applying, setApplying] = useState<string | null>(null);
 
   const analyze = async (id: string) => {
     setAnalyzing(id);
@@ -345,6 +409,47 @@ export function Groups({ groups, onChange }: { groups: Group[]; onChange: () => 
       setAnalyzing(null);
     }
   };
+
+  const suggest = async (id: string) => {
+    setSuggesting(id);
+    try {
+      const res = await api.suggestInstructions(id);
+      setSuggestions((s) => ({ ...s, [id]: res }));
+    } catch (e) {
+      alert(`Suggestion failed: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setSuggesting(null);
+    }
+  };
+
+  const applyInstructions = async (g: Group, text: string) => {
+    setApplying(g.id);
+    try {
+      await api.updateGroup(g.id, {
+        name: g.name,
+        telegramChannel: g.telegramChannel,
+        enabled: g.enabled,
+        settings: { ...g.settings, instructions: text },
+      });
+      setSuggestions((s) => {
+        const next = { ...s };
+        delete next[g.id];
+        return next;
+      });
+      onChange();
+    } catch (e) {
+      alert(`Apply failed: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setApplying(null);
+    }
+  };
+
+  const dismissSuggestion = (id: string) =>
+    setSuggestions((s) => {
+      const next = { ...s };
+      delete next[id];
+      return next;
+    });
 
   const create = async (g: GroupInput) => {
     try {
@@ -418,6 +523,13 @@ export function Groups({ groups, onChange }: { groups: Group[]; onChange: () => 
                 >
                   {analyzing === g.id ? "Analyzing…" : "Analyze"}
                 </button>
+                <button
+                  disabled={suggesting === g.id}
+                  title="Let the AI study this channel's messages and propose improved parsing instructions"
+                  onClick={() => suggest(g.id)}
+                >
+                  {suggesting === g.id ? "Thinking…" : "Improve instructions (AI)"}
+                </button>
                 <button onClick={() => api.exportGroup(g.id, g.name).catch((e) => alert(String(e)))}>
                   Export
                 </button>
@@ -428,6 +540,16 @@ export function Groups({ groups, onChange }: { groups: Group[]; onChange: () => 
               </div>
             </div>
             {results[g.id] && <BacktestPanel r={results[g.id]!} />}
+            {suggestions[g.id] && (
+              <SuggestionPanel
+                key={suggestions[g.id]!.instructions.length + suggestions[g.id]!.rationale}
+                s={suggestions[g.id]!}
+                current={g.settings.instructions ?? ""}
+                busy={applying === g.id}
+                onApply={(text) => applyInstructions(g, text)}
+                onDismiss={() => dismissSuggestion(g.id)}
+              />
+            )}
             <div className="muted">
               {g.settings.leverage}x · {g.settings.tradeSizeUsd.toLocaleString()} USDC ·{" "}
               {g.settings.executionMode} · {g.settings.marginMode} ·{" "}
