@@ -140,7 +140,11 @@ export class MexcConnector implements ExchangeConnector {
     const text = await res.text();
     let json: unknown;
     try {
-      json = text ? JSON.parse(text) : {};
+      // MEXC returns 16+ digit order/deal ids UNQUOTED; JSON.parse would round
+      // them past JS's safe-integer range and corrupt the id. Quote them first so
+      // they survive as exact strings (cancellation & fill-matching depend on it).
+      const safe = text.replace(/"(orderId|dealId|id)":\s*(\d{16,})/g, '"$1":"$2"');
+      json = text ? JSON.parse(safe) : {};
     } catch {
       throw new Error(`MEXC ${res.status}: ${text.slice(0, 200)}`);
     }
@@ -432,6 +436,7 @@ export class MexcConnector implements ExchangeConnector {
     const vol = coinsToVol(req.notionalUsd / req.price, asset);
     const coinSize = vol * asset.contractSize;
     if (vol < asset.minVol || vol <= 0) return { ok: false, size: 0, simulated: sim, error: "Computed size below MEXC minimum" };
+    if (coinSize * req.price > MAX_ORDER_NOTIONAL) return { ok: false, size: 0, simulated: sim, error: "Order notional exceeds safety cap" };
     const limitPx = roundToUnit(req.price, asset.priceUnit, asset.priceScale, req.side === "long" ? "floor" : "ceil");
 
     if (sim) return { ok: true, status: "resting", size: coinSize, simulated: true };
@@ -476,6 +481,7 @@ export class MexcConnector implements ExchangeConnector {
 
     // Close side codes: long position → 4 (close long); short → 2 (close short).
     const closeSide = side === "long" ? 4 : 2;
+    const openType = params.marginMode === "isolated" ? 1 : 2;
     let slOrderId: string | undefined;
     const tpOrderIds: string[] = [];
     let error: string | undefined;
@@ -492,7 +498,7 @@ export class MexcConnector implements ExchangeConnector {
           orderType: 5, // market on trigger
           side: closeSide,
           vol,
-          openType: 2, // cross (reduce-only close; margin mode irrelevant to closing)
+          openType, // match the position's margin mode
         },
       );
       return orderIdOf(data);
@@ -531,11 +537,12 @@ export class MexcConnector implements ExchangeConnector {
     if (!this.live || orderIds.length === 0) return;
     const asset = await this.resolve(symbol);
     if (!asset) return;
-    const numeric = orderIds.map((o) => Number(o)).filter((n) => Number.isFinite(n));
+    // Pass ids through as EXACT STRINGS — MEXC order ids exceed JS's safe integer
+    // range, so Number() would corrupt them and cancel the wrong (non-existent) id.
     // An id may be a normal order or a trigger (plan) order — try both endpoints,
     // ignoring "unknown order" errors, so whichever it is gets cancelled.
     try {
-      await this.signed("POST", "/api/v1/private/order/cancel", numeric);
+      await this.signed("POST", "/api/v1/private/order/cancel", orderIds);
     } catch (err) {
       log.warn(`MEXC cancel(order) ${symbol}:`, err instanceof Error ? err.message : err);
     }
@@ -543,7 +550,7 @@ export class MexcConnector implements ExchangeConnector {
       await this.signed(
         "POST",
         "/api/v1/private/planorder/cancel",
-        orderIds.map((o) => ({ symbol: asset.mexcSymbol, orderId: Number(o) })),
+        orderIds.map((o) => ({ symbol: asset.mexcSymbol, orderId: o })),
       );
     } catch {
       /* best-effort — it wasn't a plan order */

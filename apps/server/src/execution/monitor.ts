@@ -65,7 +65,98 @@ async function reconcileExchange(ex: ExchangeConnector): Promise<void> {
     }
   }
   await reconcileWorking(ex, byOid, working);
+  // MEXC: SL/TP fire as plan orders whose triggered fills carry a DIFFERENT order
+  // id than the plan id we stored, so fill-matching (above) can't see the close.
+  // Fall back to position state — if the position is flat, book the close.
+  if (ex.name === "mexc" && open.length > 0) {
+    try {
+      if (await reconcileByPosition(ex, open, fills)) changed = true;
+    } catch (err) {
+      log.warn(`reconcile-by-position ${ex.name}:`, err instanceof Error ? err.message : err);
+    }
+  }
   if (changed) pushStats();
+}
+
+/**
+ * Close trades whose exchange position has gone flat but which weren't caught by
+ * fill-matching (used for MEXC, where SL/TP plan-order fills don't carry the
+ * stored id). Only acts when the positions read SUCCEEDS — an empty list from a
+ * failed/misconfigured read must not be mistaken for "everything closed", so any
+ * error aborts. A grace period avoids closing a just-opened trade before its
+ * position registers.
+ */
+async function reconcileByPosition(
+  ex: ExchangeConnector,
+  open: Trade[],
+  fills: FillLite[],
+): Promise<boolean> {
+  const positions = await ex.getPositions(); // throws → caller skips (inconclusive)
+  let changed = false;
+  for (const t of open) {
+    if (closing.has(t.id)) continue;
+    const fresh = tradesRepo.get(t.id);
+    if (!fresh || fresh.status !== "open" || fresh.simulated) continue;
+    if (Date.now() - new Date(fresh.openedAt).getTime() < 60_000) continue; // grace
+    const stillOpen = positions.some(
+      (p) =>
+        p.symbol.toUpperCase() === fresh.symbol.toUpperCase() &&
+        p.size !== 0 &&
+        (fresh.side === "long" ? p.size > 0 : p.size < 0),
+    );
+    if (stillOpen) continue;
+
+    closing.add(fresh.id);
+    try {
+      const again = tradesRepo.get(fresh.id);
+      if (!again || again.status !== "open") continue;
+      const openedMs = new Date(again.openedAt).getTime();
+      const symFills = fills.filter(
+        (f) => f.symbol.toUpperCase() === again.symbol.toUpperCase() && f.time >= openedMs - 5000,
+      );
+      const grossPnl = symFills.reduce((s, f) => s + f.closedPnl, 0);
+      const fee = symFills.reduce((s, f) => s + f.fee, 0);
+      // Exit price: weighted avg of the close-side fills, else the live mid.
+      const closeSide = again.side === "long" ? "A" : "B"; // closing a long sells
+      const cf = symFills.filter((f) => f.side === closeSide && f.price > 0);
+      let exit = again.entryPrice;
+      if (cf.length) {
+        const v = cf.reduce((s, f) => s + f.size, 0);
+        if (v > 0) exit = cf.reduce((s, f) => s + f.price * f.size, 0) / v;
+      } else {
+        try {
+          const mid = await ex.getMidPrice(again.symbol);
+          if (mid && mid > 0) exit = mid;
+        } catch {
+          /* keep entry as the fallback */
+        }
+      }
+      // Cancel any still-resting bracket legs so they can't fire on a later position.
+      const restingIds = [again.slOrderId, ...(again.tpOrderIds ?? [])].filter((x): x is string => !!x);
+      if (restingIds.length) await ex.cancelOrders(again.symbol, restingIds);
+
+      const bankedPnl = again.bankedPnl ?? 0;
+      const bankedFees = again.bankedFees ?? 0;
+      const updated = tradesRepo.update(again.id, {
+        status: "closed",
+        exitPrice: exit,
+        realizedPnl: bankedPnl - bankedFees + grossPnl - fee,
+        fees: bankedFees + fee,
+        closedAt: new Date().toISOString(),
+      });
+      if (updated) {
+        broadcast({ type: "trade", trade: updated });
+        alertClosed(updated);
+        changed = true;
+        log.info(
+          `MEXC position flat → closed ${again.symbol} ${again.side} — PnL ${(bankedPnl - bankedFees + grossPnl - fee).toFixed(2)} USDC`,
+        );
+      }
+    } finally {
+      closing.delete(fresh.id);
+    }
+  }
+  return changed;
 }
 
 /**
@@ -235,6 +326,7 @@ async function moveSlToBreakeven(
     stopLoss: trade.entryPrice, // break-even
     takeProfits: [],
     slippage,
+    marginMode: groupsRepo.get(trade.groupId)?.settings.marginMode,
     force: true, // real position — place even when the global test switch is on
   });
   if (!res.protectedOnExchange || !res.slOrderId) {

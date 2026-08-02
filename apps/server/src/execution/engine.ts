@@ -202,6 +202,7 @@ async function moveStop(trade: Trade, newStop: number, breakeven: boolean): Prom
       stopLoss: newStop,
       takeProfits: [],
       slippage: 0.01,
+      marginMode: groupsRepo.get(trade.groupId)?.settings.marginMode,
       force: true,
     });
     if (res.protectedOnExchange && res.slOrderId) {
@@ -852,6 +853,7 @@ async function recordFilledEntry(
     stopLoss,
     takeProfits,
     slippage: group.settings.maxSlippage,
+    marginMode: group.settings.marginMode,
   });
   if (bracket.error) {
     event("exec", `Bracket (SL/TP) placement failed for ${parsed.symbol}: ${bracket.error}`, { error: bracket.error }, { level: "warn", groupId: group.id, signalId: signal.id });
@@ -1039,7 +1041,8 @@ export async function promoteWorkingToOpen(
         /* best-effort */
       }
     }
-    const slippage = groupsRepo.get(t.groupId)?.settings.maxSlippage ?? 0.01;
+    const gset = groupsRepo.get(t.groupId)?.settings;
+    const slippage = gset?.maxSlippage ?? 0.01;
     const bracket = await ex.placeBracketOrders({
       symbol: t.symbol,
       side: t.side,
@@ -1047,6 +1050,7 @@ export async function promoteWorkingToOpen(
       stopLoss: t.stopLoss,
       takeProfits: t.takeProfits ?? [],
       slippage,
+      marginMode: gset?.marginMode,
       force: !t.simulated, // real brackets only for a real position — never in test mode
     });
     const updated = tradesRepo.update(tradeId, {

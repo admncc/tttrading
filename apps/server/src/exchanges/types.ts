@@ -72,6 +72,8 @@ export interface BracketParams {
   stopLoss?: number;
   takeProfits?: number[];
   slippage: number;
+  /** Position margin mode — some venues (MEXC) need it on the SL/TP orders too. */
+  marginMode?: "cross" | "isolated";
   /** Force real placement even in test mode (managing an already-real position). */
   force?: boolean;
 }
