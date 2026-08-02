@@ -1,6 +1,8 @@
 # TT Trading Desk — single image that builds everything and serves the API +
 # the desk web app from one process/port.
-FROM node:20-bookworm-slim
+# Node 22: the Hyperliquid SDK's order-signing path uses
+# ArrayBuffer.prototype.transfer(), which only exists on Node 21+.
+FROM node:22-bookworm-slim
 
 ENV PNPM_HOME=/pnpm
 ENV PATH="$PNPM_HOME:$PATH"

@@ -52,7 +52,9 @@ To run the one-time Telegram login inside the container, see §4.
 
 ## 2b. Run bare (Node + systemd)
 
-Requires Node.js 20+ and pnpm (`npm i -g pnpm`).
+Requires Node.js 21+ (the Hyperliquid SDK's signing path needs
+`ArrayBuffer.prototype.transfer`, added in Node 21; use 22 LTS) and pnpm
+(`npm i -g pnpm`).
 
 ```bash
 pnpm install --frozen-lockfile
