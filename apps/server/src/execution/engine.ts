@@ -12,7 +12,7 @@ import { parseSignal } from "../signals/parser.js";
 import { classifyManagement, type ManagementAction } from "../signals/management.js";
 import { expandTakeProfits } from "../signals/takeprofit.js";
 import { assessRisk } from "../risk/score.js";
-import { alertBlocked, alertClosed, alertError, alertOpened } from "../alerts/notifier.js";
+import { alertBlocked, alertClosed, alertError, alertOpened, sendAlert } from "../alerts/notifier.js";
 import { broadcast } from "../ws/hub.js";
 import { pushStats } from "../stats/service.js";
 
@@ -482,12 +482,15 @@ function preTradeGate(newNotional: number): string | null {
   const g = settingsRepo.getGlobalSettings();
   if (g.tradingPaused) return "trading paused (kill-switch)";
 
-  const open = tradesRepo.open().filter((t) => !t.shadow);
-  if (g.maxOpenTrades > 0 && open.length >= g.maxOpenTrades) {
-    return `max open trades reached (${open.length}/${g.maxOpenTrades})`;
+  // Count open positions AND resting working orders (reserved capital).
+  const active = tradesRepo
+    .list(10000)
+    .filter((t) => (t.status === "open" || t.status === "working") && !t.shadow);
+  if (g.maxOpenTrades > 0 && active.length >= g.maxOpenTrades) {
+    return `max open trades reached (${active.length}/${g.maxOpenTrades})`;
   }
   if (g.maxExposureUsd > 0) {
-    const exposure = open.reduce((s, t) => s + t.notionalUsd, 0);
+    const exposure = active.reduce((s, t) => s + t.notionalUsd, 0);
     if (exposure + newNotional > g.maxExposureUsd) {
       return `max exposure would be exceeded (${(exposure + newNotional).toFixed(0)} > ${g.maxExposureUsd})`;
     }
@@ -513,8 +516,8 @@ function preTradeGate(newNotional: number): string | null {
   return null;
 }
 
-/** Close every open (non-shadow) trade — used by the kill-switch. */
-export async function closeAllTrades(): Promise<{ closed: number }> {
+/** Close every open position AND cancel every working order — the kill-switch. */
+export async function closeAllTrades(): Promise<{ closed: number; canceled: number }> {
   const open = tradesRepo.open().filter((t) => !t.shadow);
   let closed = 0;
   for (const t of open) {
@@ -525,8 +528,18 @@ export async function closeAllTrades(): Promise<{ closed: number }> {
       log.error(`closeAll ${t.symbol}:`, err instanceof Error ? err.message : err);
     }
   }
-  event("exec", `Kill-switch: closed ${closed}/${open.length} open trades`, { closed }, { level: "warn" });
-  return { closed };
+  const working = tradesRepo.list(10000).filter((t) => t.status === "working" && !t.shadow);
+  let canceled = 0;
+  for (const t of working) {
+    try {
+      await cancelWorkingTrade(t.id, "kill-switch");
+      canceled++;
+    } catch (err) {
+      log.error(`killCancel ${t.symbol}:`, err instanceof Error ? err.message : err);
+    }
+  }
+  event("exec", `Kill-switch: closed ${closed} positions, canceled ${canceled} working orders`, { closed, canceled }, { level: "warn" });
+  return { closed, canceled };
 }
 
 /**
@@ -650,7 +663,14 @@ async function execute(
     );
   }
 
-  // Guard: don't chase a signal whose entry the market has already run past.
+  // Limit mode (default): rest an order at the signal's entry and wait for a
+  // fill — it becomes a position only when filled. Needs an entry price;
+  // otherwise fall through to market.
+  if ((group.settings.entryMode ?? "limit") === "limit" && parsed.entry !== undefined) {
+    return executeLimit(signal, group, parsed, risk, tradeSizeUsd);
+  }
+
+  // Market mode: don't chase an entry the market already ran past.
   // If the trader set an entry and the current price is already worse than it
   // (beyond maxSlippage) in the fill direction, record FAILED with the reason
   // instead of entering late at a skewed risk/reward.
@@ -710,38 +730,41 @@ async function execute(
     { groupId: group.id, signalId: signal.id },
   );
 
-  // If the provider gave only one target, split it into several TP levels per
-  // the group's settings. The stated entry (or the actual fill) is the base.
-  const entryRef = parsed.entry ?? result.filledPrice;
+  return recordFilledEntry(signal, group, parsed, risk, tradeSizeUsd, {
+    filledPrice: result.filledPrice,
+    filledSize: result.size,
+    orderId: result.orderId,
+    simulated: result.simulated,
+  });
+}
+
+/**
+ * Turn a filled entry into an open, bracket-protected position + trade record.
+ * Shared by the market path and an immediately-crossing limit order.
+ */
+async function recordFilledEntry(
+  signal: Signal,
+  group: Group,
+  parsed: ParsedSignal,
+  risk: RiskRating | undefined,
+  notionalUsd: number,
+  fill: { filledPrice: number; filledSize: number; orderId?: string; simulated: boolean },
+): Promise<Signal> {
+  const entryRef = parsed.entry ?? fill.filledPrice;
   const takeProfits = expandTakeProfits(parsed.takeProfits, entryRef, parsed.side, {
     autoSplit: group.settings.autoSplitSingleTp,
     levels: group.settings.tpLevels,
   });
-
-  // Protect the position with reduce-only SL/TP trigger orders (live only).
-  // Size is scaled out evenly across the take-profit levels.
   const bracket = await hyperliquid.placeBracketOrders({
     symbol: parsed.symbol,
     side: parsed.side,
-    size: result.size,
+    size: fill.filledSize,
     stopLoss: parsed.stopLoss,
     takeProfits,
-    slippage: maxSlippage,
+    slippage: group.settings.maxSlippage,
   });
   if (bracket.error) {
-    event(
-      "exec",
-      `Bracket (SL/TP) placement failed for ${parsed.symbol}: ${bracket.error}`,
-      { error: bracket.error },
-      { level: "warn", groupId: group.id, signalId: signal.id },
-    );
-  } else if (bracket.protectedOnExchange) {
-    event(
-      "exec",
-      `SL/TP placed on exchange for ${parsed.symbol}`,
-      { sl: bracket.slOrderId, tps: bracket.tpOrderIds, levels: takeProfits },
-      { groupId: group.id, signalId: signal.id },
-    );
+    event("exec", `Bracket (SL/TP) placement failed for ${parsed.symbol}: ${bracket.error}`, { error: bracket.error }, { level: "warn", groupId: group.id, signalId: signal.id });
   }
 
   const trade = tradesRepo.create({
@@ -752,33 +775,27 @@ async function execute(
     side: parsed.side,
     status: "open",
     env: config.tradingEnv,
-    leverage,
-    notionalUsd: tradeSizeUsd,
-    size: result.size,
-    entryPrice: result.filledPrice,
+    leverage: group.settings.leverage,
+    notionalUsd,
+    size: fill.filledSize,
+    entryPrice: fill.filledPrice,
     stopLoss: parsed.stopLoss,
     takeProfits: takeProfits.length ? takeProfits : undefined,
-    exchangeOrderId: result.orderId,
+    exchangeOrderId: fill.orderId,
     slOrderId: bracket.slOrderId,
     tpOrderIds: bracket.tpOrderIds.length ? bracket.tpOrderIds : undefined,
     bracketProtected: bracket.protectedOnExchange,
     tpFilledCount: 0,
     slMovedToBreakeven: false,
     risk,
-    simulated: result.simulated,
+    simulated: fill.simulated,
   });
 
   const executed = signalsRepo.update(signal.id, { status: "executed", tradeId: trade.id })!;
   event(
     "exec",
-    `Trade opened ${parsed.side} ${parsed.symbol} (${result.simulated ? "sim" : "live"})`,
-    {
-      tradeId: trade.id,
-      entry: trade.entryPrice,
-      size: trade.size,
-      leverage: trade.leverage,
-      protected: bracket.protectedOnExchange,
-    },
+    `Trade opened ${parsed.side} ${parsed.symbol} (${fill.simulated ? "sim" : "live"})`,
+    { tradeId: trade.id, entry: trade.entryPrice, size: trade.size, protected: bracket.protectedOnExchange },
     { groupId: group.id, signalId: signal.id },
   );
   alertOpened(trade);
@@ -786,6 +803,150 @@ async function execute(
   broadcast({ type: "trade", trade });
   pushStats();
   return executed;
+}
+
+/**
+ * Place a resting limit entry at the signal's price. Records a "working" order
+ * (NOT a position); the monitor promotes it to an open position on fill, or
+ * cancels it after the channel's limit timeout.
+ */
+async function executeLimit(
+  signal: Signal,
+  group: Group,
+  parsed: ParsedSignal,
+  risk: RiskRating | undefined,
+  notionalUsd: number,
+): Promise<Signal> {
+  const res = await hyperliquid.placeLimitOrder({
+    symbol: parsed.symbol,
+    side: parsed.side,
+    notionalUsd,
+    price: parsed.entry!,
+    leverage: group.settings.leverage,
+    marginMode: group.settings.marginMode,
+  });
+  if (!res.ok) {
+    const failed = signalsRepo.update(signal.id, { status: "failed", error: res.error })!;
+    event("exec", `Limit order FAILED for ${parsed.symbol}: ${res.error}`, { error: res.error }, { level: "error", groupId: group.id, signalId: signal.id });
+    alertError(`limit ${parsed.symbol} (${group.name})`, res.error ?? "unknown");
+    broadcast({ type: "signal", signal: failed });
+    return failed;
+  }
+
+  // Crossed immediately → it's a position now.
+  if (res.status === "filled" && res.filledPrice) {
+    return recordFilledEntry(signal, group, parsed, risk, notionalUsd, {
+      filledPrice: res.filledPrice,
+      filledSize: res.size,
+      orderId: res.orderId,
+      simulated: res.simulated,
+    });
+  }
+
+  // Resting → a working order (not yet a position). SL/TP are placed on fill.
+  const takeProfits = expandTakeProfits(parsed.takeProfits, parsed.entry!, parsed.side, {
+    autoSplit: group.settings.autoSplitSingleTp,
+    levels: group.settings.tpLevels,
+  });
+  const trade = tradesRepo.create({
+    signalId: signal.id,
+    groupId: group.id,
+    groupName: group.name,
+    symbol: parsed.symbol,
+    side: parsed.side,
+    status: "working",
+    env: config.tradingEnv,
+    leverage: group.settings.leverage,
+    notionalUsd,
+    size: res.size,
+    entryPrice: parsed.entry!, // planned entry until filled
+    stopLoss: parsed.stopLoss,
+    takeProfits: takeProfits.length ? takeProfits : undefined,
+    exchangeOrderId: res.orderId,
+    tpFilledCount: 0,
+    slMovedToBreakeven: false,
+    risk,
+    simulated: res.simulated,
+  });
+  const executed = signalsRepo.update(signal.id, { status: "executed", tradeId: trade.id })!;
+  const timeoutH = group.settings.limitTimeoutHours ?? 168;
+  event(
+    "exec",
+    `Working limit order ${parsed.side} ${parsed.symbol} @ ${parsed.entry} (${res.simulated ? "sim" : "live"}, expires in ${timeoutH}h)`,
+    { tradeId: trade.id, entry: parsed.entry, size: trade.size, timeoutHours: timeoutH },
+    { groupId: group.id, signalId: signal.id },
+  );
+  void sendAlert(
+    `⏳ <b>Limit order placed</b> ${parsed.side.toUpperCase()} ${parsed.symbol} @ ${parsed.entry}\n<i>${group.name}</i> — waiting for fill`,
+  );
+  broadcast({ type: "signal", signal: executed });
+  broadcast({ type: "trade", trade });
+  pushStats();
+  return executed;
+}
+
+/**
+ * Promote a filled working limit order to an open, bracket-protected position.
+ * Called by the monitor when the resting entry fills. Uses the `closing` guard
+ * for mutual exclusion. Returns the updated trade or undefined.
+ */
+export async function promoteWorkingToOpen(
+  tradeId: string,
+  filledPrice: number,
+  filledSize: number,
+): Promise<Trade | undefined> {
+  if (closing.has(tradeId)) return tradesRepo.get(tradeId);
+  closing.add(tradeId);
+  try {
+    const t = tradesRepo.get(tradeId);
+    if (!t || t.status !== "working") return t;
+    const size = filledSize > 0 ? filledSize : t.size;
+    const bracket = await hyperliquid.placeBracketOrders({
+      symbol: t.symbol,
+      side: t.side,
+      size,
+      stopLoss: t.stopLoss,
+      takeProfits: t.takeProfits ?? [],
+      slippage: 0.01,
+      force: true,
+    });
+    const updated = tradesRepo.update(tradeId, {
+      status: "open",
+      entryPrice: filledPrice > 0 ? filledPrice : t.entryPrice,
+      size,
+      slOrderId: bracket.slOrderId,
+      tpOrderIds: bracket.tpOrderIds.length ? bracket.tpOrderIds : undefined,
+      bracketProtected: bracket.protectedOnExchange,
+    });
+    if (updated) {
+      event("exec", `Limit filled → opened ${t.side} ${t.symbol} @ ${updated.entryPrice}`, { tradeId, protected: bracket.protectedOnExchange }, { groupId: t.groupId });
+      alertOpened(updated);
+      broadcast({ type: "trade", trade: updated });
+      pushStats();
+    }
+    return updated;
+  } finally {
+    closing.delete(tradeId);
+  }
+}
+
+/** Cancel an expired/aborted working limit order. */
+export async function cancelWorkingTrade(tradeId: string, reason: string): Promise<void> {
+  const t = tradesRepo.get(tradeId);
+  if (!t || t.status !== "working") return;
+  if (!t.simulated && hyperliquid.live && t.exchangeOrderId) {
+    try {
+      await hyperliquid.cancelOrders(t.symbol, [t.exchangeOrderId]);
+    } catch (err) {
+      log.warn(`cancelWorking ${t.symbol}:`, err instanceof Error ? err.message : err);
+    }
+  }
+  const updated = tradesRepo.update(tradeId, { status: "canceled", error: reason });
+  if (updated) {
+    event("exec", `Working order canceled (${reason}) ${t.side} ${t.symbol}`, { tradeId }, { level: "warn", groupId: t.groupId });
+    broadcast({ type: "trade", trade: updated });
+    pushStats();
+  }
 }
 
 /**

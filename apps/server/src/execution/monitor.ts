@@ -3,7 +3,7 @@ import { config } from "../config.js";
 import { log } from "../logger.js";
 import { groups as groupsRepo, trades as tradesRepo } from "../db/repositories.js";
 import { hyperliquid, type FillLite } from "../hyperliquid/connector.js";
-import { closing } from "./engine.js";
+import { closing, promoteWorkingToOpen, cancelWorkingTrade } from "./engine.js";
 import { alertClosed } from "../alerts/notifier.js";
 import { broadcast } from "../ws/hub.js";
 import { pushStats } from "../stats/service.js";
@@ -49,7 +49,34 @@ export async function reconcileOnce(): Promise<void> {
       log.error(`reconcile ${trade.symbol} (${trade.id}):`, err instanceof Error ? err.message : err);
     }
   }
+  await reconcileWorking(byOid);
   if (changed) pushStats();
+}
+
+/**
+ * Live working (resting limit) orders: promote to a position when the entry
+ * order fills, or cancel once the channel's limit timeout elapses.
+ */
+async function reconcileWorking(byOid: Map<string, FillLite[]>): Promise<void> {
+  const working = tradesRepo.list(10000).filter((t) => t.status === "working" && !t.simulated);
+  for (const t of working) {
+    try {
+      const fills = t.exchangeOrderId ? byOid.get(t.exchangeOrderId) ?? [] : [];
+      if (fills.length > 0) {
+        const size = fills.reduce((s, f) => s + f.size, 0);
+        const notional = fills.reduce((s, f) => s + f.price * f.size, 0);
+        const avg = size > 0 ? notional / size : t.entryPrice;
+        await promoteWorkingToOpen(t.id, avg, size);
+        continue;
+      }
+      const timeoutH = groupsRepo.get(t.groupId)?.settings.limitTimeoutHours ?? 168;
+      if (Date.now() - new Date(t.openedAt).getTime() > timeoutH * 3_600_000) {
+        await cancelWorkingTrade(t.id, `limit timeout (${timeoutH}h)`);
+      }
+    } catch (err) {
+      log.error(`working ${t.symbol} (${t.id}):`, err instanceof Error ? err.message : err);
+    }
+  }
 }
 
 async function reconcileTrade(trade: Trade, byOid: Map<string, FillLite[]>): Promise<boolean> {
@@ -165,6 +192,7 @@ async function moveSlToBreakeven(trade: Trade, filledSize: number, slippage: num
  * plays out without touching the exchange.
  */
 export async function evaluateSimulated(): Promise<void> {
+  await evaluateWorkingSim();
   const sims = tradesRepo
     .open()
     .filter((t) => (t.simulated || t.shadow) && !closing.has(t.id));
@@ -178,6 +206,27 @@ export async function evaluateSimulated(): Promise<void> {
     }
   }
   if (changed) pushStats();
+}
+
+/** Simulated working (resting limit) orders: fill when the mid crosses the
+ *  limit, or cancel after the channel's timeout. */
+async function evaluateWorkingSim(): Promise<void> {
+  const working = tradesRepo.list(10000).filter((t) => t.status === "working" && t.simulated);
+  for (const t of working) {
+    try {
+      const timeoutH = groupsRepo.get(t.groupId)?.settings.limitTimeoutHours ?? 168;
+      if (Date.now() - new Date(t.openedAt).getTime() > timeoutH * 3_600_000) {
+        await cancelWorkingTrade(t.id, `limit timeout (${timeoutH}h)`);
+        continue;
+      }
+      const mid = await hyperliquid.getMidPrice(t.symbol);
+      if (!mid || mid <= 0) continue;
+      const crossed = t.side === "long" ? mid <= t.entryPrice : mid >= t.entryPrice;
+      if (crossed) await promoteWorkingToOpen(t.id, t.entryPrice, t.size);
+    } catch (err) {
+      log.error(`working-sim ${t.symbol}:`, err instanceof Error ? err.message : err);
+    }
+  }
 }
 
 async function evaluateSimulatedTrade(trade: Trade): Promise<boolean> {

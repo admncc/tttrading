@@ -371,6 +371,73 @@ export class HyperliquidConnector {
   }
 
   /**
+   * Place a resting GTC limit order at `price`. Returns status "resting" (a
+   * working order, not yet a position) or "filled" if it crossed immediately.
+   * Simulated in test/unsigned mode (tracked as a working order by the monitor).
+   */
+  async placeLimitOrder(req: {
+    symbol: string;
+    side: TradeSide;
+    notionalUsd: number;
+    price: number;
+    leverage: number;
+    marginMode: "cross" | "isolated";
+  }): Promise<{
+    ok: boolean;
+    status?: "resting" | "filled";
+    orderId?: string;
+    filledPrice?: number;
+    size: number;
+    simulated: boolean;
+    error?: string;
+  }> {
+    const sim = !this.exchange || this.simulating();
+    let asset: AssetInfo | undefined;
+    try {
+      asset = await this.getAsset(req.symbol);
+    } catch (err) {
+      return { ok: false, size: 0, simulated: sim, error: `Price feed error: ${err instanceof Error ? err.message : String(err)}` };
+    }
+    if (!asset) return { ok: false, size: 0, simulated: sim, error: `Unknown symbol ${req.symbol}` };
+    if (!(req.price > 0)) return { ok: false, size: 0, simulated: sim, error: "Invalid limit price" };
+
+    const size = roundSize(req.notionalUsd / req.price, asset.szDecimals);
+    if (size <= 0) return { ok: false, size: 0, simulated: sim, error: "Computed size is 0" };
+    const limitPx = roundPx(req.price, asset.szDecimals);
+    if (size * limitPx < 10) {
+      return { ok: false, size: 0, simulated: sim, error: `Order value ${(size * limitPx).toFixed(2)} below Hyperliquid's $10 minimum` };
+    }
+
+    if (sim) return { ok: true, status: "resting", size, simulated: true };
+
+    try {
+      await this.setLeverage(asset, req.leverage, req.marginMode);
+      const res = (await this.exchange!.order({
+        orders: [
+          { a: asset.index, b: req.side === "long", p: String(limitPx), s: String(size), r: false, t: { limit: { tif: "Gtc" } } },
+        ],
+        grouping: "na",
+      })) as unknown as HlOrderResponse;
+      const statuses = res.response?.data?.statuses ?? [];
+      for (const s of statuses) {
+        if ("resting" in s) {
+          return { ok: true, status: "resting", orderId: String((s as { resting: { oid: number } }).resting.oid), size, simulated: false };
+        }
+        if ("filled" in s) {
+          const fp = Number(s.filled.avgPx);
+          const fs = Number(s.filled.totalSz);
+          if (!Number.isFinite(fp) || fp <= 0) return { ok: false, size: 0, simulated: false, error: "malformed fill response" };
+          return { ok: true, status: "filled", orderId: String(s.filled.oid), filledPrice: fp, size: Number.isFinite(fs) && fs > 0 ? fs : size, simulated: false };
+        }
+        if ("error" in s) return { ok: false, size: 0, simulated: false, error: s.error };
+      }
+      return { ok: false, size: 0, simulated: false, error: `No status in response (${res.status})` };
+    } catch (err) {
+      return { ok: false, size: 0, simulated: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  /**
    * Place reduce-only SL/TP trigger orders that protect an open position.
    * The stop-loss covers the full size; take-profits split the size evenly.
    * No-op (returns unprotected) in paper/unsigned mode.

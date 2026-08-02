@@ -33,6 +33,16 @@ export interface GroupSettings {
   /** Notional size per trade in USDC, e.g. 5000. Used when sizingMode="fixed". */
   tradeSizeUsd: number;
   /**
+   * How entries are placed:
+   *  - "limit" (default): rest a limit order at the signal's entry price and
+   *    wait — it becomes a position only when filled (a working order, not yet
+   *    a position). Signals without an entry price fall back to market.
+   *  - "market": enter immediately at the current price.
+   */
+  entryMode?: "limit" | "market";
+  /** Cancel an unfilled working limit order after this many hours. Default 168 (7d). */
+  limitTimeoutHours?: number;
+  /**
    * How the position size is determined:
    *  - "fixed": always tradeSizeUsd (default).
    *  - "percentEquity": margin = riskValue% of account equity; notional = margin × leverage.
@@ -153,7 +163,12 @@ export interface Signal {
   updatedAt: string;
 }
 
-export type TradeStatus = "open" | "closed" | "failed" | "canceled";
+export type TradeStatus =
+  | "working" // a resting limit entry order — NOT yet a position
+  | "open"
+  | "closed"
+  | "failed"
+  | "canceled";
 
 /** An executed (or attempted) trade on Hyperliquid. */
 export interface Trade {

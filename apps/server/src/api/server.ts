@@ -21,6 +21,7 @@ import { sanitizedBackup } from "../db/index.js";
 import { sendReport } from "../alerts/report.js";
 import { hyperliquid } from "../hyperliquid/connector.js";
 import {
+  cancelWorkingTrade,
   closeAllTrades,
   closeTrade,
   confirmSignal,
@@ -47,6 +48,8 @@ const groupSettingsSchema = z.object({
   tpLevels: z.number().int().min(1).max(10),
   breakevenAfterTp: z.number().int().min(0).max(10),
   blockRedTrades: z.boolean(),
+  entryMode: z.enum(["limit", "market"]).optional(),
+  limitTimeoutHours: z.number().min(0).max(8760).optional(),
   sizingMode: z.enum(["fixed", "percentEquity", "riskPerTrade"]).optional(),
   riskValue: z.number().min(0).max(1_000_000).optional(),
   symbolCooldownMinutes: z.number().min(0).max(100000).optional(),
@@ -385,6 +388,12 @@ export async function buildServer() {
     const schema = z.object({ exitPrice: z.number().positive().optional() });
     const parsed = schema.safeParse(req.body ?? {});
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    // A working (resting limit) order isn't a position — cancel it instead.
+    const existing = tradesRepo.get(req.params.id);
+    if (existing?.status === "working") {
+      await cancelWorkingTrade(req.params.id, "canceled from desk");
+      return tradesRepo.get(req.params.id) ?? existing;
+    }
     const trade = await closeTrade(req.params.id, parsed.data.exitPrice);
     if (!trade) return reply.code(404).send({ error: "not found" });
     return trade;

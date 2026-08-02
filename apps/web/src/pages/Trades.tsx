@@ -4,7 +4,7 @@ import { api } from "../api.js";
 import { num, pnlClass, shortTime, usd } from "../format.js";
 import { RiskDot } from "../components/Risk.js";
 
-type Filter = "all" | "open" | "closed" | "shadow";
+type Filter = "all" | "working" | "open" | "closed" | "shadow";
 
 /** Net PnL already realized from partial exits (gross banked minus banked fees). */
 function netBanked(t: Trade): number | undefined {
@@ -54,7 +54,7 @@ export function Trades({
       <div className="row-between">
         <h1 style={{ margin: 0 }}>Trades</h1>
         <div className="btn-row">
-          {(["all", "open", "closed", "shadow"] as const).map((f) => (
+          {(["all", "working", "open", "closed", "shadow"] as const).map((f) => (
             <button
               key={f}
               className={filter === f ? "primary" : "ghost"}
@@ -173,9 +173,9 @@ export function Trades({
                     <span className={`tag ${t.status}`}>{t.status}</span>
                   </td>
                   <td>
-                    {t.status === "open" && !t.shadow && (
+                    {(t.status === "open" || t.status === "working") && !t.shadow && (
                       <button disabled={busyId === t.id} onClick={() => close(t.id)}>
-                        {busyId === t.id ? "…" : "Close"}
+                        {busyId === t.id ? "…" : t.status === "working" ? "Cancel" : "Close"}
                       </button>
                     )}
                   </td>

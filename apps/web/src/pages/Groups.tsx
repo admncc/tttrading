@@ -113,6 +113,8 @@ const BLANK: GroupInput = {
     tpLevels: 3,
     breakevenAfterTp: 0,
     blockRedTrades: false,
+    entryMode: "limit",
+    limitTimeoutHours: 168,
     instructions: "",
   },
 };
@@ -167,6 +169,32 @@ function GroupForm({
               if (Number.isFinite(n) && n > 0) setS({ leverage: n });
             }}
           />
+        </div>
+        <div className="field">
+          <label>Entry mode</label>
+          <select
+            value={g.settings.entryMode ?? "limit"}
+            onChange={(e) => setS({ entryMode: e.target.value as "limit" | "market" })}
+          >
+            <option value="limit">Limit — rest at entry, wait for fill</option>
+            <option value="market">Market — enter now</option>
+          </select>
+        </div>
+        <div className="field">
+          <label>Limit timeout (hours)</label>
+          <input
+            type="number"
+            min={0}
+            value={g.settings.limitTimeoutHours ?? 168}
+            disabled={(g.settings.entryMode ?? "limit") !== "limit"}
+            onChange={(e) => {
+              const n = Number(e.target.value);
+              if (Number.isFinite(n) && n >= 0) setS({ limitTimeoutHours: n });
+            }}
+          />
+          <span className="muted" style={{ fontSize: 11 }}>
+            cancel unfilled after this (default 168 = 7d)
+          </span>
         </div>
         <div className="field">
           <label>Sizing mode</label>

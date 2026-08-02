@@ -121,7 +121,8 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(patch),
     }),
-  killSwitch: () => req<{ ok: boolean; closed: number }>("/api/kill", { method: "POST" }),
+  killSwitch: () =>
+    req<{ ok: boolean; closed: number; canceled: number }>("/api/kill", { method: "POST" }),
   readiness: () =>
     req<{
       env: string;

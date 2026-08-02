@@ -53,7 +53,7 @@ export function RiskControls() {
     setBusy(true);
     try {
       const r = await api.killSwitch();
-      setMsg(`Kill-switch: closed ${r.closed} trades, trading paused.`);
+      setMsg(`Kill-switch: closed ${r.closed} positions, canceled ${r.canceled} working orders, trading paused.`);
       await load();
     } catch (e) {
       setMsg(`Failed: ${e instanceof Error ? e.message : e}`);
