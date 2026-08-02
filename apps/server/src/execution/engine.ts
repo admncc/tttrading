@@ -316,15 +316,27 @@ async function applyManagement(
   if (!group.enabled) return null;
 
   const openForGroup = tradesRepo.open().filter((t) => t.groupId === group.id && !t.shadow);
+  // An SL move / break-even may also target a still-resting limit order (the
+  // default entry mode) — updating its planned stop so the bracket uses the new
+  // level on fill. Partial/close/tp only make sense on an already-open position.
+  const slKind = action.kind === "sl_move" || action.kind === "sl_breakeven";
+  const workingForGroup = slKind
+    ? tradesRepo.working().filter((t) => t.groupId === group.id && !t.shadow)
+    : [];
+  const manageable = [...openForGroup, ...workingForGroup];
   const sym = action.symbol?.toUpperCase();
-  // Destructive actions REQUIRE an explicit symbol — never fall back to "the one
-  // open trade", so stray chatter containing a trigger word can't close/alter a
-  // live position. Only the informational tp_hit may use the single-trade fallback.
-  const destructive = action.kind !== "tp_hit";
+  // Only a full `close` (retraction / invalidation) REQUIRES an explicit symbol —
+  // stray chatter containing a close word must never flatten a live position.
+  // Everything else (SL move / break-even, partial book, TP progress) may fall
+  // back to the group's SINGLE managed position when no symbol is given: that's
+  // unambiguous and matches how traders post follow-ups ("move SL to 62000")
+  // right after opening one trade. An SL move is further guarded by the
+  // wrong-side check, so it can't be abused into an instant stop-out.
+  const requireExplicitSymbol = action.kind === "close";
   const targets = sym
-    ? openForGroup.filter((t) => t.symbol === sym)
-    : !destructive && openForGroup.length === 1
-      ? openForGroup
+    ? manageable.filter((t) => t.symbol === sym)
+    : !requireExplicitSymbol && manageable.length === 1
+      ? manageable
       : [];
 
   // A "close" (retraction / invalidation) should also cancel a still-resting
@@ -341,15 +353,23 @@ async function applyManagement(
   }
 
   if (targets.length === 0) {
+    // Distinguish "nothing open" from "ambiguous" so the operator knows whether
+    // to name the symbol (the latter happens with 2+ open trades and no symbol).
+    const ambiguous = !sym && manageable.length > 1;
+    const reason =
+      canceledWorking > 0
+        ? `${action.note} — canceled ${canceledWorking} working ${sym} order(s)`
+        : ambiguous
+          ? `${action.note} — ${manageable.length} open positions (${manageable
+              .map((t) => t.symbol)
+              .join(", ")}); specify the symbol`
+          : `${action.note} — no open ${sym ?? ""} position`.trim();
     const signal = signalsRepo.create({
       groupId: group.id,
       groupName: group.name,
       rawText,
       status: "managed",
-      error:
-        canceledWorking > 0
-          ? `${action.note} — canceled ${canceledWorking} working ${sym} order(s)`
-          : `${action.note} — no open ${sym ?? ""} position`.trim(),
+      error: reason,
     });
     event(
       "manage",
