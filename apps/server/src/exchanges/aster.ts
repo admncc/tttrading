@@ -182,6 +182,18 @@ export class AsterConnector implements ExchangeConnector {
   async getMidPrice(symbol: string): Promise<number | undefined> {
     const asset = await this.resolve(symbol);
     if (!asset) return undefined;
+    // Prefer the true mid (best bid/ask) — it drives sizing and the slippage
+    // gates, so last-trade skew on a thin book shouldn't leak in.
+    try {
+      const b = await this.pub<{ bidPrice: string; askPrice: string }>("/fapi/v1/ticker/bookTicker", {
+        symbol: asset.asterSymbol,
+      });
+      const bid = Number(b.bidPrice);
+      const ask = Number(b.askPrice);
+      if (Number.isFinite(bid) && Number.isFinite(ask) && bid > 0 && ask > 0) return (bid + ask) / 2;
+    } catch {
+      /* fall back to last price */
+    }
     const t = await this.pub<{ price: string }>("/fapi/v1/ticker/price", {
       symbol: asset.asterSymbol,
     });
@@ -325,7 +337,10 @@ export class AsterConnector implements ExchangeConnector {
     if (!mid || mid <= 0) return { ok: false, filledPrice: 0, size: 0, simulated: !this.live, error: `No price for ${req.symbol}` };
 
     const size = roundStep(req.notionalUsd / mid, asset.stepSize, asset.szDecimals, "floor");
-    if (size <= 0 || size < asset.minQty) {
+    // A reduce-only close of a small remainder must always be attempted — never
+    // block it on minQty, or cancelling its brackets first would orphan an
+    // unprotected position that can't be closed. (Opens still respect minQty.)
+    if (size <= 0 || (!req.reduceOnly && size < asset.minQty)) {
       return { ok: false, filledPrice: mid, size: 0, simulated: !this.live, error: "Computed size below minimum" };
     }
     if (!req.reduceOnly && size * mid < asset.minNotional) {

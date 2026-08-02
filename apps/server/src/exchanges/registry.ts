@@ -51,20 +51,27 @@ export type Resolution =
  * can fall back to the primary rather than wrongly reporting "not listed").
  */
 export async function resolveForSymbol(symbol: string): Promise<Resolution> {
+  const chain = enabledExchanges();
   const tried: string[] = [];
-  let anyErrored = false;
-  for (const ex of enabledExchanges()) {
+  let backupErrored = false;
+  for (let i = 0; i < chain.length; i++) {
+    const ex = chain[i]!;
     try {
       const asset = await ex.getAsset(symbol);
       tried.push(ex.name);
       if (asset) return { kind: "found", ex, asset };
     } catch (err) {
-      anyErrored = true;
       log.warn(`resolveForSymbol ${symbol} on ${ex.name}:`, err instanceof Error ? err.message : err);
+      // The PRIMARY erroring is inconclusive: never fall through to a backup, or
+      // an HL-listed symbol (BTC/ETH/…) could open on the wrong venue during a
+      // transient HL outage. Return "unavailable" so the caller keeps the primary
+      // and lets the order path surface the error.
+      if (i === 0) return { kind: "unavailable" };
+      // A backup erroring is also inconclusive — remember it so we don't falsely
+      // report "not listed" when that backup might well have carried the symbol.
+      backupErrored = true;
     }
   }
-  // A transient metadata error anywhere (with no positive hit) is inconclusive —
-  // don't wrongly report "not listed"; let the caller fall back to the primary.
-  if (anyErrored) return { kind: "unavailable" };
+  if (backupErrored) return { kind: "unavailable" };
   return { kind: "notFound", tried };
 }
