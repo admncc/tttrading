@@ -4,34 +4,13 @@ import { groups as groupsRepo, signals as signalsRepo, trades as tradesRepo } fr
 import { parseSignal } from "../signals/parser.js";
 import { assessRisk } from "../risk/score.js";
 import { broadcast } from "../ws/hub.js";
-import { getTelegramClient, normalizeChannel } from "./listener.js";
+import { getTelegramClient, resolveEntity } from "./listener.js";
 
 export interface BackfillResult {
   groupId: string;
   groupName: string;
   imported: number;
   error?: string;
-}
-
-/**
- * Resolve a group's channel string to a Telegram entity. Public channels
- * resolve by @handle; private channels are found by numeric id in the account's
- * dialog list (a bare id is otherwise misread as a PeerUser).
- */
-async function resolveEntity(
-  client: NonNullable<ReturnType<typeof getTelegramClient>>,
-  channel: string,
-): Promise<unknown> {
-  const norm = normalizeChannel(channel);
-  if (!/^\d+$/.test(norm)) return client.getEntity(channel);
-
-  const dialogs = await client.getDialogs({});
-  for (const d of dialogs) {
-    const e = d.entity as { id?: unknown } | undefined;
-    if (e && String(e.id) === norm) return e;
-  }
-  // Fallback: try the -100-marked channel id form.
-  return client.getEntity(Number(`-100${norm}`));
 }
 
 /**

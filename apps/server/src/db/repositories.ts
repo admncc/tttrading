@@ -513,4 +513,26 @@ export const settings = {
   setAnthropicModel(model: string): void {
     kvSet("anthropicModel", model);
   },
+  /**
+   * Claim a Telegram message id for a group so it is processed exactly once,
+   * no matter whether it arrives via the live event stream or the catch-up
+   * poller. Returns true if this id was NOT seen before (caller should process
+   * it), false if it was already handled. Tracks per-message ids (not just a
+   * high-water mark) so a missed message in a gap is still caught later.
+   */
+  claimTelegramMessage(groupId: string, msgId: number): boolean {
+    const key = `seenMsgs:${groupId}`;
+    const raw = kvGet(key);
+    const arr: number[] = raw ? (JSON.parse(raw) as number[]) : [];
+    if (arr.includes(msgId)) return false;
+    arr.push(msgId);
+    // Keep the most recent 2000 ids per group (ids are monotonically increasing).
+    const trimmed = arr.length > 2000 ? arr.slice(arr.length - 2000) : arr;
+    kvSet(key, JSON.stringify(trimmed));
+    return true;
+  },
+  /** Mark a message id as already seen without processing (startup priming). */
+  markTelegramMessageSeen(groupId: string, msgId: number): void {
+    this.claimTelegramMessage(groupId, msgId);
+  },
 };
