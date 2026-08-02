@@ -20,7 +20,17 @@ import { dashboard, analytics } from "../stats/service.js";
 import { sanitizedBackup } from "../db/index.js";
 import { sendReport } from "../alerts/report.js";
 import { hyperliquid } from "../hyperliquid/connector.js";
-import { all as allExchanges } from "../exchanges/registry.js";
+import { all as allExchanges, byName as exchangeByName } from "../exchanges/registry.js";
+import {
+  asterApiKey,
+  asterApiSecret,
+  asterBaseUrl,
+  asterEnabled,
+  hlAccountAddress,
+  hlPrivateKey,
+  mexcBaseUrl,
+  mexcEnabled,
+} from "../exchanges/credentials.js";
 import {
   cancelWorkingTrade,
   closeAllTrades,
@@ -207,6 +217,106 @@ export async function buildServer() {
     return settingsPayload();
   });
 
+  /* --------------------------- exchanges (keys) ----------------------- */
+  // Never returns secret values — only whether each key is configured, plus the
+  // non-secret bits (enabled, base URL, addresses). Desk-entered keys are stored
+  // in the DB and override the env; secrets are redacted from backups.
+  const exchangesPayload = () => ({
+    env: config.tradingEnv,
+    hyperliquid: {
+      name: "hyperliquid" as const,
+      primary: true,
+      live: hyperliquid.live,
+      privateKeyConfigured: !!hlPrivateKey(),
+      privateKeySource: settingsRepo.hasExchangeValue("hl.privateKey")
+        ? "desk"
+        : config.hyperliquid.privateKey
+          ? "env"
+          : "none",
+      accountAddress: hlAccountAddress() || null,
+      signer: hyperliquid.signerAddress(),
+    },
+    aster: {
+      name: "aster" as const,
+      enabled: asterEnabled(),
+      live: exchangeByName("aster").live,
+      apiKeyConfigured: !!asterApiKey(),
+      apiSecretConfigured: !!asterApiSecret(),
+      keySource: settingsRepo.hasExchangeValue("aster.apiKey")
+        ? "desk"
+        : config.aster.apiKey
+          ? "env"
+          : "none",
+      baseUrl: asterBaseUrl(),
+    },
+    mexc: {
+      name: "mexc" as const,
+      enabled: mexcEnabled(),
+      live: false,
+      baseUrl: mexcBaseUrl(),
+      note: "routing + market data + simulation only (real order execution not enabled)",
+    },
+  });
+  app.get("/api/exchanges", async () => exchangesPayload());
+
+  app.put("/api/exchanges", async (req, reply) => {
+    if (!authEnabled) return reply.code(403).send({ error: "Set DESK_PASSWORD to change exchange settings." });
+    const url = z
+      .string()
+      .max(200)
+      .refine((s) => s === "" || /^https?:\/\//.test(s.trim()), "must be an http(s) URL");
+    const schema = z.object({
+      hyperliquid: z
+        .object({
+          privateKey: z.string().max(200).optional(), // "" clears the desk-stored key
+          accountAddress: z.string().max(120).optional(),
+        })
+        .optional(),
+      aster: z
+        .object({
+          enabled: z.boolean().optional(),
+          apiKey: z.string().max(200).optional(),
+          apiSecret: z.string().max(200).optional(),
+          baseUrl: url.optional(),
+        })
+        .optional(),
+      mexc: z
+        .object({
+          enabled: z.boolean().optional(),
+          baseUrl: url.optional(),
+        })
+        .optional(),
+    });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    const d = parsed.data;
+
+    if (d.hyperliquid) {
+      if (d.hyperliquid.privateKey !== undefined) {
+        settingsRepo.setExchangeValue("hl.privateKey", d.hyperliquid.privateKey.trim());
+        log.info(`Hyperliquid key ${d.hyperliquid.privateKey.trim() ? "updated via desk" : "cleared"}.`);
+      }
+      if (d.hyperliquid.accountAddress !== undefined) {
+        settingsRepo.setExchangeValue("hl.accountAddress", d.hyperliquid.accountAddress.trim());
+      }
+      hyperliquid.reloadCredentials(); // rebuild the signer with the new key
+    }
+    if (d.aster) {
+      if (d.aster.enabled !== undefined) settingsRepo.setExchangeFlag("aster.enabled", d.aster.enabled);
+      if (d.aster.apiKey !== undefined) {
+        settingsRepo.setExchangeValue("aster.apiKey", d.aster.apiKey.trim());
+        log.info(`Aster API key ${d.aster.apiKey.trim() ? "updated via desk" : "cleared"}.`);
+      }
+      if (d.aster.apiSecret !== undefined) settingsRepo.setExchangeValue("aster.apiSecret", d.aster.apiSecret.trim());
+      if (d.aster.baseUrl !== undefined) settingsRepo.setExchangeValue("aster.baseUrl", d.aster.baseUrl.trim());
+    }
+    if (d.mexc) {
+      if (d.mexc.enabled !== undefined) settingsRepo.setExchangeFlag("mexc.enabled", d.mexc.enabled);
+      if (d.mexc.baseUrl !== undefined) settingsRepo.setExchangeValue("mexc.baseUrl", d.mexc.baseUrl.trim());
+    }
+    return exchangesPayload();
+  });
+
   // Kill-switch: close all open positions AND pause new entries.
   app.post("/api/kill", async (_req, reply) => {
     if (!authEnabled) return reply.code(403).send({ error: "Set DESK_PASSWORD to enable the kill-switch." });
@@ -230,7 +340,7 @@ export async function buildServer() {
       { key: "signingKey", ok: hyperliquid.live, label: "Signing key configured" },
       {
         key: "accountAddress",
-        ok: !!config.hyperliquid.accountAddress || hyperliquid.live,
+        ok: !!hlAccountAddress() || hyperliquid.live,
         label: "Account address set",
       },
       { key: "balance", ok: (accountValue ?? 0) > 0, label: "Perps account funded" },

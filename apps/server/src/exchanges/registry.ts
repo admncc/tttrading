@@ -1,9 +1,9 @@
 import type { ExchangeName } from "@tttrading/shared";
-import { config } from "../config.js";
 import { log } from "../logger.js";
 import { hyperliquid } from "../hyperliquid/connector.js";
 import { aster } from "./aster.js";
 import { mexc } from "./mexc.js";
+import { asterEnabled, mexcEnabled } from "./credentials.js";
 import type { AssetInfo, ExchangeConnector } from "./types.js";
 
 /**
@@ -13,8 +13,8 @@ import type { AssetInfo, ExchangeConnector } from "./types.js";
  */
 function enabledExchanges(): ExchangeConnector[] {
   const list: ExchangeConnector[] = [hyperliquid];
-  if (config.aster.enabled) list.push(aster);
-  if (config.mexc.enabled) list.push(mexc);
+  if (asterEnabled()) list.push(aster);
+  if (mexcEnabled()) list.push(mexc);
   return list;
 }
 

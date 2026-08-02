@@ -1,5 +1,6 @@
 import type { ExchangeName } from "@tttrading/shared";
 import { config } from "../config.js";
+import { mexcBaseUrl, mexcEnabled } from "./credentials.js";
 import { log } from "../logger.js";
 import type {
   AccountSummary,
@@ -50,12 +51,16 @@ export class MexcConnector implements ExchangeConnector {
   readonly live = false; // market-data + simulation only (see class doc)
   private assets = new Map<string, MexcAsset>();
   private assetsLoadedAt = 0;
-  private readonly base = config.mexc.baseUrl;
 
   constructor() {
-    if (config.mexc.enabled) {
-      log.info(`MEXC connector in routing/market-data/sim mode (${this.base}) — orders simulated.`);
+    if (mexcEnabled()) {
+      log.info(`MEXC connector in routing/market-data/sim mode (${mexcBaseUrl()}) — orders simulated.`);
     }
+  }
+
+  /** Base host, read live so a desk change applies without a restart. */
+  private get base(): string {
+    return mexcBaseUrl();
   }
 
   simulating(): boolean {

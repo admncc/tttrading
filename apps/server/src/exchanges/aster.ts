@@ -1,7 +1,8 @@
 import crypto from "node:crypto";
 import type { ExchangeName } from "@tttrading/shared";
-import { config, asterReady } from "../config.js";
+import { config } from "../config.js";
 import { settings } from "../db/repositories.js";
+import { asterApiKey, asterApiSecret, asterBaseUrl, asterEnabled, asterReady } from "./credentials.js";
 import { log } from "../logger.js";
 import type {
   AccountSummary,
@@ -48,20 +49,27 @@ interface ExchangeInfoSymbol {
  */
 export class AsterConnector implements ExchangeConnector {
   readonly name: ExchangeName = "aster";
-  readonly live: boolean;
   private assets = new Map<string, AsterAsset>();
   private assetsLoadedAt = 0;
-  private readonly base = config.aster.baseUrl;
 
   constructor() {
-    this.live = asterReady();
-    if (config.aster.enabled) {
+    if (asterEnabled()) {
       log.info(
-        this.live
-          ? `Aster connector LIVE (${this.base}).`
-          : `Aster connector in market-data/sim mode (${this.base}) — no API key, orders simulated.`,
+        asterReady()
+          ? `Aster connector LIVE (${asterBaseUrl()}).`
+          : `Aster connector in market-data/sim mode (${asterBaseUrl()}) — no API key, orders simulated.`,
       );
     }
+  }
+
+  /** Base host, read live so a desk change (Settings → Exchanges) applies at once. */
+  private get base(): string {
+    return asterBaseUrl();
+  }
+
+  /** True when a key+secret are configured (desk or env) and not in paper mode. */
+  get live(): boolean {
+    return asterReady();
   }
 
   simulating(): boolean {
@@ -74,8 +82,9 @@ export class AsterConnector implements ExchangeConnector {
     const qs = query
       ? "?" + new URLSearchParams(Object.entries(query).map(([k, v]) => [k, String(v)])).toString()
       : "";
+    const key = asterApiKey();
     const res = await fetch(`${this.base}${path}${qs}`, {
-      headers: config.aster.apiKey ? { "X-MBX-APIKEY": config.aster.apiKey } : undefined,
+      headers: key ? { "X-MBX-APIKEY": key } : undefined,
     });
     return this.parse<T>(res);
   }
@@ -85,21 +94,20 @@ export class AsterConnector implements ExchangeConnector {
     path: string,
     params: Record<string, string | number | boolean> = {},
   ): Promise<T> {
-    if (!config.aster.apiKey || !config.aster.apiSecret) {
+    const key = asterApiKey();
+    const secret = asterApiSecret();
+    if (!key || !secret) {
       throw new Error("Aster API key/secret not configured");
     }
     const sp = new URLSearchParams();
     for (const [k, v] of Object.entries(params)) sp.append(k, String(v));
     sp.append("timestamp", String(Date.now()));
     sp.append("recvWindow", "5000");
-    const signature = crypto
-      .createHmac("sha256", config.aster.apiSecret)
-      .update(sp.toString())
-      .digest("hex");
+    const signature = crypto.createHmac("sha256", secret).update(sp.toString()).digest("hex");
     sp.append("signature", signature);
     const res = await fetch(`${this.base}${path}?${sp.toString()}`, {
       method,
-      headers: { "X-MBX-APIKEY": config.aster.apiKey },
+      headers: { "X-MBX-APIKEY": key },
     });
     return this.parse<T>(res);
   }

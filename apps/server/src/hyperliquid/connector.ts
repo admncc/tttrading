@@ -1,8 +1,9 @@
 import * as hl from "@nktkas/hyperliquid";
 import { privateKeyToAccount } from "viem/accounts";
 import type { ExchangeName, TradeSide } from "@tttrading/shared";
-import { config, hyperliquidReady } from "../config.js";
+import { config } from "../config.js";
 import { settings } from "../db/repositories.js";
+import { hlAccountAddress, hlPrivateKey, hlReady } from "../exchanges/credentials.js";
 import { log } from "../logger.js";
 import type {
   AccountSummary,
@@ -43,31 +44,22 @@ export class HyperliquidConnector implements ExchangeConnector {
   private transport: hl.HttpTransport;
   private info: hl.PublicClient;
   private exchange?: hl.WalletClient;
+  /** The key the current WalletClient was built from (to detect desk changes). */
+  private exchangeKey?: string;
   private assets = new Map<string, AssetInfo>();
   private assetsLoadedAt = 0;
-  readonly live: boolean;
 
   constructor() {
     this.transport = new hl.HttpTransport({ isTestnet: config.isTestnet });
     this.info = new hl.PublicClient({ transport: this.transport });
-    this.live = hyperliquidReady();
-
+    this.ensureExchange();
     if (this.live) {
-      const account = privateKeyToAccount(
-        config.hyperliquid.privateKey as `0x${string}`,
-      );
-      this.exchange = new hl.WalletClient({
-        wallet: account,
-        transport: this.transport,
-        isTestnet: config.isTestnet,
-      });
       log.info(`Hyperliquid connector LIVE on ${config.tradingEnv}.`);
-      if (!config.hyperliquid.accountAddress) {
-        const signer = account.address;
+      if (!hlAccountAddress()) {
         log.warn(
-          `HL_ACCOUNT_ADDRESS not set — reading state from the signer address ${signer}. ` +
-            `If HL_PRIVATE_KEY is an agent/API wallet, positions & balance live on the MASTER ` +
-            `account; set HL_ACCOUNT_ADDRESS to the master address or the desk will show zero exposure.`,
+          `HL_ACCOUNT_ADDRESS not set — reading state from the signer address. ` +
+            `If the key is an agent/API wallet, positions & balance live on the MASTER ` +
+            `account; set the account address or the desk will show zero exposure.`,
         );
       }
     } else {
@@ -75,6 +67,44 @@ export class HyperliquidConnector implements ExchangeConnector {
         `Hyperliquid connector in ${config.tradingEnv} mode (no signing) — orders are simulated.`,
       );
     }
+  }
+
+  /** True when a signing key is configured (desk or env) and not in paper mode. */
+  get live(): boolean {
+    return hlReady();
+  }
+
+  /**
+   * (Re)build the signing WalletClient when the effective key changes — so a key
+   * entered in the desk (Settings → Exchanges) takes effect without a restart.
+   * Tears the client down if signing is no longer available.
+   */
+  private ensureExchange(): void {
+    const key = hlReady() ? hlPrivateKey() : "";
+    if (!key) {
+      this.exchange = undefined;
+      this.exchangeKey = undefined;
+      return;
+    }
+    if (this.exchange && this.exchangeKey === key) return;
+    try {
+      const account = privateKeyToAccount(key as `0x${string}`);
+      this.exchange = new hl.WalletClient({
+        wallet: account,
+        transport: this.transport,
+        isTestnet: config.isTestnet,
+      });
+      this.exchangeKey = key;
+    } catch (err) {
+      this.exchange = undefined;
+      this.exchangeKey = undefined;
+      log.error("Hyperliquid signer init failed (bad private key?):", err instanceof Error ? err.message : err);
+    }
+  }
+
+  /** Re-read credentials and rebuild the signer (called after a desk key change). */
+  reloadCredentials(): void {
+    this.ensureExchange();
   }
 
   /**
@@ -86,10 +116,10 @@ export class HyperliquidConnector implements ExchangeConnector {
   }
 
   private accountAddress(): `0x${string}` {
-    const addr = config.hyperliquid.accountAddress || "";
+    const addr = hlAccountAddress() || "";
     if (addr) return addr as `0x${string}`;
     if (this.live) {
-      return privateKeyToAccount(config.hyperliquid.privateKey as `0x${string}`).address;
+      return privateKeyToAccount(hlPrivateKey() as `0x${string}`).address;
     }
     throw new Error("No Hyperliquid account address configured.");
   }
@@ -150,7 +180,7 @@ export class HyperliquidConnector implements ExchangeConnector {
 
   /** Open positions for the configured account. */
   async getPositions(): Promise<Position[]> {
-    if (!this.live && !config.hyperliquid.accountAddress) return [];
+    if (!this.live && !hlAccountAddress()) return [];
     const state = (await this.info.clearinghouseState({
       user: this.accountAddress(),
     })) as unknown as {
@@ -177,7 +207,7 @@ export class HyperliquidConnector implements ExchangeConnector {
   signerAddress(): string | null {
     if (!this.live) return null;
     try {
-      return privateKeyToAccount(config.hyperliquid.privateKey as `0x${string}`).address;
+      return privateKeyToAccount(hlPrivateKey() as `0x${string}`).address;
     } catch {
       return null;
     }
@@ -220,6 +250,7 @@ export class HyperliquidConnector implements ExchangeConnector {
    * toPerp=true funds perp trading (Spot -> Perp). Requires a signing key.
    */
   async transferUsd(amount: number, toPerp: boolean): Promise<{ ok: boolean; error?: string }> {
+    this.ensureExchange();
     if (!this.live || !this.exchange) return { ok: false, error: "not connected (no signing key)" };
     if (!Number.isFinite(amount) || amount <= 0) return { ok: false, error: "amount must be > 0" };
     try {
@@ -259,6 +290,7 @@ export class HyperliquidConnector implements ExchangeConnector {
 
   /** Place a market order (implemented as an aggressive IOC limit). */
   async placeMarketOrder(req: OrderRequest): Promise<OrderResult> {
+    this.ensureExchange();
     let asset: AssetInfo | undefined;
     let mid: number | undefined;
     try {
@@ -370,6 +402,7 @@ export class HyperliquidConnector implements ExchangeConnector {
     simulated: boolean;
     error?: string;
   }> {
+    this.ensureExchange();
     const sim = !this.exchange || this.simulating();
     let asset: AssetInfo | undefined;
     try {
@@ -442,6 +475,7 @@ export class HyperliquidConnector implements ExchangeConnector {
     /** Force real placement even in test mode (managing an already-real position). */
     force?: boolean;
   }): Promise<BracketResult> {
+    this.ensureExchange();
     const { symbol, side, size, stopLoss, takeProfits, slippage, force } = params;
     const tps = takeProfits ?? [];
     if (stopLoss === undefined && tps.length === 0) {
@@ -552,7 +586,7 @@ export class HyperliquidConnector implements ExchangeConnector {
 
   /** Recent fills for the configured account (most recent first). */
   async getRecentFills(): Promise<FillLite[]> {
-    if (!this.live && !config.hyperliquid.accountAddress) return [];
+    if (!this.live && !hlAccountAddress()) return [];
     const fills = (await this.info.userFills({
       user: this.accountAddress(),
     })) as unknown as {
@@ -579,6 +613,7 @@ export class HyperliquidConnector implements ExchangeConnector {
 
   /** Cancel resting orders (e.g. SL/TP) for a symbol. */
   async cancelOrders(symbol: string, orderIds: string[]): Promise<void> {
+    this.ensureExchange();
     if (!this.live || !this.exchange || orderIds.length === 0) return;
     const asset = await this.getAsset(symbol);
     if (!asset) return;

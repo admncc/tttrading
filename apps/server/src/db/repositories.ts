@@ -616,4 +616,32 @@ export const settings = {
   setLastRefine(groupId: string, iso: string): void {
     kvSet(`lastRefine:${groupId}`, iso);
   },
+
+  /* ---- desk-stored exchange credentials (write-only; env is the fallback) ---- */
+  /** A desk-entered exchange value ("" when unset — callers fall back to env). */
+  getExchangeValue(key: string): string {
+    return kvGet(`ex:${key}`) ?? "";
+  },
+  setExchangeValue(key: string, value: string): void {
+    kvSet(`ex:${key}`, value);
+  },
+  /** True if a non-empty desk value is stored for this key. */
+  hasExchangeValue(key: string): boolean {
+    return !!kvGet(`ex:${key}`);
+  },
+  /** A desk-entered boolean flag, or undefined when the desk hasn't set it. */
+  getExchangeFlag(key: string): boolean | undefined {
+    const v = kvGet(`ex:${key}`);
+    return v === undefined ? undefined : v === "true";
+  },
+  setExchangeFlag(key: string, on: boolean): void {
+    kvSet(`ex:${key}`, on ? "true" : "false");
+  },
+  /** Every desk-stored exchange key (for backup redaction). */
+  exchangeKeys(): string[] {
+    const rows = db
+      .prepare("SELECT key FROM app_settings WHERE key LIKE 'ex:%'")
+      .all() as { key: string }[];
+    return rows.map((r) => r.key);
+  },
 };

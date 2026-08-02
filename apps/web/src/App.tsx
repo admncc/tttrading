@@ -8,9 +8,10 @@ import { Signals } from "./pages/Signals.js";
 import { Messages } from "./pages/Messages.js";
 import { Groups } from "./pages/Groups.js";
 import { Logs } from "./pages/Logs.js";
+import { Settings } from "./pages/Settings.js";
 import { Login } from "./pages/Login.js";
 
-type Tab = "overview" | "analytics" | "trades" | "signals" | "messages" | "groups" | "logs";
+type Tab = "overview" | "analytics" | "trades" | "signals" | "messages" | "groups" | "settings" | "logs";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "overview", label: "Overview" },
@@ -18,7 +19,8 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "signals", label: "Signals" },
   { id: "messages", label: "Messages" },
   { id: "trades", label: "Trades" },
-  { id: "groups", label: "Groups & Settings" },
+  { id: "groups", label: "Groups" },
+  { id: "settings", label: "Settings" },
   { id: "logs", label: "Logs" },
 ];
 
@@ -284,6 +286,7 @@ export function App() {
         )}
         {tab === "trades" && <Trades trades={trades} prices={prices} onChange={refresh} />}
         {tab === "groups" && <Groups groups={groups} onChange={refresh} />}
+        {tab === "settings" && <Settings />}
         {tab === "logs" && <Logs logs={logs} onReload={reloadLogs} />}
       </main>
     </div>

@@ -142,7 +142,8 @@ export function sanitizedBackup(): Buffer {
   const snapshot = db.serialize();
   const tmp = new Database(snapshot);
   try {
-    tmp.prepare("DELETE FROM app_settings WHERE key = 'anthropicKey'").run();
+    // Strip the Anthropic key and every desk-stored exchange credential (ex:*).
+    tmp.prepare("DELETE FROM app_settings WHERE key = 'anthropicKey' OR key LIKE 'ex:%'").run();
     return tmp.serialize();
   } finally {
     tmp.close();

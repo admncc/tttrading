@@ -30,6 +30,41 @@ export interface AccountInfo {
   error?: string;
 }
 
+export interface ExchangesConfig {
+  env: string;
+  hyperliquid: {
+    name: "hyperliquid";
+    primary: boolean;
+    live: boolean;
+    privateKeyConfigured: boolean;
+    privateKeySource: string;
+    accountAddress: string | null;
+    signer: string | null;
+  };
+  aster: {
+    name: "aster";
+    enabled: boolean;
+    live: boolean;
+    apiKeyConfigured: boolean;
+    apiSecretConfigured: boolean;
+    keySource: string;
+    baseUrl: string;
+  };
+  mexc: {
+    name: "mexc";
+    enabled: boolean;
+    live: boolean;
+    baseUrl: string;
+    note: string;
+  };
+}
+
+export interface ExchangesPatch {
+  hyperliquid?: { privateKey?: string; accountAddress?: string };
+  aster?: { enabled?: boolean; apiKey?: string; apiSecret?: string; baseUrl?: string };
+  mexc?: { enabled?: boolean; baseUrl?: string };
+}
+
 export interface TelegramHealth {
   configured: boolean;
   connected: boolean;
@@ -151,6 +186,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ horizonDays }),
     }),
+
+  exchanges: () => req<ExchangesConfig>("/api/exchanges"),
+  saveExchanges: (patch: ExchangesPatch) =>
+    req<ExchangesConfig>("/api/exchanges", { method: "PUT", body: JSON.stringify(patch) }),
 
   telegramHealth: () => req<TelegramHealth>("/api/telegram/health"),
   account: () => req<AccountInfo>("/api/account"),
