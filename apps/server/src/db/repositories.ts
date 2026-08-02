@@ -87,6 +87,8 @@ interface TradeRow {
   take_profits: string | null;
   realized_pnl: number | null;
   fees: number | null;
+  banked_pnl: number | null;
+  banked_fees: number | null;
   exchange_order_id: string | null;
   sl_order_id: string | null;
   tp_order_ids: string | null;
@@ -120,6 +122,8 @@ function toTrade(r: TradeRow): Trade {
     takeProfits: r.take_profits ? (JSON.parse(r.take_profits) as number[]) : undefined,
     realizedPnl: r.realized_pnl ?? undefined,
     fees: r.fees ?? undefined,
+    bankedPnl: r.banked_pnl ?? undefined,
+    bankedFees: r.banked_fees ?? undefined,
     exchangeOrderId: r.exchange_order_id ?? undefined,
     slOrderId: r.sl_order_id ?? undefined,
     tpOrderIds: r.tp_order_ids ? (JSON.parse(r.tp_order_ids) as string[]) : undefined,
@@ -321,11 +325,11 @@ export const trades = {
     db.prepare(
       `INSERT INTO trades (id, signal_id, group_id, group_name, symbol, side, status, env,
         leverage, notional_usd, size, entry_price, exit_price, stop_loss, take_profits,
-        realized_pnl, fees, exchange_order_id, sl_order_id, tp_order_ids, bracket_protected,
+        realized_pnl, fees, banked_pnl, banked_fees, exchange_order_id, sl_order_id, tp_order_ids, bracket_protected,
         tp_filled_count, sl_moved_to_breakeven, risk, shadow, simulated, error, opened_at, closed_at)
        VALUES (@id, @signal_id, @group_id, @group_name, @symbol, @side, @status, @env,
         @leverage, @notional_usd, @size, @entry_price, @exit_price, @stop_loss, @take_profits,
-        @realized_pnl, @fees, @exchange_order_id, @sl_order_id, @tp_order_ids, @bracket_protected,
+        @realized_pnl, @fees, @banked_pnl, @banked_fees, @exchange_order_id, @sl_order_id, @tp_order_ids, @bracket_protected,
         @tp_filled_count, @sl_moved_to_breakeven, @risk, @shadow, @simulated, @error, @opened_at, @closed_at)`,
     ).run({
       id,
@@ -345,6 +349,8 @@ export const trades = {
       take_profits: input.takeProfits ? JSON.stringify(input.takeProfits) : null,
       realized_pnl: input.realizedPnl ?? null,
       fees: input.fees ?? null,
+      banked_pnl: input.bankedPnl ?? null,
+      banked_fees: input.bankedFees ?? null,
       exchange_order_id: input.exchangeOrderId ?? null,
       sl_order_id: input.slOrderId ?? null,
       tp_order_ids: input.tpOrderIds ? JSON.stringify(input.tpOrderIds) : null,
@@ -367,8 +373,9 @@ export const trades = {
     const m = { ...existing, ...patch };
     db.prepare(
       `UPDATE trades SET status=@status, exit_price=@exit_price, stop_loss=@stop_loss,
-        take_profits=@take_profits, realized_pnl=@realized_pnl,
-        fees=@fees, exchange_order_id=@exchange_order_id, sl_order_id=@sl_order_id,
+        take_profits=@take_profits, realized_pnl=@realized_pnl, size=@size,
+        fees=@fees, banked_pnl=@banked_pnl, banked_fees=@banked_fees,
+        exchange_order_id=@exchange_order_id, sl_order_id=@sl_order_id,
         tp_order_ids=@tp_order_ids, bracket_protected=@bracket_protected,
         tp_filled_count=@tp_filled_count, sl_moved_to_breakeven=@sl_moved_to_breakeven,
         risk=@risk, shadow=@shadow, simulated=@simulated, error=@error, closed_at=@closed_at
@@ -380,7 +387,10 @@ export const trades = {
       stop_loss: m.stopLoss ?? null,
       take_profits: m.takeProfits ? JSON.stringify(m.takeProfits) : null,
       realized_pnl: m.realizedPnl ?? null,
+      size: m.size,
       fees: m.fees ?? null,
+      banked_pnl: m.bankedPnl ?? null,
+      banked_fees: m.bankedFees ?? null,
       exchange_order_id: m.exchangeOrderId ?? null,
       sl_order_id: m.slOrderId ?? null,
       tp_order_ids: m.tpOrderIds ? JSON.stringify(m.tpOrderIds) : null,

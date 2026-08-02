@@ -202,6 +202,64 @@ async function moveStop(trade: Trade, newStop: number, breakeven: boolean): Prom
   });
 }
 
+/** Taker fee rate applied to each exit leg (Hyperliquid-ish). */
+const FEE_RATE = 0.00035;
+
+/**
+ * Partially close a trade ("book X%"): reduce the remaining size and BANK the
+ * realized PnL of the exited fraction (with fees), so it carries into the final
+ * realizedPnl when the trade eventually closes. Does NOT touch tpFilledCount —
+ * that counter belongs to native TP scale-out, a separate mechanism.
+ */
+async function partialClose(trade: Trade, rawFraction: number): Promise<void> {
+  const frac = Math.min(Math.max(rawFraction, 0), 0.95);
+  const closeSize = trade.size * frac;
+  if (closeSize <= 0) return;
+
+  // Reference exit price: the real fill in live mode, else the live mid.
+  let exitPx: number | undefined;
+  if (!trade.simulated && hyperliquid.live) {
+    const res = await hyperliquid.placeMarketOrder({
+      symbol: trade.symbol,
+      side: trade.side === "long" ? "short" : "long",
+      notionalUsd: trade.entryPrice * closeSize,
+      leverage: trade.leverage,
+      marginMode: "cross",
+      maxSlippage: 0.01,
+      reduceOnly: true,
+    });
+    if (res.ok && res.filledPrice > 0) exitPx = res.filledPrice;
+  }
+  if (exitPx === undefined) {
+    try {
+      const mid = await hyperliquid.getMidPrice(trade.symbol);
+      if (mid && mid > 0) exitPx = mid;
+    } catch {
+      /* price feed down */
+    }
+  }
+  if (exitPx === undefined || exitPx <= 0) exitPx = trade.entryPrice;
+
+  const dir = trade.side === "long" ? 1 : -1;
+  const legPnl = (exitPx - trade.entryPrice) * dir * closeSize;
+  // Round-trip fee for this leg (entry + exit side). The remaining size's entry
+  // fee is charged by closeTrade on the reduced size, so together they add up to
+  // exactly one entry fee on the original position.
+  const legFee = (trade.entryPrice + exitPx) * closeSize * FEE_RATE;
+
+  tradesRepo.update(trade.id, {
+    size: trade.size - closeSize,
+    bankedPnl: (trade.bankedPnl ?? 0) + legPnl,
+    bankedFees: (trade.bankedFees ?? 0) + legFee,
+  });
+  event(
+    "manage",
+    `Booked ${(frac * 100).toFixed(0)}% of ${trade.symbol} @ ${exitPx} — banked ${(legPnl - legFee).toFixed(2)} USDC`,
+    { fraction: frac, exitPx, legPnl, legFee, remainingSize: trade.size - closeSize },
+    { groupId: trade.groupId },
+  );
+}
+
 /**
  * Apply a trade-management message to the group's matching open position(s).
  * Records a "managed" signal for visibility. Returns null if it couldn't act
@@ -247,23 +305,11 @@ async function applyManagement(
     } else if (action.kind === "sl_move" && action.newStop !== undefined) {
       await moveStop(t, action.newStop, false);
     } else if (action.kind === "partial_close") {
-      const frac = Math.min(Math.max(action.fraction ?? 0, 0), 0.95);
-      const closeSize = t.size * frac;
-      if (closeSize > 0) {
-        if (!t.simulated && hyperliquid.live) {
-          await hyperliquid.placeMarketOrder({
-            symbol: t.symbol,
-            side: t.side === "long" ? "short" : "long",
-            notionalUsd: t.entryPrice * closeSize,
-            leverage: t.leverage,
-            marginMode: "cross",
-            maxSlippage: 0.01,
-            reduceOnly: true,
-          });
-        }
-        tradesRepo.update(t.id, { size: t.size - closeSize, tpFilledCount: (t.tpFilledCount ?? 0) + 1 });
+      await partialClose(t, action.fraction ?? 0);
+      if (action.alsoBreakeven) {
+        const fresh = tradesRepo.get(t.id);
+        if (fresh) await moveStop(fresh, fresh.entryPrice, true);
       }
-      if (action.alsoBreakeven) await moveStop(t, t.entryPrice, true);
     } else if (action.kind === "tp_hit") {
       tradesRepo.update(t.id, { tpFilledCount: (t.tpFilledCount ?? 0) + 1 });
     }
@@ -551,19 +597,25 @@ export async function closeTrade(tradeId: string, exitPriceOverride?: number) {
     }
     gross += (exitPrice - trade.entryPrice) * dir * remainingSize;
     const feeBase = trade.entryPrice * trade.size + legNotional + exitPrice * remainingSize;
-    const fees = feeBase * 0.00035;
+    const fees = feeBase * FEE_RATE;
+    // Fold in profit/fees already banked from earlier partial exits ("book X%").
+    const bankedPnl = trade.bankedPnl ?? 0;
+    const bankedFees = trade.bankedFees ?? 0;
     const updated = tradesRepo.update(tradeId, {
       status: "closed",
       exitPrice,
-      realizedPnl: gross - fees,
-      fees: (trade.fees ?? 0) + fees,
+      realizedPnl: bankedPnl - bankedFees + gross - fees,
+      fees: (trade.fees ?? 0) + bankedFees + fees,
       closedAt: new Date().toISOString(),
     });
     if (updated) {
       broadcast({ type: "trade", trade: updated });
       pushStats();
       alertClosed(updated);
-      log.info(`Closed ${trade.symbol} ${trade.side} — PnL ${(gross - fees).toFixed(2)} USDC`);
+      log.info(
+        `Closed ${trade.symbol} ${trade.side} — PnL ${(bankedPnl - bankedFees + gross - fees).toFixed(2)} USDC` +
+          (bankedPnl ? ` (incl. ${(bankedPnl - bankedFees).toFixed(2)} banked)` : ""),
+      );
     }
     return updated;
   } finally {

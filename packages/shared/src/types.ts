@@ -159,6 +159,14 @@ export interface Trade {
   realizedPnl?: number;
   /** Fees paid in USDC. */
   fees?: number;
+  /**
+   * Realized PnL already locked in from partial exits (e.g. a "book 50%"
+   * management message) while the position is still open. Folded into
+   * realizedPnl when the trade finally closes.
+   */
+  bankedPnl?: number;
+  /** Fees paid on those partial exits, folded into fees on final close. */
+  bankedFees?: number;
   /** Exchange order id of the entry, when available. */
   exchangeOrderId?: string;
   /** Resting stop-loss trigger order id (live mode). */

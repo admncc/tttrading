@@ -49,6 +49,8 @@ CREATE TABLE IF NOT EXISTS trades (
   take_profits TEXT,             -- JSON number[]
   realized_pnl REAL,
   fees REAL,
+  banked_pnl REAL,
+  banked_fees REAL,
   exchange_order_id TEXT,
   sl_order_id TEXT,
   tp_order_ids TEXT,             -- JSON string[]
@@ -108,6 +110,8 @@ function migrate(database: Database.Database): void {
       risk: "TEXT",
       shadow: "INTEGER",
       simulated: "INTEGER",
+      banked_pnl: "REAL",
+      banked_fees: "REAL",
     },
     signals: {
       risk: "TEXT",

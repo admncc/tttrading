@@ -78,11 +78,14 @@ async function reconcileTrade(trade: Trade, byOid: Map<string, FillLite[]>): Pro
   if (fullyClosed) {
     const notional = tradeFills.reduce((s, f) => s + f.price * f.size, 0);
     const exitPrice = closedSize > 0 ? notional / closedSize : trade.entryPrice;
+    // Fold in profit/fees banked from earlier partial exits ("book X%").
+    const bankedPnl = trade.bankedPnl ?? 0;
+    const bankedFees = trade.bankedFees ?? 0;
     const updated = tradesRepo.update(trade.id, {
       status: "closed",
       exitPrice,
-      realizedPnl: grossPnl - fees,
-      fees,
+      realizedPnl: bankedPnl - bankedFees + grossPnl - fees,
+      fees: bankedFees + fees,
       tpFilledCount: tpFilled,
       closedAt: new Date().toISOString(),
     });
@@ -90,7 +93,7 @@ async function reconcileTrade(trade: Trade, byOid: Map<string, FillLite[]>): Pro
       broadcast({ type: "trade", trade: updated });
       alertClosed(updated);
       log.info(
-        `Reconciled close ${trade.symbol} ${trade.side} — PnL ${(grossPnl - fees).toFixed(2)} USDC ` +
+        `Reconciled close ${trade.symbol} ${trade.side} — PnL ${(bankedPnl - bankedFees + grossPnl - fees).toFixed(2)} USDC ` +
           `(${tpFilled}/${tpOids.length} TP)`,
       );
     }
@@ -207,13 +210,16 @@ async function evaluateSimulatedTrade(trade: Trade): Promise<boolean> {
     exitPrice = stopPrice!;
   }
   const fees = trade.notionalUsd * 0.0007;
-  const realizedPnl = gross - fees;
+  // Fold in profit/fees banked from earlier partial exits ("book X%").
+  const bankedPnl = trade.bankedPnl ?? 0;
+  const bankedFees = trade.bankedFees ?? 0;
+  const realizedPnl = bankedPnl - bankedFees + gross - fees;
 
   const updated = tradesRepo.update(trade.id, {
     status: "closed",
     exitPrice,
     realizedPnl,
-    fees,
+    fees: bankedFees + fees,
     tpFilledCount: hitTps,
     closedAt: new Date().toISOString(),
   });

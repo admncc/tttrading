@@ -6,6 +6,12 @@ import { RiskDot } from "../components/Risk.js";
 
 type Filter = "all" | "open" | "closed" | "shadow";
 
+/** Net PnL already realized from partial exits (gross banked minus banked fees). */
+function netBanked(t: Trade): number | undefined {
+  if (t.bankedPnl === undefined && t.bankedFees === undefined) return undefined;
+  return (t.bankedPnl ?? 0) - (t.bankedFees ?? 0);
+}
+
 export function Trades({ trades, onChange }: { trades: Trade[]; onChange: () => void }) {
   const [filter, setFilter] = useState<Filter>("all");
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -127,8 +133,17 @@ export function Trades({ trades, onChange }: { trades: Trade[]; onChange: () => 
                     )}
                   </td>
                   <td>{t.exitPrice !== undefined ? num(t.exitPrice) : "—"}</td>
-                  <td className={pnlClass(t.realizedPnl)}>
-                    {t.realizedPnl !== undefined ? usd(t.realizedPnl) : "—"}
+                  <td className={pnlClass(t.realizedPnl ?? netBanked(t))}>
+                    {t.realizedPnl !== undefined ? (
+                      usd(t.realizedPnl)
+                    ) : netBanked(t) !== undefined ? (
+                      <span title="Realized so far from partial exits (position still open)">
+                        {usd(netBanked(t)!)}
+                        <span className="muted" style={{ fontSize: 11 }}> banked</span>
+                      </span>
+                    ) : (
+                      "—"
+                    )}
                   </td>
                   <td>
                     <span className={`tag ${t.status}`}>{t.status}</span>
