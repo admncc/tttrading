@@ -10,7 +10,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import type { DashboardStats } from "@tttrading/shared";
+import type { DashboardStats, Signal } from "@tttrading/shared";
 import { pct, pnlClass, shortTime, usd } from "../format.js";
 
 function Kpi({ label, value, cls }: { label: string; value: string; cls?: string }) {
@@ -22,9 +22,34 @@ function Kpi({ label, value, cls }: { label: string; value: string; cls?: string
   );
 }
 
-export function Overview({ stats }: { stats: DashboardStats | null }) {
+/** Classify a message for the feed: a fresh entry, a trade change, or info. */
+function messageType(s: Signal): { label: string; cls: string } {
+  if (s.status === "managed") return { label: "Trade change", cls: "managed" };
+  // A parsed entry that was actually treated as a signal. "unparseable" carries
+  // a weak below-threshold parse that we did NOT act on — that's chatter.
+  if (s.parsed && s.status !== "unparseable") return { label: "Signal", cls: "long" };
+  return { label: "Info", cls: "" };
+}
+
+function oneLine(text: string, max = 90): string {
+  const t = text.replace(/\s+/g, " ").trim();
+  return t.length > max ? t.slice(0, max - 1) + "…" : t;
+}
+
+export function Overview({
+  stats,
+  signals,
+}: {
+  stats: DashboardStats | null;
+  signals: Signal[];
+}) {
   if (!stats) return <div className="empty">Loading…</div>;
   const o = stats.overall;
+
+  // Latest 10 messages across all channels (signals arrive newest-first).
+  const feed = [...signals]
+    .sort((a, b) => (a.receivedAt < b.receivedAt ? 1 : -1))
+    .slice(0, 10);
 
   const equityData = stats.equityCurve.map((p) => ({ t: shortTime(p.t), pnl: p.pnl }));
   const groupData = stats.byGroup.map((g) => ({
@@ -48,6 +73,46 @@ export function Overview({ stats }: { stats: DashboardStats | null }) {
         <Kpi label="Avg PnL / trade" value={usd(o.avgPnl)} cls={pnlClass(o.avgPnl)} />
         <Kpi label="Best" value={usd(o.bestTrade)} cls="pos" />
         <Kpi label="Worst" value={usd(o.worstTrade)} cls="neg" />
+      </div>
+
+      <div className="panel">
+        <h2>Latest messages</h2>
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Channel</th>
+                <th>Type</th>
+                <th>Message</th>
+              </tr>
+            </thead>
+            <tbody>
+              {feed.map((s) => {
+                const mt = messageType(s);
+                return (
+                  <tr key={s.id}>
+                    <td className="muted">{shortTime(s.receivedAt)}</td>
+                    <td>{s.groupName}</td>
+                    <td>
+                      <span className={`tag ${mt.cls}`}>{mt.label}</span>
+                    </td>
+                    <td title={s.rawText} style={{ whiteSpace: "normal" }}>
+                      {oneLine(s.rawText)}
+                    </td>
+                  </tr>
+                );
+              })}
+              {feed.length === 0 && (
+                <tr>
+                  <td colSpan={4} className="empty">
+                    No messages yet.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <div className="panel">

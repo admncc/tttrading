@@ -250,7 +250,7 @@ export function App() {
             <strong> no real orders</strong> are sent. Flip “Go live” in the sidebar when you're ready.
           </div>
         )}
-        {tab === "overview" && <Overview stats={stats} />}
+        {tab === "overview" && <Overview stats={stats} signals={signals} />}
         {tab === "signals" && (
           <Signals signals={signals} groups={groups} onChange={refresh} />
         )}
