@@ -10,7 +10,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import type { DashboardStats, Signal } from "@tttrading/shared";
+import type { DashboardStats, Signal, Trade } from "@tttrading/shared";
 import { pct, pnlClass, shortTime, usd } from "../format.js";
 import { ListenerHealth } from "../components/ListenerHealth.js";
 
@@ -37,18 +37,66 @@ function oneLine(text: string, max = 90): string {
   return t.length > max ? t.slice(0, max - 1) + "…" : t;
 }
 
+/** A recognized trade signal (not chatter / management / imported history). */
+function isSignalRow(s: Signal): boolean {
+  return (
+    s.parsed !== undefined &&
+    s.status !== "unparseable" &&
+    s.status !== "managed" &&
+    s.status !== "backfill"
+  );
+}
+
+/** Compact status label + colour for the latest-signals table. */
+function signalStatus(s: Signal, trade?: Trade): { label: string; cls: string; title?: string } {
+  const paren = (err?: string) => {
+    if (!err) return "";
+    const short = err.split(/[:—-]/)[0]!.trim();
+    return ` (${short})`;
+  };
+  switch (s.status) {
+    case "executed":
+      return trade?.simulated
+        ? { label: "PAUSED (TEST MODE)", cls: "pending", title: "Simulated — no real order sent" }
+        : { label: "SUCCESSFUL", cls: "executed" };
+    case "failed":
+      return { label: `FAILED${paren(s.error)}`, cls: "rejected", title: s.error };
+    case "blocked":
+      return { label: "BLOCKED (red)", cls: "pending", title: s.error };
+    case "pending":
+      return { label: "PENDING", cls: "pending" };
+    case "executing":
+      return { label: "EXECUTING", cls: "" };
+    case "rejected":
+      return { label: "REJECTED", cls: "rejected" };
+    case "ignored":
+      return { label: `IGNORED${paren(s.error)}`, cls: "", title: s.error };
+    default:
+      return { label: s.status.toUpperCase(), cls: "" };
+  }
+}
+
 export function Overview({
   stats,
   signals,
+  trades,
 }: {
   stats: DashboardStats | null;
   signals: Signal[];
+  trades: Trade[];
 }) {
   if (!stats) return <div className="empty">Loading…</div>;
   const o = stats.overall;
 
   // Latest 10 messages across all channels (signals arrive newest-first).
   const feed = [...signals]
+    .sort((a, b) => (a.receivedAt < b.receivedAt ? 1 : -1))
+    .slice(0, 10);
+
+  // Latest 10 recognized signals, with their trade (for test-mode detection).
+  const tradeById = new Map(trades.map((t) => [t.id, t]));
+  const sigFeed = [...signals]
+    .filter(isSignalRow)
     .sort((a, b) => (a.receivedAt < b.receivedAt ? 1 : -1))
     .slice(0, 10);
 
@@ -108,6 +156,55 @@ export function Overview({
                 <tr>
                   <td colSpan={4} className="empty">
                     No messages yet.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="panel">
+        <h2>Latest signals</h2>
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Channel</th>
+                <th>Signal</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sigFeed.map((s) => {
+                const st = signalStatus(s, s.tradeId ? tradeById.get(s.tradeId) : undefined);
+                return (
+                  <tr key={s.id}>
+                    <td className="muted">{shortTime(s.receivedAt)}</td>
+                    <td>{s.groupName}</td>
+                    <td>
+                      {s.parsed ? (
+                        <>
+                          <span className={`tag ${s.parsed.side}`}>{s.parsed.side}</span>{" "}
+                          {s.parsed.symbol}
+                        </>
+                      ) : (
+                        <span className="muted">—</span>
+                      )}
+                    </td>
+                    <td>
+                      <span className={`tag ${st.cls}`} title={st.title}>
+                        {st.label}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+              {sigFeed.length === 0 && (
+                <tr>
+                  <td colSpan={4} className="empty">
+                    No signals yet.
                   </td>
                 </tr>
               )}

@@ -416,6 +416,62 @@ async function execute(
 ): Promise<Signal> {
   const { leverage, tradeSizeUsd, marginMode, maxSlippage } = group.settings;
 
+  // Guard: the symbol must exist on the exchange. Some tickers a channel posts
+  // aren't listed on Hyperliquid — record FAILED (Crypto NOT found) rather than
+  // erroring out at order time. Uses public metadata, so it also runs in test.
+  try {
+    const asset = await hyperliquid.getAsset(parsed.symbol);
+    if (!asset) {
+      const reason = `Crypto NOT found: ${parsed.symbol} is not listed on Hyperliquid`;
+      const failed = signalsRepo.update(signal.id, { status: "failed", error: reason })!;
+      event(
+        "exec",
+        `SKIP ${parsed.symbol}: not listed on the exchange`,
+        { symbol: parsed.symbol },
+        { level: "warn", groupId: group.id, signalId: signal.id },
+      );
+      broadcast({ type: "signal", signal: failed });
+      return failed;
+    }
+  } catch (err) {
+    // Metadata unavailable — don't block; let the order path surface any error.
+    log.warn(
+      `Asset check for ${parsed.symbol} failed:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
+
+  // Guard: don't chase a signal whose entry the market has already run past.
+  // If the trader set an entry and the current price is already worse than it
+  // (beyond maxSlippage) in the fill direction, record FAILED with the reason
+  // instead of entering late at a skewed risk/reward.
+  if (parsed.entry !== undefined) {
+    let mid: number | undefined;
+    try {
+      mid = await hyperliquid.getMidPrice(parsed.symbol);
+    } catch {
+      /* no price feed — can't judge, fall through and let the order try */
+    }
+    if (mid && mid > 0) {
+      const past =
+        parsed.side === "long"
+          ? mid > parsed.entry * (1 + maxSlippage)
+          : mid < parsed.entry * (1 - maxSlippage);
+      if (past) {
+        const reason = `entry missed: price ${mid} already past entry ${parsed.entry}`;
+        const failed = signalsRepo.update(signal.id, { status: "failed", error: reason })!;
+        event(
+          "exec",
+          `SKIP ${parsed.side} ${parsed.symbol}: ${reason}`,
+          { mid, entry: parsed.entry, side: parsed.side, maxSlippage },
+          { level: "warn", groupId: group.id, signalId: signal.id },
+        );
+        broadcast({ type: "signal", signal: failed });
+        return failed;
+      }
+    }
+  }
+
   const result = await hyperliquid.placeMarketOrder({
     symbol: parsed.symbol,
     side: parsed.side,
