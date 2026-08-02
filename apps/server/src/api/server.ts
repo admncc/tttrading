@@ -373,6 +373,7 @@ export async function buildServer() {
       simulating: hyperliquid.simulating(),
       env: config.tradingEnv,
       address: hyperliquid.publicAddress(),
+      signer: hyperliquid.signerAddress(),
     };
     if (!base.address) return { ...base, positions: [] };
     try {

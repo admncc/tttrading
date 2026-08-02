@@ -14,6 +14,7 @@ export interface AccountInfo {
   simulating: boolean;
   env: string;
   address: string | null;
+  signer?: string | null;
   accountValue?: number;
   withdrawable?: number;
   totalMarginUsed?: number;

@@ -169,6 +169,16 @@ export class HyperliquidConnector {
     }));
   }
 
+  /** The address that SIGNS orders (derived from HL_PRIVATE_KEY), or null. */
+  signerAddress(): string | null {
+    if (!this.live) return null;
+    try {
+      return privateKeyToAccount(config.hyperliquid.privateKey as `0x${string}`).address;
+    } catch {
+      return null;
+    }
+  }
+
   /** The account address we read state for, or null if none is resolvable. */
   publicAddress(): string | null {
     try {

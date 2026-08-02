@@ -73,10 +73,20 @@ export function AccountPanel() {
         <>
           <div className="kpi-grid" style={{ marginBottom: a.positions.length ? 16 : 0 }}>
             <div className="kpi">
-              <div className="label">Account</div>
+              <div className="label">Account (reads)</div>
               <div className="value" style={{ fontSize: 15 }} title={a.address ?? ""}>
                 {a.address ? shortAddr(a.address) : "—"}
               </div>
+              {a.signer && (
+                <div
+                  className="muted"
+                  style={{ fontSize: 11, marginTop: 4 }}
+                  title={a.signer}
+                >
+                  signs as {shortAddr(a.signer)}
+                  {a.address && a.signer.toLowerCase() !== a.address.toLowerCase() ? " (agent)" : ""}
+                </div>
+              )}
             </div>
             <div className="kpi">
               <div className="label">Perps equity</div>
