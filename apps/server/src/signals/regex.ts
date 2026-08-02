@@ -3,7 +3,7 @@ import type { ParsedSignal, TradeSide } from "@tttrading/shared";
 function toNumber(raw: string): number | undefined {
   // Handle both "60,000.50" (US) and "60.000,50" (EU) formats: whichever
   // separator appears LAST is the decimal separator.
-  const cleaned = raw.replace(/[^0-9.,]/g, "");
+  const cleaned = raw.replace(/[^0-9.,]/g, "").replace(/[.,]+$/, "");
   if (!cleaned) return undefined;
   let normalized = cleaned;
   if (cleaned.includes(",") && cleaned.includes(".")) {
@@ -47,6 +47,23 @@ function extractSymbol(text: string, side: TradeSide): string | undefined {
     if (sym.length >= 2 && !STOPWORDS.has(sym)) return sym;
   }
   return undefined;
+}
+
+/** Extract a symbol without needing a direction (for management messages). */
+export function extractAnySymbol(text: string): string | undefined {
+  const tag = text.match(/[$#]([A-Za-z]{2,6})\b/);
+  if (tag) {
+    const s = tag[1]!.toUpperCase().replace(QUOTE_SUFFIX, "");
+    if (s.length >= 2 && !STOPWORDS.has(s)) return s;
+  }
+  const pair = text.match(/\b([A-Za-z]{2,6})[\/\-](?:USDT|USDC|USD|PERP)\b/i);
+  if (pair) return pair[1]!.toUpperCase();
+  return undefined;
+}
+
+/** Parse a numeric token (handles US/EU separators). Exported for reuse. */
+export function parseNumber(raw: string): number | undefined {
+  return toNumber(raw);
 }
 
 function firstNumber(text: string, patterns: RegExp[]): number | undefined {

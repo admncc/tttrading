@@ -1,9 +1,10 @@
-import type { Group, ParsedSignal, RiskRating, Signal } from "@tttrading/shared";
+import type { Group, ParsedSignal, RiskRating, Signal, Trade } from "@tttrading/shared";
 import { config } from "../config.js";
 import { log, event } from "../logger.js";
 import { groups as groupsRepo, signals as signalsRepo, trades as tradesRepo } from "../db/repositories.js";
 import { hyperliquid } from "../hyperliquid/connector.js";
 import { parseSignal } from "../signals/parser.js";
+import { classifyManagement, type ManagementAction } from "../signals/management.js";
 import { expandTakeProfits } from "../signals/takeprofit.js";
 import { assessRisk } from "../risk/score.js";
 import { alertBlocked, alertClosed, alertError, alertOpened } from "../alerts/notifier.js";
@@ -37,6 +38,13 @@ export async function handleIncoming(group: Group, rawText: string): Promise<Sig
   const parsed = await parseSignal(rawText, group.settings.instructions);
 
   if (!parsed || parsed.confidence < ACT_THRESHOLD) {
+    // Not a fresh entry — maybe it's a trade-management update (SL move, partial,
+    // close, invalidation) for an existing position.
+    const action = classifyManagement(rawText);
+    if (action.kind !== "none") {
+      const managed = await applyManagement(group, rawText, action);
+      if (managed) return managed;
+    }
     const signal = signalsRepo.create({
       groupId: group.id,
       groupName: group.name,
@@ -163,6 +171,121 @@ function finalizeIgnored(
     signalId: signal.id,
   });
   broadcast({ type: "signal", signal });
+  return signal;
+}
+
+/** Move a trade's stop-loss (break-even or explicit). Place-then-cancel when live. */
+async function moveStop(trade: Trade, newStop: number, breakeven: boolean): Promise<void> {
+  if (!trade.simulated && hyperliquid.live && trade.slOrderId) {
+    const res = await hyperliquid.placeBracketOrders({
+      symbol: trade.symbol,
+      side: trade.side,
+      size: trade.size,
+      stopLoss: newStop,
+      takeProfits: [],
+      slippage: 0.01,
+    });
+    if (res.protectedOnExchange && res.slOrderId) {
+      await hyperliquid.cancelOrders(trade.symbol, [trade.slOrderId]);
+      tradesRepo.update(trade.id, {
+        stopLoss: newStop,
+        slOrderId: res.slOrderId,
+        slMovedToBreakeven: breakeven ? true : trade.slMovedToBreakeven,
+      });
+      return;
+    }
+    log.warn(`moveStop: failed to place new SL for ${trade.symbol}; keeping old.`);
+  }
+  tradesRepo.update(trade.id, {
+    stopLoss: newStop,
+    slMovedToBreakeven: breakeven ? true : trade.slMovedToBreakeven,
+  });
+}
+
+/**
+ * Apply a trade-management message to the group's matching open position(s).
+ * Records a "managed" signal for visibility. Returns null if it couldn't act
+ * (so the caller falls through to the unparseable path).
+ */
+async function applyManagement(
+  group: Group,
+  rawText: string,
+  action: ManagementAction,
+): Promise<Signal | null> {
+  const openForGroup = tradesRepo.open().filter((t) => t.groupId === group.id && !t.shadow);
+  const sym = action.symbol?.toUpperCase();
+  // Target by symbol; if no symbol and exactly one open trade, target that.
+  const targets = sym
+    ? openForGroup.filter((t) => t.symbol === sym)
+    : openForGroup.length === 1
+      ? openForGroup
+      : [];
+
+  if (targets.length === 0) {
+    const signal = signalsRepo.create({
+      groupId: group.id,
+      groupName: group.name,
+      rawText,
+      status: "managed",
+      error: `${action.note} — no open ${sym ?? ""} position`.trim(),
+    });
+    event(
+      "manage",
+      `Management (${action.note}) — no matching open position${sym ? ` for ${sym}` : ""}`,
+      { kind: action.kind },
+      { groupId: group.id, signalId: signal.id },
+    );
+    broadcast({ type: "signal", signal });
+    return signal;
+  }
+
+  for (const t of targets) {
+    if (action.kind === "close") {
+      await closeTrade(t.id);
+    } else if (action.kind === "sl_breakeven") {
+      await moveStop(t, t.entryPrice, true);
+    } else if (action.kind === "sl_move" && action.newStop !== undefined) {
+      await moveStop(t, action.newStop, false);
+    } else if (action.kind === "partial_close") {
+      const frac = Math.min(Math.max(action.fraction ?? 0, 0), 0.95);
+      const closeSize = t.size * frac;
+      if (closeSize > 0) {
+        if (!t.simulated && hyperliquid.live) {
+          await hyperliquid.placeMarketOrder({
+            symbol: t.symbol,
+            side: t.side === "long" ? "short" : "long",
+            notionalUsd: t.entryPrice * closeSize,
+            leverage: t.leverage,
+            marginMode: "cross",
+            maxSlippage: 0.01,
+            reduceOnly: true,
+          });
+        }
+        tradesRepo.update(t.id, { size: t.size - closeSize, tpFilledCount: (t.tpFilledCount ?? 0) + 1 });
+      }
+      if (action.alsoBreakeven) await moveStop(t, t.entryPrice, true);
+    } else if (action.kind === "tp_hit") {
+      tradesRepo.update(t.id, { tpFilledCount: (t.tpFilledCount ?? 0) + 1 });
+    }
+    const u = tradesRepo.get(t.id);
+    if (u) broadcast({ type: "trade", trade: u });
+  }
+
+  const signal = signalsRepo.create({
+    groupId: group.id,
+    groupName: group.name,
+    rawText,
+    status: "managed",
+    error: `${action.note} → ${targets.map((t) => t.symbol).join(", ")}`,
+  });
+  event(
+    "manage",
+    `Applied "${action.note}" to ${targets.length} ${targets[0]!.symbol} position(s)`,
+    { kind: action.kind, newStop: action.newStop, fraction: action.fraction },
+    { groupId: group.id, signalId: signal.id },
+  );
+  broadcast({ type: "signal", signal });
+  pushStats();
   return signal;
 }
 

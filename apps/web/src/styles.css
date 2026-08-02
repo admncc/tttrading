@@ -201,6 +201,13 @@ tbody tr:hover {
 .tag.unparseable {
   color: var(--neg);
 }
+.tag.managed {
+  color: var(--accent);
+  border-color: rgba(59, 130, 246, 0.35);
+}
+.tag.blocked {
+  color: var(--warn);
+}
 
 /* buttons & forms */
 button {
