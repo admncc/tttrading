@@ -189,9 +189,12 @@ function finalizeIgnored(
 /** Move a trade's stop-loss (break-even or explicit). Place-then-cancel when live. */
 async function moveStop(trade: Trade, newStop: number, breakeven: boolean): Promise<void> {
   const ex = connectorFor(trade);
-  // Real position with a live stop: replace it on the exchange (force, so this
-  // still works with the global test switch on — the position is real).
-  if (!trade.simulated && ex.live && trade.slOrderId) {
+  // Real, live position (open OR resting): put the stop on the exchange. Place
+  // the NEW stop first, then cancel the old one (if any) — never leave the
+  // position without protection. This also PLACES a stop when none existed yet
+  // (e.g. the entry came without an SL), instead of only replacing one.
+  // `force` so it still works with the global test switch on — the position is real.
+  if (!trade.simulated && ex.live && trade.status === "open") {
     const res = await ex.placeBracketOrders({
       symbol: trade.symbol,
       side: trade.side,
@@ -202,23 +205,37 @@ async function moveStop(trade: Trade, newStop: number, breakeven: boolean): Prom
       force: true,
     });
     if (res.protectedOnExchange && res.slOrderId) {
-      await ex.cancelOrders(trade.symbol, [trade.slOrderId]);
+      if (trade.slOrderId) await ex.cancelOrders(trade.symbol, [trade.slOrderId]);
       tradesRepo.update(trade.id, {
         stopLoss: newStop,
         slOrderId: res.slOrderId,
+        bracketProtected: true,
         slMovedToBreakeven: breakeven ? true : trade.slMovedToBreakeven,
       });
       return;
     }
-    // Do NOT update the desk to a stop we failed to place — the OLD stop is
-    // still live on the exchange and keeps protecting the position.
+    // Placement failed. If an old stop is still live, keep it and don't lie about
+    // the desk value. If there was NO stop, record the intent but alert loudly —
+    // the live position is NOT protected on the exchange and needs attention.
+    if (trade.slOrderId) {
+      log.error(
+        `moveStop: failed to place new SL for ${trade.symbol} (${res.error ?? "no id"}); ` +
+          `keeping existing exchange stop, desk unchanged.`,
+      );
+      return;
+    }
     log.error(
-      `moveStop: failed to place new SL for ${trade.symbol} (${res.error ?? "no id"}); ` +
-        `keeping existing exchange stop, desk unchanged.`,
+      `moveStop: could NOT place stop ${newStop} for LIVE ${trade.symbol} (${res.error ?? "no id"}) — position is UNPROTECTED on the exchange.`,
     );
+    alertError(`SL ${trade.symbol} (${trade.groupName})`, `stop ${newStop} not placed — position unprotected: ${res.error ?? "unknown"}`);
+    tradesRepo.update(trade.id, {
+      stopLoss: newStop,
+      slMovedToBreakeven: breakeven ? true : trade.slMovedToBreakeven,
+    });
     return;
   }
-  // Simulated trade: just record the stop for the monitor to enforce.
+  // Simulated trade, or a resting/working limit order (no live position yet):
+  // record the (planned) stop for the monitor/promotion to enforce.
   tradesRepo.update(trade.id, {
     stopLoss: newStop,
     slMovedToBreakeven: breakeven ? true : trade.slMovedToBreakeven,
