@@ -26,6 +26,7 @@ import {
 } from "../execution/engine.js";
 import { reconcileOnce, evaluateSimulated } from "../execution/monitor.js";
 import { backfillAll, backfillGroup } from "../telegram/backfill.js";
+import { getListenerHealth } from "../telegram/listener.js";
 import { backtestGroup } from "../backtest/engine.js";
 import { suggestChannelInstructions } from "../signals/llm.js";
 import { exportAllText, exportGroupText, safeFilename } from "../export/text.js";
@@ -332,6 +333,10 @@ export async function buildServer() {
     await evaluateSimulated();
     return { ok: true };
   });
+
+  // Operational health of the Telegram listener (connection + per-channel
+  // last activity), so a silent outage is visible in the desk.
+  app.get("/api/telegram/health", async () => getListenerHealth());
 
   app.get("/api/positions", async () => {
     try {

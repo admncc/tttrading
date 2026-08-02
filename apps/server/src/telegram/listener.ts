@@ -10,6 +10,67 @@ import { handleIncoming } from "../execution/engine.js";
 let client: TelegramClient | null = null;
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 
+/* ------------------------------- health -------------------------------- */
+
+interface GroupHealth {
+  lastMessageAt?: string; // last message actually processed (live or poll)
+  lastPolledAt?: string; // last successful poll sweep of this channel
+  lastError?: string;
+  recoveredCount: number; // messages recovered by the catch-up poller
+}
+const groupHealth = new Map<string, GroupHealth>();
+let startedAt: string | null = null;
+let lastPollCycleAt: string | null = null;
+
+function gh(groupId: string): GroupHealth {
+  let h = groupHealth.get(groupId);
+  if (!h) {
+    h = { recoveredCount: 0 };
+    groupHealth.set(groupId, h);
+  }
+  return h;
+}
+
+export interface ListenerHealth {
+  configured: boolean;
+  connected: boolean;
+  startedAt: string | null;
+  lastPollCycleAt: string | null;
+  pollIntervalSec: number;
+  groups: {
+    groupId: string;
+    name: string;
+    channel: string;
+    lastMessageAt?: string;
+    lastPolledAt?: string;
+    lastError?: string;
+    recoveredCount: number;
+  }[];
+}
+
+/** Operational snapshot of the Telegram listener for the desk. */
+export function getListenerHealth(): ListenerHealth {
+  return {
+    configured: telegramReady(),
+    connected: !!client?.connected,
+    startedAt,
+    lastPollCycleAt,
+    pollIntervalSec: Math.round(POLL_INTERVAL_MS / 1000),
+    groups: groupsRepo.list().map((g) => {
+      const h = groupHealth.get(g.id);
+      return {
+        groupId: g.id,
+        name: g.name,
+        channel: g.telegramChannel,
+        lastMessageAt: h?.lastMessageAt,
+        lastPolledAt: h?.lastPolledAt,
+        lastError: h?.lastError,
+        recoveredCount: h?.recoveredCount ?? 0,
+      };
+    }),
+  };
+}
+
 /** How often the catch-up poller sweeps each channel for missed messages. */
 const POLL_INTERVAL_MS = 60_000;
 /** How many recent messages to fetch per channel per poll / prime. */
@@ -77,6 +138,7 @@ async function onMessage(event: NewMessageEvent): Promise<void> {
   }
   try {
     await handleIncoming(group, text);
+    gh(group.id).lastMessageAt = new Date().toISOString();
   } catch (err) {
     log.error("Failed to handle Telegram message:", err instanceof Error ? err.message : err);
   }
@@ -149,14 +211,23 @@ async function pollOnce(): Promise<void> {
         );
         try {
           await handleIncoming(g, f.text);
+          const h = gh(g.id);
+          h.lastMessageAt = new Date().toISOString();
+          h.recoveredCount++;
         } catch (err) {
           log.error("Catch-up handleIncoming failed:", err instanceof Error ? err.message : err);
         }
       }
+      const h = gh(g.id);
+      h.lastPolledAt = new Date().toISOString();
+      h.lastError = undefined;
     } catch (err) {
-      log.warn(`Telegram poll ${g.name} failed:`, err instanceof Error ? err.message : err);
+      const msg = err instanceof Error ? err.message : String(err);
+      gh(g.id).lastError = msg;
+      log.warn(`Telegram poll ${g.name} failed:`, msg);
     }
   }
+  lastPollCycleAt = new Date().toISOString();
 }
 
 /** Connect to Telegram and start listening. No-op when creds are missing. */
@@ -175,6 +246,7 @@ export async function startTelegram(): Promise<void> {
   });
 
   await client.connect();
+  startedAt = new Date().toISOString();
   const me = await client.getMe();
   const name = (me as { username?: string; firstName?: string })?.username ??
     (me as { firstName?: string })?.firstName ?? "unknown";

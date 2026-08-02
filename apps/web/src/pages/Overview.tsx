@@ -12,6 +12,7 @@ import {
 } from "recharts";
 import type { DashboardStats, Signal } from "@tttrading/shared";
 import { pct, pnlClass, shortTime, usd } from "../format.js";
+import { ListenerHealth } from "../components/ListenerHealth.js";
 
 function Kpi({ label, value, cls }: { label: string; value: string; cls?: string }) {
   return (
@@ -114,6 +115,8 @@ export function Overview({
           </table>
         </div>
       </div>
+
+      <ListenerHealth />
 
       <div className="panel">
         <h2>Cumulative PnL</h2>

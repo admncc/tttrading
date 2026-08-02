@@ -9,6 +9,23 @@ import type {
   WsEvent,
 } from "@tttrading/shared";
 
+export interface TelegramHealth {
+  configured: boolean;
+  connected: boolean;
+  startedAt: string | null;
+  lastPollCycleAt: string | null;
+  pollIntervalSec: number;
+  groups: {
+    groupId: string;
+    name: string;
+    channel: string;
+    lastMessageAt?: string;
+    lastPolledAt?: string;
+    lastError?: string;
+    recoveredCount: number;
+  }[];
+}
+
 /* -------------------------------- auth -------------------------------- */
 
 const TOKEN_KEY = "tt_token";
@@ -90,6 +107,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ horizonDays }),
     }),
+
+  telegramHealth: () => req<TelegramHealth>("/api/telegram/health"),
 
   suggestInstructions: (id: string) =>
     req<{ instructions: string; rationale: string; sampleSize: number; error?: string }>(
