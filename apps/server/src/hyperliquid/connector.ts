@@ -169,6 +169,38 @@ export class HyperliquidConnector {
     }));
   }
 
+  /** The account address we read state for, or null if none is resolvable. */
+  publicAddress(): string | null {
+    try {
+      return this.accountAddress();
+    } catch {
+      return null;
+    }
+  }
+
+  /** Account equity + free collateral for the configured account. */
+  async getAccountSummary(): Promise<{
+    address: string;
+    accountValue: number;
+    withdrawable: number;
+    totalMarginUsed: number;
+  } | null> {
+    const address = this.publicAddress();
+    if (!address) return null;
+    const state = (await this.info.clearinghouseState({
+      user: address as `0x${string}`,
+    })) as unknown as {
+      marginSummary?: { accountValue?: string; totalMarginUsed?: string };
+      withdrawable?: string;
+    };
+    return {
+      address,
+      accountValue: Number(state.marginSummary?.accountValue ?? 0),
+      withdrawable: Number(state.withdrawable ?? 0),
+      totalMarginUsed: Number(state.marginSummary?.totalMarginUsed ?? 0),
+    };
+  }
+
   private async setLeverage(
     asset: AssetInfo,
     leverage: number,

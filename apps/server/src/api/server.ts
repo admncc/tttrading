@@ -347,6 +347,35 @@ export async function buildServer() {
     }
   });
 
+  // Exchange connection: address, balance and live positions, for the desk's
+  // connection panel. Safe to call when disconnected (returns connected:false).
+  app.get("/api/account", async () => {
+    const base = {
+      connected: hyperliquid.live,
+      simulating: hyperliquid.simulating(),
+      env: config.tradingEnv,
+      address: hyperliquid.publicAddress(),
+    };
+    if (!base.address) return { ...base, positions: [] };
+    try {
+      const [summary, positions] = await Promise.all([
+        hyperliquid.getAccountSummary(),
+        hyperliquid.getPositions(),
+      ]);
+      return {
+        ...base,
+        accountValue: summary?.accountValue,
+        withdrawable: summary?.withdrawable,
+        totalMarginUsed: summary?.totalMarginUsed,
+        positions,
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.warn("account summary unavailable:", msg);
+      return { ...base, positions: [], error: msg };
+    }
+  });
+
   /* -------------------------------- ws -------------------------------- */
   app.get("/ws", { websocket: true }, (socket, req) => {
     const sock = socket as unknown as SocketLike & { close(): void };

@@ -13,6 +13,7 @@ import {
 import type { DashboardStats, Signal, Trade } from "@tttrading/shared";
 import { pct, pnlClass, shortTime, usd } from "../format.js";
 import { ListenerHealth } from "../components/ListenerHealth.js";
+import { AccountPanel } from "../components/AccountPanel.js";
 
 function Kpi({ label, value, cls }: { label: string; value: string; cls?: string }) {
   return (
@@ -163,6 +164,8 @@ export function Overview({
           </table>
         </div>
       </div>
+
+      <AccountPanel />
 
       <div className="panel">
         <h2>Latest signals</h2>

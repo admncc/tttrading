@@ -9,6 +9,24 @@ import type {
   WsEvent,
 } from "@tttrading/shared";
 
+export interface AccountInfo {
+  connected: boolean;
+  simulating: boolean;
+  env: string;
+  address: string | null;
+  accountValue?: number;
+  withdrawable?: number;
+  totalMarginUsed?: number;
+  positions: {
+    symbol: string;
+    size: number;
+    entryPrice: number;
+    unrealizedPnl: number;
+    leverage: number;
+  }[];
+  error?: string;
+}
+
 export interface TelegramHealth {
   configured: boolean;
   connected: boolean;
@@ -109,6 +127,7 @@ export const api = {
     }),
 
   telegramHealth: () => req<TelegramHealth>("/api/telegram/health"),
+  account: () => req<AccountInfo>("/api/account"),
 
   suggestInstructions: (id: string) =>
     req<{ instructions: string; rationale: string; sampleSize: number; error?: string }>(
