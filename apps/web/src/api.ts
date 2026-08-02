@@ -54,6 +54,9 @@ export interface ExchangesConfig {
     name: "mexc";
     enabled: boolean;
     live: boolean;
+    apiKeyConfigured: boolean;
+    apiSecretConfigured: boolean;
+    keySource: string;
     baseUrl: string;
     note: string;
   };
@@ -62,7 +65,7 @@ export interface ExchangesConfig {
 export interface ExchangesPatch {
   hyperliquid?: { privateKey?: string; accountAddress?: string };
   aster?: { enabled?: boolean; apiKey?: string; apiSecret?: string; baseUrl?: string };
-  mexc?: { enabled?: boolean; baseUrl?: string };
+  mexc?: { enabled?: boolean; apiKey?: string; apiSecret?: string; baseUrl?: string };
 }
 
 export interface TelegramHealth {

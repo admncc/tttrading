@@ -44,8 +44,17 @@ export function asterReady(): boolean {
 /* --------------------------------- MEXC -------------------------------- */
 export function mexcEnabled(): boolean {
   const v = settings.getExchangeFlag("mexc.enabled");
-  return v === undefined ? config.mexc.enabled : v;
+  return v === undefined ? config.mexc.enabled : v || !!mexcApiKey();
+}
+export function mexcApiKey(): string {
+  return settings.getExchangeValue("mexc.apiKey") || config.mexc.apiKey;
+}
+export function mexcApiSecret(): string {
+  return settings.getExchangeValue("mexc.apiSecret") || config.mexc.apiSecret;
 }
 export function mexcBaseUrl(): string {
   return (settings.getExchangeValue("mexc.baseUrl") || config.mexc.baseUrl).replace(/\/+$/, "");
+}
+export function mexcReady(): boolean {
+  return !config.isPaper && !!mexcApiKey() && !!mexcApiSecret();
 }

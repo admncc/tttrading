@@ -81,17 +81,18 @@ export const config = {
 
   mexc: {
     /**
-     * MEXC (mexc.com) — the LAST backup, after Aster. MEXC's contract API uses
-     * contract-unit sizing, numeric side codes and an entry-attached SL/TP model
-     * that differs from the others, and its futures order API only reopened in
-     * Jan 2026 with no public testnet. Real order execution is therefore NOT
-     * enabled yet: MEXC provides routing + market data + SIMULATION only, so a
-     * MEXC-only coin is tracked instead of hard-failing. Enable participation to
-     * catch those symbols; real sending is a separate, validated follow-up.
+     * MEXC (mexc.com) — the LAST backup, after Aster. Uses MEXC's contract API,
+     * which sizes orders in CONTRACTS (coins = vol × contractSize) and needs a
+     * KYC-enabled key. Like the other venues it reads market data without keys
+     * (routing + simulation) and only sends real orders with a key+secret and
+     * the global test switch off. MEXC has NO public testnet — validate live
+     * with minimum size first.
      */
-    enabled: bool(process.env.MEXC_ENABLED, false),
-    /** USDⓈ-M contract REST host. */
-    baseUrl: (process.env.MEXC_BASE_URL || "https://contract.mexc.com").replace(/\/+$/, ""),
+    enabled: bool(process.env.MEXC_ENABLED, false) || !!(process.env.MEXC_API_KEY || "").trim(),
+    apiKey: (process.env.MEXC_API_KEY || "").trim(),
+    apiSecret: (process.env.MEXC_API_SECRET || "").trim(),
+    /** Contract REST host. The legacy contract.mexc.com was retired in Jan 2026. */
+    baseUrl: (process.env.MEXC_BASE_URL || "https://api.mexc.com").replace(/\/+$/, ""),
     defaultMaxLeverage: num(process.env.MEXC_MAX_LEVERAGE, 20),
   },
 

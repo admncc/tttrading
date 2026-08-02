@@ -28,6 +28,8 @@ import {
   asterEnabled,
   hlAccountAddress,
   hlPrivateKey,
+  mexcApiKey,
+  mexcApiSecret,
   mexcBaseUrl,
   mexcEnabled,
 } from "../exchanges/credentials.js";
@@ -252,9 +254,16 @@ export async function buildServer() {
     mexc: {
       name: "mexc" as const,
       enabled: mexcEnabled(),
-      live: false,
+      live: exchangeByName("mexc").live,
+      apiKeyConfigured: !!mexcApiKey(),
+      apiSecretConfigured: !!mexcApiSecret(),
+      keySource: settingsRepo.hasExchangeValue("mexc.apiKey")
+        ? "desk"
+        : config.mexc.apiKey
+          ? "env"
+          : "none",
       baseUrl: mexcBaseUrl(),
-      note: "routing + market data + simulation only (real order execution not enabled)",
+      note: "contract-sized; no testnet — validate live with minimum size",
     },
   });
   app.get("/api/exchanges", async () => exchangesPayload());
@@ -283,6 +292,8 @@ export async function buildServer() {
       mexc: z
         .object({
           enabled: z.boolean().optional(),
+          apiKey: z.string().max(200).optional(),
+          apiSecret: z.string().max(200).optional(),
           baseUrl: url.optional(),
         })
         .optional(),
@@ -312,6 +323,11 @@ export async function buildServer() {
     }
     if (d.mexc) {
       if (d.mexc.enabled !== undefined) settingsRepo.setExchangeFlag("mexc.enabled", d.mexc.enabled);
+      if (d.mexc.apiKey !== undefined) {
+        settingsRepo.setExchangeValue("mexc.apiKey", d.mexc.apiKey.trim());
+        log.info(`MEXC API key ${d.mexc.apiKey.trim() ? "updated via desk" : "cleared"}.`);
+      }
+      if (d.mexc.apiSecret !== undefined) settingsRepo.setExchangeValue("mexc.apiSecret", d.mexc.apiSecret.trim());
       if (d.mexc.baseUrl !== undefined) settingsRepo.setExchangeValue("mexc.baseUrl", d.mexc.baseUrl.trim());
     }
     return exchangesPayload();

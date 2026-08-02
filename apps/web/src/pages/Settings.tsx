@@ -81,6 +81,10 @@ export function Settings() {
   const [asterBase, setAsterBase] = useState("");
   // MEXC
   const [mexcEnabled, setMexcEnabled] = useState(false);
+  const [mexcKey, setMexcKey] = useState("");
+  const [mexcKeyClear, setMexcKeyClear] = useState(false);
+  const [mexcSecret, setMexcSecret] = useState("");
+  const [mexcSecretClear, setMexcSecretClear] = useState(false);
   const [mexcBase, setMexcBase] = useState("");
 
   const load = () => {
@@ -114,7 +118,12 @@ export function Settings() {
         ...(asterKeyClear ? { apiKey: "" } : asterKey ? { apiKey: asterKey } : {}),
         ...(asterSecretClear ? { apiSecret: "" } : asterSecret ? { apiSecret: asterSecret } : {}),
       },
-      mexc: { enabled: mexcEnabled, baseUrl: mexcBase },
+      mexc: {
+        enabled: mexcEnabled,
+        baseUrl: mexcBase,
+        ...(mexcKeyClear ? { apiKey: "" } : mexcKey ? { apiKey: mexcKey } : {}),
+        ...(mexcSecretClear ? { apiSecret: "" } : mexcSecret ? { apiSecret: mexcSecret } : {}),
+      },
     };
     try {
       const c = await api.saveExchanges(patch);
@@ -126,6 +135,10 @@ export function Settings() {
       setAsterKeyClear(false);
       setAsterSecret("");
       setAsterSecretClear(false);
+      setMexcKey("");
+      setMexcKeyClear(false);
+      setMexcSecret("");
+      setMexcSecretClear(false);
       setHlAddr(c.hyperliquid.accountAddress ?? "");
       setMsg("Saved. Keys apply immediately; a restart is not required.");
     } catch (e) {
@@ -231,20 +244,37 @@ export function Settings() {
             <div className="row-between">
               <h3 style={{ margin: 0 }}>
                 MEXC <span className="muted" style={{ fontSize: 12 }}>· last backup</span>
-                <VenueBadge live={false} enabled={mexcEnabled} />
+                <VenueBadge live={cfg.mexc.live} enabled={mexcEnabled} />
               </h3>
               <label className="muted" style={{ fontSize: 13, display: "inline-flex", gap: 6 }}>
                 <input type="checkbox" checked={mexcEnabled} onChange={(e) => setMexcEnabled(e.target.checked)} />
                 enabled
               </label>
             </div>
+            <SecretField
+              label="API key (KYC-enabled account)"
+              configured={cfg.mexc.apiKeyConfigured}
+              value={mexcKey}
+              onChange={setMexcKey}
+              clear={mexcKeyClear}
+              onClear={setMexcKeyClear}
+            />
+            <SecretField
+              label="API secret"
+              configured={cfg.mexc.apiSecretConfigured}
+              value={mexcSecret}
+              onChange={setMexcSecret}
+              clear={mexcSecretClear}
+              onClear={setMexcSecretClear}
+            />
             <label style={{ display: "block" }}>
               <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>REST base URL</div>
-              <input value={mexcBase} onChange={(e) => setMexcBase(e.target.value)} placeholder="https://contract.mexc.com" style={{ width: "100%" }} />
+              <input value={mexcBase} onChange={(e) => setMexcBase(e.target.value)} placeholder="https://api.mexc.com" style={{ width: "100%" }} />
             </label>
-            <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
-              {cfg.mexc.note}. MEXC-only coins are routed and tracked as simulated trades so they aren't
-              silently dropped; real order execution is a separate, validated step.
+            <div className="muted" style={{ fontSize: 11, marginTop: 6, color: "#f59e0b" }}>
+              ⚠️ MEXC sizes orders in contracts and has <strong>no testnet</strong> — validate live with
+              minimum size first, and check that stop-losses sit on the correct side. Without keys it
+              routes & simulates only.
             </div>
           </div>
 
