@@ -79,6 +79,22 @@ export const config = {
     defaultMaxLeverage: num(process.env.ASTER_MAX_LEVERAGE, 20),
   },
 
+  mexc: {
+    /**
+     * MEXC (mexc.com) — the LAST backup, after Aster. MEXC's contract API uses
+     * contract-unit sizing, numeric side codes and an entry-attached SL/TP model
+     * that differs from the others, and its futures order API only reopened in
+     * Jan 2026 with no public testnet. Real order execution is therefore NOT
+     * enabled yet: MEXC provides routing + market data + SIMULATION only, so a
+     * MEXC-only coin is tracked instead of hard-failing. Enable participation to
+     * catch those symbols; real sending is a separate, validated follow-up.
+     */
+    enabled: bool(process.env.MEXC_ENABLED, false),
+    /** USDⓈ-M contract REST host. */
+    baseUrl: (process.env.MEXC_BASE_URL || "https://contract.mexc.com").replace(/\/+$/, ""),
+    defaultMaxLeverage: num(process.env.MEXC_MAX_LEVERAGE, 20),
+  },
+
   telegram: {
     apiId: num(process.env.TG_API_ID, 0),
     apiHash: process.env.TG_API_HASH || "",

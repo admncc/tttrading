@@ -3,6 +3,7 @@ import { config } from "../config.js";
 import { log } from "../logger.js";
 import { hyperliquid } from "../hyperliquid/connector.js";
 import { aster } from "./aster.js";
+import { mexc } from "./mexc.js";
 import type { AssetInfo, ExchangeConnector } from "./types.js";
 
 /**
@@ -13,6 +14,7 @@ import type { AssetInfo, ExchangeConnector } from "./types.js";
 function enabledExchanges(): ExchangeConnector[] {
   const list: ExchangeConnector[] = [hyperliquid];
   if (config.aster.enabled) list.push(aster);
+  if (config.mexc.enabled) list.push(mexc);
   return list;
 }
 
@@ -22,6 +24,7 @@ export const primary: ExchangeConnector = hyperliquid;
 /** Look up a connector by its stored name; falls back to the primary. */
 export function byName(name: ExchangeName | undefined): ExchangeConnector {
   if (name === "aster") return aster;
+  if (name === "mexc") return mexc;
   return hyperliquid;
 }
 
@@ -36,7 +39,7 @@ export function all(): ExchangeConnector[] {
  * live position keeps reconciling even after it's been removed from routing.
  */
 export function known(): ExchangeConnector[] {
-  return [hyperliquid, aster];
+  return [hyperliquid, aster, mexc];
 }
 
 export type Resolution =
