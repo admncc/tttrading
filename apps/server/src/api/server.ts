@@ -45,6 +45,9 @@ const groupSettingsSchema = z.object({
   tpLevels: z.number().int().min(1).max(10),
   breakevenAfterTp: z.number().int().min(0).max(10),
   blockRedTrades: z.boolean(),
+  sizingMode: z.enum(["fixed", "percentEquity", "riskPerTrade"]).optional(),
+  riskValue: z.number().min(0).max(1e9).optional(),
+  symbolCooldownMinutes: z.number().min(0).max(100000).optional(),
   instructions: z.string().max(8000).optional(),
   allowedSymbols: z.array(z.string()).optional(),
 });

@@ -500,6 +500,41 @@ export async function closeAllTrades(): Promise<{ closed: number }> {
   return { closed };
 }
 
+/**
+ * Position size (notional USDC) for a signal per the group's sizing mode:
+ * fixed, percent-of-equity, or fixed-risk-from-SL. Falls back to the fixed
+ * tradeSizeUsd whenever the inputs for a dynamic mode aren't available.
+ */
+async function effectiveNotional(group: Group, parsed: ParsedSignal): Promise<number> {
+  const s = group.settings;
+  const mode = s.sizingMode ?? "fixed";
+  if (mode === "percentEquity" && (s.riskValue ?? 0) > 0) {
+    try {
+      const equity = (await hyperliquid.getAccountSummary())?.accountValue ?? 0;
+      if (equity > 0) return equity * ((s.riskValue as number) / 100) * s.leverage;
+    } catch {
+      /* no equity reading — fall back */
+    }
+    return s.tradeSizeUsd;
+  }
+  if (mode === "riskPerTrade" && (s.riskValue ?? 0) > 0 && parsed.stopLoss !== undefined) {
+    let ref = parsed.entry;
+    if (ref === undefined) {
+      try {
+        ref = await hyperliquid.getMidPrice(parsed.symbol);
+      } catch {
+        /* fall back */
+      }
+    }
+    if (ref && ref > 0) {
+      const stopDist = Math.abs(ref - parsed.stopLoss) / ref;
+      if (stopDist > 0) return (s.riskValue as number) / stopDist;
+    }
+    return s.tradeSizeUsd;
+  }
+  return s.tradeSizeUsd;
+}
+
 /** Place the order for a signal and record the resulting trade. */
 async function execute(
   signal: Signal,
@@ -507,7 +542,36 @@ async function execute(
   parsed: ParsedSignal,
   risk?: RiskRating,
 ): Promise<Signal> {
-  const { leverage, tradeSizeUsd, marginMode, maxSlippage } = group.settings;
+  const { leverage, marginMode, maxSlippage } = group.settings;
+
+  // Symbol cooldown: skip a same-symbol+side entry too soon after the last one.
+  const cd = group.settings.symbolCooldownMinutes ?? 0;
+  if (cd > 0) {
+    const cutoff = Date.now() - cd * 60_000;
+    const recent = tradesRepo
+      .forGroup(group.id)
+      .find(
+        (t) =>
+          t.symbol === parsed.symbol &&
+          t.side === parsed.side &&
+          !t.shadow &&
+          new Date(t.openedAt).getTime() >= cutoff,
+      );
+    if (recent) {
+      const reason = `cooldown: ${parsed.symbol} ${parsed.side} traded < ${cd}m ago`;
+      const ignored = signalsRepo.update(signal.id, { status: "ignored", error: reason })!;
+      event("exec", `Cooldown skip ${parsed.symbol}`, { reason }, {
+        level: "warn",
+        groupId: group.id,
+        signalId: signal.id,
+      });
+      broadcast({ type: "signal", signal: ignored });
+      return ignored;
+    }
+  }
+
+  // Position size per the group's sizing mode.
+  const tradeSizeUsd = await effectiveNotional(group, parsed);
 
   // Global risk gate (kill-switch / limits) — applies to every new entry.
   const block = preTradeGate(tradeSizeUsd);

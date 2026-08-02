@@ -144,12 +144,50 @@ function GroupForm({
           />
         </div>
         <div className="field">
-          <label>Trade size (USDC)</label>
+          <label>Sizing mode</label>
+          <select
+            value={g.settings.sizingMode ?? "fixed"}
+            onChange={(e) => setS({ sizingMode: e.target.value as "fixed" | "percentEquity" | "riskPerTrade" })}
+          >
+            <option value="fixed">Fixed notional</option>
+            <option value="percentEquity">% of equity (× leverage)</option>
+            <option value="riskPerTrade">Risk per trade (from SL)</option>
+          </select>
+        </div>
+        {(g.settings.sizingMode ?? "fixed") === "fixed" ? (
+          <div className="field">
+            <label>Trade size (USDC)</label>
+            <input
+              type="number"
+              min={1}
+              value={g.settings.tradeSizeUsd}
+              onChange={(e) => setS({ tradeSizeUsd: Number(e.target.value) })}
+            />
+          </div>
+        ) : (
+          <div className="field">
+            <label>
+              {g.settings.sizingMode === "percentEquity" ? "% of equity" : "Risk per trade (USDC)"}
+            </label>
+            <input
+              type="number"
+              min={0}
+              step={g.settings.sizingMode === "percentEquity" ? 0.5 : 1}
+              value={g.settings.riskValue ?? 0}
+              onChange={(e) => setS({ riskValue: Number(e.target.value) })}
+            />
+            <span className="muted" style={{ fontSize: 11 }}>
+              fallback: {g.settings.tradeSizeUsd} USDC fixed
+            </span>
+          </div>
+        )}
+        <div className="field">
+          <label>Symbol cooldown (min, 0 = off)</label>
           <input
             type="number"
-            min={1}
-            value={g.settings.tradeSizeUsd}
-            onChange={(e) => setS({ tradeSizeUsd: Number(e.target.value) })}
+            min={0}
+            value={g.settings.symbolCooldownMinutes ?? 0}
+            onChange={(e) => setS({ symbolCooldownMinutes: Number(e.target.value) })}
           />
         </div>
         <div className="field">

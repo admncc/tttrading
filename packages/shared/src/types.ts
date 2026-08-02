@@ -30,8 +30,19 @@ export interface Group {
 export interface GroupSettings {
   /** Leverage applied per trade, e.g. 4 for x4. */
   leverage: number;
-  /** Notional size per trade in USDC, e.g. 5000. */
+  /** Notional size per trade in USDC, e.g. 5000. Used when sizingMode="fixed". */
   tradeSizeUsd: number;
+  /**
+   * How the position size is determined:
+   *  - "fixed": always tradeSizeUsd (default).
+   *  - "percentEquity": margin = riskValue% of account equity; notional = margin × leverage.
+   *  - "riskPerTrade": size so that hitting the SL loses ~riskValue USDC (needs an SL).
+   */
+  sizingMode?: "fixed" | "percentEquity" | "riskPerTrade";
+  /** Percent (percentEquity) or USDC risk (riskPerTrade) for the sizing mode. */
+  riskValue?: number;
+  /** Ignore a same-symbol+side entry within this many minutes of the last one. 0/undefined = off. */
+  symbolCooldownMinutes?: number;
   /** auto = fire immediately, confirm = wait for a click in the desk. */
   executionMode: ExecutionMode;
   /** Cross vs isolated margin on Hyperliquid. */
