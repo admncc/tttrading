@@ -107,6 +107,7 @@ export const api = {
       anthropicConfigured: boolean;
       anthropicKeySource: string;
       anthropicModel: string;
+      autoRefine: boolean;
     }>("/api/settings"),
   updateSettings: (patch: {
     shadowMode?: boolean;
@@ -114,6 +115,7 @@ export const api = {
     dailyLossLimitUsd?: number;
     maxOpenTrades?: number;
     maxExposureUsd?: number;
+    autoRefine?: boolean;
   }) =>
     req<{ shadowMode: boolean }>("/api/settings", {
       method: "PUT",

@@ -577,4 +577,19 @@ export const settings = {
   setLastReport(kind: string, date: string): void {
     kvSet(`lastReport:${kind}`, date);
   },
+  /** Whether AI auto-refinement of channel instructions is enabled (desk toggle). */
+  getAutoRefine(defaultOn: boolean): boolean {
+    const v = kvGet("autoRefine");
+    return v === undefined ? defaultOn : v === "true";
+  },
+  setAutoRefine(on: boolean): void {
+    kvSet("autoRefine", on ? "true" : "false");
+  },
+  /** ISO timestamp a channel's instructions were last auto-refined; "" if never. */
+  getLastRefine(groupId: string): string {
+    return kvGet(`lastRefine:${groupId}`) ?? "";
+  },
+  setLastRefine(groupId: string, iso: string): void {
+    kvSet(`lastRefine:${groupId}`, iso);
+  },
 };

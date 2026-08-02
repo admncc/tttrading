@@ -69,6 +69,12 @@ export const config = {
   anthropic: {
     apiKey: process.env.ANTHROPIC_API_KEY || "",
     model: process.env.ANTHROPIC_MODEL || "claude-sonnet-5",
+    /** Periodically let the AI refine each channel's parsing instructions. */
+    autoRefine: bool(process.env.AUTO_REFINE_INSTRUCTIONS, false),
+    /** Min days between auto-refines of the same channel. */
+    autoRefineDays: num(process.env.AUTO_REFINE_DAYS, 7),
+    /** Min stored messages a channel needs before it is auto-refined. */
+    autoRefineMinMessages: num(process.env.AUTO_REFINE_MIN_MESSAGES, 25),
   },
 
   auth: {

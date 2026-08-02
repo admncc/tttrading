@@ -9,6 +9,7 @@ function AiSettings() {
   const [source, setSource] = useState("none");
   const [model, setModel] = useState("");
   const [key, setKey] = useState("");
+  const [autoRefine, setAutoRefine] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -19,6 +20,7 @@ function AiSettings() {
         setConfigured(s.anthropicConfigured);
         setSource(s.anthropicKeySource);
         setModel(s.anthropicModel);
+        setAutoRefine(s.autoRefine);
       })
       .catch(() => {});
   useEffect(() => {
@@ -61,6 +63,21 @@ function AiSettings() {
           <label>Model</label>
           <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="claude-sonnet-5" />
         </div>
+      </div>
+      <div className="field" style={{ marginTop: 4 }}>
+        <label>
+          <input
+            type="checkbox"
+            style={{ width: "auto", marginRight: 8 }}
+            checked={autoRefine}
+            onChange={(e) => {
+              const on = e.target.checked;
+              setAutoRefine(on);
+              void api.updateSettings({ autoRefine: on }).catch(() => {});
+            }}
+          />
+          Auto-refine channel instructions (AI updates them on a schedule)
+        </label>
       </div>
       <div className="btn-row">
         <button className="primary" disabled={busy} onClick={save}>

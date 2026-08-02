@@ -155,6 +155,7 @@ export async function buildServer() {
     anthropicConfigured: !!(settingsRepo.getAnthropicKey() || config.anthropic.apiKey),
     anthropicKeySource: settingsRepo.getAnthropicKey() ? "desk" : config.anthropic.apiKey ? "env" : "none",
     anthropicModel: settingsRepo.getAnthropicModel() || config.anthropic.model,
+    autoRefine: settingsRepo.getAutoRefine(config.anthropic.autoRefine),
   });
   app.get("/api/settings", async () => settingsPayload());
 
@@ -167,10 +168,12 @@ export async function buildServer() {
       maxExposureUsd: z.number().min(0).max(1e9).optional(),
       anthropicKey: z.string().optional(), // "" clears the desk-stored key
       anthropicModel: z.string().optional(),
+      autoRefine: z.boolean().optional(),
     });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     const d = parsed.data;
+    if (d.autoRefine !== undefined) settingsRepo.setAutoRefine(d.autoRefine);
     if (d.shadowMode !== undefined) {
       settingsRepo.setShadowMode(d.shadowMode);
       log.info(`Shadow (test) mode ${d.shadowMode ? "ENABLED" : "DISABLED — LIVE TRADING"}.`);
