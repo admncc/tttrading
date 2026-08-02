@@ -365,10 +365,11 @@ export async function buildServer() {
   app.post<{ Body: { amount?: number; toPerp?: boolean } }>(
     "/api/account/transfer",
     async (req, reply) => {
+      if (!authEnabled) return reply.code(403).send({ error: "Set DESK_PASSWORD to enable transfers." });
       const amount = Number(req.body?.amount);
       const toPerp = req.body?.toPerp !== false; // default: spot -> perp
-      if (!Number.isFinite(amount) || amount <= 0) {
-        return reply.code(400).send({ error: "amount must be a positive number" });
+      if (!Number.isFinite(amount) || amount <= 0 || amount > 1e9) {
+        return reply.code(400).send({ error: "amount must be a positive number below 1e9" });
       }
       const res = await hyperliquid.transferUsd(amount, toPerp);
       if (!res.ok) return reply.code(400).send({ error: res.error });
@@ -381,17 +382,18 @@ export async function buildServer() {
   app.post<{ Body: { symbol?: string; side?: string; notionalUsd?: number; leverage?: number } }>(
     "/api/test-order",
     async (req, reply) => {
+      if (!authEnabled) return reply.code(403).send({ error: "Set DESK_PASSWORD to enable test orders." });
       const b = req.body ?? {};
       const symbol = typeof b.symbol === "string" ? b.symbol : "";
       const side = b.side === "short" ? "short" : "long";
       const notionalUsd = Number(b.notionalUsd);
       const leverage = Number(b.leverage);
       if (!symbol) return reply.code(400).send({ error: "symbol required" });
-      if (!Number.isFinite(notionalUsd) || notionalUsd <= 0) {
-        return reply.code(400).send({ error: "notionalUsd must be > 0" });
+      if (!Number.isFinite(notionalUsd) || notionalUsd <= 0 || notionalUsd > 10_000_000) {
+        return reply.code(400).send({ error: "notionalUsd must be > 0 and <= 10,000,000" });
       }
-      if (!Number.isFinite(leverage) || leverage < 1) {
-        return reply.code(400).send({ error: "leverage must be >= 1" });
+      if (!Number.isFinite(leverage) || leverage < 1 || leverage > 100) {
+        return reply.code(400).send({ error: "leverage must be between 1 and 100" });
       }
       const res = await placeTestOrder({ symbol, side, notionalUsd, leverage });
       if (!res.ok) return reply.code(400).send({ error: res.error });

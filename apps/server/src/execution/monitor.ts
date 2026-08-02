@@ -3,6 +3,7 @@ import { config } from "../config.js";
 import { log } from "../logger.js";
 import { groups as groupsRepo, trades as tradesRepo } from "../db/repositories.js";
 import { hyperliquid, type FillLite } from "../hyperliquid/connector.js";
+import { closing } from "./engine.js";
 import { alertClosed } from "../alerts/notifier.js";
 import { broadcast } from "../ws/hub.js";
 import { pushStats } from "../stats/service.js";
@@ -21,7 +22,8 @@ export async function reconcileOnce(): Promise<void> {
   if (!hyperliquid.live) return;
   // Only real positions are reconciled against the exchange; simulated ones
   // (shadow/test mode) are resolved by evaluateSimulated().
-  const open = tradesRepo.open().filter((t) => !t.simulated);
+  // Skip trades a manual close/partial is actively working on (race guard).
+  const open = tradesRepo.open().filter((t) => !t.simulated && !closing.has(t.id));
   if (open.length === 0) return;
 
   let fills: FillLite[];
@@ -76,6 +78,10 @@ async function reconcileTrade(trade: Trade, byOid: Map<string, FillLite[]>): Pro
   //    also tries to move the stop for a flat position).
   const fullyClosed = closedSize >= trade.size * 0.999;
   if (fullyClosed) {
+    // Re-check status right before the terminal write — a manual close may have
+    // resolved it while we awaited fills.
+    const fresh = tradesRepo.get(trade.id);
+    if (!fresh || fresh.status !== "open" || closing.has(trade.id)) return false;
     const notional = tradeFills.reduce((s, f) => s + f.price * f.size, 0);
     const exitPrice = closedSize > 0 ? notional / closedSize : trade.entryPrice;
     // Fold in profit/fees banked from earlier partial exits ("book X%").
@@ -155,7 +161,9 @@ async function moveSlToBreakeven(trade: Trade, filledSize: number, slippage: num
  * plays out without touching the exchange.
  */
 export async function evaluateSimulated(): Promise<void> {
-  const sims = tradesRepo.open().filter((t) => t.simulated || t.shadow);
+  const sims = tradesRepo
+    .open()
+    .filter((t) => (t.simulated || t.shadow) && !closing.has(t.id));
   if (sims.length === 0) return;
   let changed = false;
   for (const trade of sims) {
@@ -209,11 +217,17 @@ async function evaluateSimulatedTrade(trade: Trade): Promise<boolean> {
     gross += (stopPrice! - entry) * dir * remainingFraction * trade.size;
     exitPrice = stopPrice!;
   }
-  const fees = trade.notionalUsd * 0.0007;
+  // Fee on the REMAINING size only (round-trip); the partially-closed portion
+  // already had its fee banked in bankedFees — avoid double-charging it.
+  const fees = trade.size * entry * 0.0007;
   // Fold in profit/fees banked from earlier partial exits ("book X%").
   const bankedPnl = trade.bankedPnl ?? 0;
   const bankedFees = trade.bankedFees ?? 0;
   const realizedPnl = bankedPnl - bankedFees + gross - fees;
+
+  // Re-check status before the terminal write (a manual close may have won).
+  const fresh = tradesRepo.get(trade.id);
+  if (!fresh || fresh.status !== "open" || closing.has(trade.id)) return false;
 
   const updated = tradesRepo.update(trade.id, {
     status: "closed",

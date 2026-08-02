@@ -535,4 +535,23 @@ export const settings = {
   markTelegramMessageSeen(groupId: string, msgId: number): void {
     this.claimTelegramMessage(groupId, msgId);
   },
+  /** Whether a group has ever been primed (has a seen-set). */
+  hasTelegramSeen(groupId: string): boolean {
+    return kvGet(`seenMsgs:${groupId}`) !== undefined;
+  },
+  /** Release a claimed id so a transiently-failed message can be retried. */
+  unclaimTelegramMessage(groupId: string, msgId: number): void {
+    const key = `seenMsgs:${groupId}`;
+    const raw = kvGet(key);
+    if (!raw) return;
+    const arr = (JSON.parse(raw) as number[]).filter((x) => x !== msgId);
+    kvSet(key, JSON.stringify(arr));
+  },
+  /** Last date (YYYY-MM-DD, UTC) a given report kind was sent; "" if never. */
+  getLastReport(kind: string): string {
+    return kvGet(`lastReport:${kind}`) ?? "";
+  },
+  setLastReport(kind: string, date: string): void {
+    kvSet(`lastReport:${kind}`, date);
+  },
 };

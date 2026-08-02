@@ -1,7 +1,7 @@
 import type { Trade } from "@tttrading/shared";
 import { config, alertsEnabled } from "../config.js";
 import { log } from "../logger.js";
-import { trades as tradesRepo } from "../db/repositories.js";
+import { trades as tradesRepo, settings as settingsRepo } from "../db/repositories.js";
 import { analytics } from "../stats/service.js";
 import { sendAlert } from "./notifier.js";
 
@@ -32,7 +32,7 @@ export function buildReport(period: ReportPeriod): string {
       (t) =>
         !t.shadow &&
         t.status === "closed" &&
-        t.openedAt >= from &&
+        (t.closedAt ?? t.openedAt) >= from && // window by when PnL was realized
         Number.isFinite(t.realizedPnl),
     );
   const best = closed.reduce<Trade | undefined>(
@@ -68,32 +68,37 @@ export async function sendReport(period: ReportPeriod): Promise<boolean> {
 }
 
 let timer: ReturnType<typeof setInterval> | undefined;
-let lastDaily = "";
-let lastWeekly = "";
 
 /**
  * Start the report scheduler: checks each minute and fires the daily/weekly
- * summary at the configured UTC hour (weekly on the configured weekday),
- * guarded so each fires at most once per day.
+ * summary once the configured UTC hour has arrived (weekly on the configured
+ * weekday). The "already sent today" guard is persisted in the DB so a restart
+ * during the report minute can't double-send, and it fires on the first tick
+ * at-or-after the target hour rather than requiring an exact minute-0 hit.
  */
 export function startReports(): void {
+  if (timer) return; // re-entrancy guard: never run two schedulers
   if (!alertsEnabled) return;
   const { dailyReport, weeklyReport, reportHour, reportWeekday } = config.alerts;
   if (!dailyReport && !weeklyReport) return;
   log.info(
-    `Telegram reports scheduled at ${reportHour}:00 UTC ` +
+    `Telegram reports scheduled from ${reportHour}:00 UTC ` +
       `(daily=${dailyReport}, weekly=${weeklyReport} on weekday ${reportWeekday}).`,
   );
   timer = setInterval(() => {
     const now = new Date();
-    if (now.getUTCHours() !== reportHour || now.getUTCMinutes() !== 0) return;
+    if (now.getUTCHours() < reportHour) return; // not yet time today
     const today = now.toISOString().slice(0, 10);
-    if (dailyReport && lastDaily !== today) {
-      lastDaily = today;
+    if (dailyReport && settingsRepo.getLastReport("daily") !== today) {
+      settingsRepo.setLastReport("daily", today);
       void sendReport("daily");
     }
-    if (weeklyReport && now.getUTCDay() === reportWeekday && lastWeekly !== today) {
-      lastWeekly = today;
+    if (
+      weeklyReport &&
+      now.getUTCDay() === reportWeekday &&
+      settingsRepo.getLastReport("weekly") !== today
+    ) {
+      settingsRepo.setLastReport("weekly", today);
       void sendReport("weekly");
     }
   }, 60_000);

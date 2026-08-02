@@ -21,6 +21,12 @@ export interface OrderRequest {
   maxSlippage: number;
   /** Reduce-only (for closing/scaling out) — never opens/flips a position. */
   reduceOnly?: boolean;
+  /**
+   * Force a real exchange order even when the global shadow/test switch is on.
+   * Used ONLY to manage an already-real position (close/reduce), so flipping
+   * test mode mid-trade can never strip a live position of its exit.
+   */
+  force?: boolean;
 }
 
 export interface OrderResult {
@@ -87,6 +93,14 @@ export class HyperliquidConnector {
         isTestnet: config.isTestnet,
       });
       log.info(`Hyperliquid connector LIVE on ${config.tradingEnv}.`);
+      if (!config.hyperliquid.accountAddress) {
+        const signer = account.address;
+        log.warn(
+          `HL_ACCOUNT_ADDRESS not set — reading state from the signer address ${signer}. ` +
+            `If HL_PRIVATE_KEY is an agent/API wallet, positions & balance live on the MASTER ` +
+            `account; set HL_ACCOUNT_ADDRESS to the master address or the desk will show zero exposure.`,
+        );
+      }
     } else {
       log.warn(
         `Hyperliquid connector in ${config.tradingEnv} mode (no signing) — orders are simulated.`,
@@ -219,7 +233,8 @@ export class HyperliquidConnector {
     if (!this.live || !this.exchange) return { ok: false, error: "not connected (no signing key)" };
     if (!Number.isFinite(amount) || amount <= 0) return { ok: false, error: "amount must be > 0" };
     try {
-      await this.exchange.usdClassTransfer({ amount: String(amount), toPerp });
+      // USDC has 6 decimals; fixed precision avoids scientific-notation payloads.
+      await this.exchange.usdClassTransfer({ amount: amount.toFixed(6), toPerp });
       return { ok: true };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -243,11 +258,12 @@ export class HyperliquidConnector {
     marginMode: "cross" | "isolated",
   ): Promise<void> {
     if (!this.exchange) return;
-    const capped = Math.max(1, Math.min(leverage, asset.maxLeverage));
+    // Round DOWN to an integer so actual leverage never exceeds what was asked.
+    const capped = Math.max(1, Math.floor(Math.min(leverage, asset.maxLeverage)));
     await this.exchange.updateLeverage({
       asset: asset.index,
       isCross: marginMode === "cross",
-      leverage: Math.round(capped),
+      leverage: capped,
     });
   }
 
@@ -280,12 +296,24 @@ export class HyperliquidConnector {
     if (size <= 0) {
       return { ok: false, filledPrice: mid, size: 0, simulated: !this.live, error: "Computed size is 0" };
     }
+    // Hyperliquid rejects orders below ~$10 notional. Guard opens only — a
+    // reduce-only close of a small remaining position must always be allowed.
+    if (!req.reduceOnly && size * mid < 10) {
+      return {
+        ok: false,
+        filledPrice: mid,
+        size: 0,
+        simulated: !this.live,
+        error: `Order value ${(size * mid).toFixed(2)} below Hyperliquid's $10 minimum`,
+      };
+    }
     // Aggressive limit price so the IOC order crosses the book.
     const slip = req.maxSlippage;
     const limitPx = roundPx(mid * (isBuy ? 1 + slip : 1 - slip), asset.szDecimals);
 
-    if (this.simulating() || !this.exchange) {
-      // Shadow/test/unsigned: simulate a fill at mid.
+    // Simulate unless there's a signing key AND (test mode is off OR this is a
+    // forced management order on an already-real position).
+    if (!this.exchange || (this.simulating() && !req.force)) {
       return { ok: true, filledPrice: mid, size, simulated: true };
     }
 
@@ -341,13 +369,15 @@ export class HyperliquidConnector {
     stopLoss?: number;
     takeProfits?: number[];
     slippage: number;
+    /** Force real placement even in test mode (managing an already-real position). */
+    force?: boolean;
   }): Promise<BracketResult> {
-    const { symbol, side, size, stopLoss, takeProfits, slippage } = params;
+    const { symbol, side, size, stopLoss, takeProfits, slippage, force } = params;
     const tps = takeProfits ?? [];
     if (stopLoss === undefined && tps.length === 0) {
       return { tpOrderIds: [], protectedOnExchange: false };
     }
-    if (this.simulating() || !this.exchange) {
+    if (!this.exchange || (this.simulating() && !force)) {
       return { tpOrderIds: [], protectedOnExchange: false };
     }
 

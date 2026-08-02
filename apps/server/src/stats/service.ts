@@ -67,7 +67,7 @@ export function computeStats(list: Trade[]): PerformanceStats {
 
 function equityCurve(list: Trade[]): EquityPoint[] {
   const closed = list
-    .filter((t) => t.status === "closed" && t.realizedPnl !== undefined && t.closedAt)
+    .filter((t) => t.status === "closed" && Number.isFinite(t.realizedPnl) && t.closedAt)
     .sort((a, b) => (a.closedAt! < b.closedAt! ? -1 : 1));
   let cum = 0;
   return closed.map((t) => {
@@ -115,13 +115,13 @@ export function pushStats(): void {
 /** Largest peak-to-trough drop on a chronological cumulative-PnL series. */
 function maxDrawdown(closed: Trade[]): number {
   const ordered = closed
-    .filter((t) => t.closedAt)
+    .filter((t) => t.closedAt && Number.isFinite(t.realizedPnl))
     .sort((a, b) => (a.closedAt! < b.closedAt! ? -1 : 1));
   let cum = 0;
   let peak = 0;
   let maxDd = 0;
   for (const t of ordered) {
-    cum += t.realizedPnl ?? 0;
+    cum += t.realizedPnl as number;
     if (cum > peak) peak = cum;
     const dd = peak - cum;
     if (dd > maxDd) maxDd = dd;
@@ -190,8 +190,15 @@ export function analytics(opts: {
 } = {}): AnalyticsResponse {
   let list = tradesRepo.list(10000);
   if (!opts.includeShadow) list = list.filter((t) => !t.shadow);
-  if (opts.from) list = list.filter((t) => t.openedAt >= opts.from!);
-  if (opts.to) list = list.filter((t) => t.openedAt <= opts.to!);
+  // Window by when PnL was REALIZED (closedAt) so a trade opened before the
+  // window but closed inside it is attributed correctly. Open trades (no
+  // realized result yet) are always kept so current exposure still shows.
+  if (opts.from) {
+    list = list.filter((t) => (t.status === "closed" ? (t.closedAt ?? t.openedAt) >= opts.from! : true));
+  }
+  if (opts.to) {
+    list = list.filter((t) => (t.status === "closed" ? (t.closedAt ?? t.openedAt) <= opts.to! : true));
+  }
 
   const byKey = <K extends string>(pick: (t: Trade) => K): Map<K, Trade[]> => {
     const m = new Map<K, Trade[]>();

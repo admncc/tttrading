@@ -75,6 +75,20 @@ export function getListenerHealth(): ListenerHealth {
 const POLL_INTERVAL_MS = 60_000;
 /** How many recent messages to fetch per channel per poll / prime. */
 const POLL_LIMIT = 30;
+/** Max messages to page back per group per cycle when covering a gap. */
+const MAX_CATCHUP = 200;
+
+/** Resolved-entity cache so we don't call getDialogs() every poll. */
+const entityCache = new Map<string, unknown>();
+let polling = false;
+
+async function resolveEntityCached(tg: TelegramClient, g: { id: string; telegramChannel: string }): Promise<unknown> {
+  const cached = entityCache.get(g.id);
+  if (cached) return cached;
+  const entity = await resolveEntity(tg, g.telegramChannel);
+  entityCache.set(g.id, entity);
+  return entity;
+}
 
 /** The connected Telegram client, or null when the listener isn't running. */
 export function getTelegramClient(): TelegramClient | null {
@@ -140,6 +154,8 @@ async function onMessage(event: NewMessageEvent): Promise<void> {
     await handleIncoming(group, text);
     gh(group.id).lastMessageAt = new Date().toISOString();
   } catch (err) {
+    // Release the claim so the catch-up poller can retry this message.
+    if (typeof msgId === "number") settingsRepo.unclaimTelegramMessage(group.id, msgId);
     log.error("Failed to handle Telegram message:", err instanceof Error ? err.message : err);
   }
 }
@@ -175,6 +191,16 @@ async function primeGroups(tg: TelegramClient): Promise<void> {
 async function pollOnce(): Promise<void> {
   const tg = client;
   if (!tg) return;
+  if (polling) return; // skip if the previous cycle is still running
+  polling = true;
+  try {
+    await pollCycle(tg);
+  } finally {
+    polling = false;
+  }
+}
+
+async function pollCycle(tg: TelegramClient): Promise<void> {
   // Reconnect if the connection dropped while idle.
   try {
     if (!tg.connected) {
@@ -189,33 +215,70 @@ async function pollOnce(): Promise<void> {
 
   for (const g of groupsRepo.list()) {
     try {
-      const entity = await resolveEntity(tg, g.telegramChannel);
-      const messages = (await tg.getMessages(entity as Parameters<typeof tg.getMessages>[0], {
-        limit: POLL_LIMIT,
-      })) as Api.Message[];
-      // Process oldest-first so ordering matches how they were sent.
-      const fresh: { id: number; text: string }[] = [];
-      for (const m of messages) {
-        const id = (m as { id?: number }).id;
-        const text = (m as { message?: string }).message;
-        if (typeof id !== "number" || !text) continue;
-        if (settingsRepo.claimTelegramMessage(g.id, id)) fresh.push({ id, text });
+      const entity = await resolveEntityCached(tg, g);
+
+      // A group added at runtime has no seen-set: prime it (mark current
+      // messages seen) WITHOUT processing, so old history isn't executed live.
+      if (!settingsRepo.hasTelegramSeen(g.id)) {
+        const recent = (await tg.getMessages(entity as Parameters<typeof tg.getMessages>[0], {
+          limit: POLL_LIMIT,
+        })) as Api.Message[];
+        for (const m of recent) {
+          const id = (m as { id?: number }).id;
+          if (typeof id === "number") settingsRepo.markTelegramMessageSeen(g.id, id);
+        }
+        gh(g.id).lastPolledAt = new Date().toISOString();
+        log.info(`Primed new group ${g.name} (${recent.length} msgs marked seen).`);
+        continue;
       }
+
+      // Page back from newest until we reach already-seen messages (covers gaps
+      // larger than POLL_LIMIT), bounded by MAX_CATCHUP to cap cost.
+      const fresh: { id: number; text: string }[] = [];
+      let offsetId = 0;
+      let hitSeen = false;
+      while (fresh.length < MAX_CATCHUP && !hitSeen) {
+        const opts: Record<string, number> = { limit: POLL_LIMIT };
+        if (offsetId) opts.offsetId = offsetId;
+        const batch = (await tg.getMessages(
+          entity as Parameters<typeof tg.getMessages>[0],
+          opts,
+        )) as Api.Message[];
+        if (batch.length === 0) break;
+        let anyNew = false;
+        for (const m of batch) {
+          const id = (m as { id?: number }).id;
+          if (typeof id !== "number") continue;
+          const text = (m as { message?: string }).message;
+          if (settingsRepo.claimTelegramMessage(g.id, id)) {
+            anyNew = true;
+            if (text) fresh.push({ id, text });
+          } else {
+            hitSeen = true; // reached the already-processed region
+          }
+        }
+        if (!anyNew || batch.length < POLL_LIMIT) break;
+        offsetId = Math.min(...batch.map((m) => (m as { id?: number }).id ?? Infinity));
+      }
+      if (fresh.length >= MAX_CATCHUP) {
+        log.warn(`Catch-up for ${g.name} hit the ${MAX_CATCHUP}-message cap; older gap not paged.`);
+      }
+
+      // Process oldest-first so ordering matches how they were sent.
       fresh.sort((a, b) => a.id - b.id);
       for (const f of fresh) {
-        logEvent(
-          "message",
-          `Catch-up: recovered missed message from ${g.name}`,
-          { msgId: f.id },
-          { groupId: g.id },
-        );
+        logEvent("message", `Catch-up: recovered missed message from ${g.name}`, { msgId: f.id }, {
+          groupId: g.id,
+        });
         try {
           await handleIncoming(g, f.text);
           const h = gh(g.id);
           h.lastMessageAt = new Date().toISOString();
           h.recoveredCount++;
         } catch (err) {
-          log.error("Catch-up handleIncoming failed:", err instanceof Error ? err.message : err);
+          // Transient failure — release the claim so a later poll can retry it.
+          settingsRepo.unclaimTelegramMessage(g.id, f.id);
+          log.error("Catch-up handleIncoming failed (will retry):", err instanceof Error ? err.message : err);
         }
       }
       const h = gh(g.id);
@@ -224,6 +287,7 @@ async function pollOnce(): Promise<void> {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       gh(g.id).lastError = msg;
+      entityCache.delete(g.id); // force re-resolve next cycle
       log.warn(`Telegram poll ${g.name} failed:`, msg);
     }
   }

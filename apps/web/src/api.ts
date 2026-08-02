@@ -217,8 +217,12 @@ async function downloadFile(path: string, fallbackName: string): Promise<void> {
   URL.revokeObjectURL(url);
 }
 
-/** Open a WebSocket to the desk API and invoke handler on each event. */
-export function openWs(onEvent: (e: WsEvent) => void): () => void {
+/**
+ * Open a WebSocket to the desk API and invoke handler on each event.
+ * `onReconnect` fires each time the socket (re)opens so the caller can
+ * re-sync state that may have changed while the socket was down.
+ */
+export function openWs(onEvent: (e: WsEvent) => void, onReconnect?: () => void): () => void {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   let ws: WebSocket | null = null;
   let closed = false;
@@ -227,6 +231,7 @@ export function openWs(onEvent: (e: WsEvent) => void): () => void {
   const connect = () => {
     const q = token ? `?token=${encodeURIComponent(token)}` : "";
     ws = new WebSocket(`${proto}://${location.host}/ws${q}`);
+    ws.onopen = () => onReconnect?.();
     ws.onmessage = (msg) => {
       try {
         onEvent(JSON.parse(msg.data) as WsEvent);

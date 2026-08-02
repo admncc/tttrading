@@ -173,8 +173,13 @@ export function App() {
           setLogs((prev) => [e.entry, ...prev].slice(0, 800));
           break;
       }
+    }, () => {
+      // On (re)connect, re-sync full state — events missed while the socket was
+      // down are otherwise never delivered, leaving the desk stale.
+      void refresh();
+      reloadLogs();
     });
-  }, [authState]);
+  }, [authState, refresh, reloadLogs]);
 
   if (authState === "loading") {
     return <div className="empty" style={{ paddingTop: 80 }}>Loading…</div>;

@@ -14,8 +14,8 @@ import { pushStats } from "../stats/service.js";
 /** Minimum confidence required to act on a parsed signal. */
 const ACT_THRESHOLD = 0.6;
 
-/** Trade ids currently being closed, to prevent concurrent double-closes. */
-const closing = new Set<string>();
+/** Trade ids currently being closed/reduced, to prevent concurrent double-closes. */
+export const closing = new Set<string>();
 
 function symbolAllowed(group: Group, symbol: string): boolean {
   const allow = group.settings.allowedSymbols;
@@ -176,6 +176,8 @@ function finalizeIgnored(
 
 /** Move a trade's stop-loss (break-even or explicit). Place-then-cancel when live. */
 async function moveStop(trade: Trade, newStop: number, breakeven: boolean): Promise<void> {
+  // Real position with a live stop: replace it on the exchange (force, so this
+  // still works with the global test switch on — the position is real).
   if (!trade.simulated && hyperliquid.live && trade.slOrderId) {
     const res = await hyperliquid.placeBracketOrders({
       symbol: trade.symbol,
@@ -184,6 +186,7 @@ async function moveStop(trade: Trade, newStop: number, breakeven: boolean): Prom
       stopLoss: newStop,
       takeProfits: [],
       slippage: 0.01,
+      force: true,
     });
     if (res.protectedOnExchange && res.slOrderId) {
       await hyperliquid.cancelOrders(trade.symbol, [trade.slOrderId]);
@@ -194,8 +197,15 @@ async function moveStop(trade: Trade, newStop: number, breakeven: boolean): Prom
       });
       return;
     }
-    log.warn(`moveStop: failed to place new SL for ${trade.symbol}; keeping old.`);
+    // Do NOT update the desk to a stop we failed to place — the OLD stop is
+    // still live on the exchange and keeps protecting the position.
+    log.error(
+      `moveStop: failed to place new SL for ${trade.symbol} (${res.error ?? "no id"}); ` +
+        `keeping existing exchange stop, desk unchanged.`,
+    );
+    return;
   }
+  // Simulated trade: just record the stop for the monitor to enforce.
   tradesRepo.update(trade.id, {
     stopLoss: newStop,
     slMovedToBreakeven: breakeven ? true : trade.slMovedToBreakeven,
@@ -211,53 +221,71 @@ const FEE_RATE = 0.00035;
  * realizedPnl when the trade eventually closes. Does NOT touch tpFilledCount —
  * that counter belongs to native TP scale-out, a separate mechanism.
  */
-async function partialClose(trade: Trade, rawFraction: number): Promise<void> {
+async function partialClose(tradeInput: Trade, rawFraction: number): Promise<void> {
   const frac = Math.min(Math.max(rawFraction, 0), 0.95);
-  const closeSize = trade.size * frac;
-  if (closeSize <= 0) return;
+  if (frac <= 0) return;
+  const id = tradeInput.id;
+  // Serialize with close/other partials on the same trade (prevents over-close).
+  if (closing.has(id)) return;
+  closing.add(id);
+  try {
+    const trade = tradesRepo.get(id);
+    if (!trade || trade.status !== "open" || trade.shadow) return;
+    const intendedSize = trade.size * frac;
+    if (intendedSize <= 0) return;
 
-  // Reference exit price: the real fill in live mode, else the live mid.
-  let exitPx: number | undefined;
-  if (!trade.simulated && hyperliquid.live) {
-    const res = await hyperliquid.placeMarketOrder({
-      symbol: trade.symbol,
-      side: trade.side === "long" ? "short" : "long",
-      notionalUsd: trade.entryPrice * closeSize,
-      leverage: trade.leverage,
-      marginMode: "cross",
-      maxSlippage: 0.01,
-      reduceOnly: true,
-    });
-    if (res.ok && res.filledPrice > 0) exitPx = res.filledPrice;
-  }
-  if (exitPx === undefined) {
+    // Determine the exit price up front from the live mid, then size the order
+    // off THAT price (the connector derives size = notional / mid).
+    let exitPx: number | undefined;
     try {
       const mid = await hyperliquid.getMidPrice(trade.symbol);
       if (mid && mid > 0) exitPx = mid;
     } catch {
       /* price feed down */
     }
+    if (exitPx === undefined || exitPx <= 0) exitPx = trade.entryPrice;
+
+    let closedSize = intendedSize;
+    if (!trade.simulated && hyperliquid.live) {
+      const res = await hyperliquid.placeMarketOrder({
+        symbol: trade.symbol,
+        side: trade.side === "long" ? "short" : "long",
+        notionalUsd: exitPx * intendedSize, // size off current price, not entry
+        leverage: trade.leverage,
+        marginMode: "cross",
+        maxSlippage: 0.01,
+        reduceOnly: true,
+        force: true, // real position → always hit the exchange, even in test mode
+      });
+      if (!res.ok) {
+        log.warn(`partialClose: order failed for ${trade.symbol}: ${res.error}`);
+        return;
+      }
+      if (res.filledPrice > 0) exitPx = res.filledPrice;
+      if (res.size > 0) closedSize = res.size; // ACTUAL filled size (partials)
+    }
+
+    const dir = trade.side === "long" ? 1 : -1;
+    const legPnl = (exitPx - trade.entryPrice) * dir * closedSize;
+    // Round-trip fee for this leg (entry + exit side); the remaining size's entry
+    // fee is charged by closeTrade, so together they sum to one entry fee.
+    const legFee = (trade.entryPrice + exitPx) * closedSize * FEE_RATE;
+    const remaining = Math.max(0, trade.size - closedSize);
+
+    tradesRepo.update(trade.id, {
+      size: remaining,
+      bankedPnl: (trade.bankedPnl ?? 0) + legPnl,
+      bankedFees: (trade.bankedFees ?? 0) + legFee,
+    });
+    event(
+      "manage",
+      `Booked ${(frac * 100).toFixed(0)}% of ${trade.symbol} @ ${exitPx} — banked ${(legPnl - legFee).toFixed(2)} USDC`,
+      { fraction: frac, exitPx, closedSize, legPnl, legFee, remainingSize: remaining },
+      { groupId: trade.groupId },
+    );
+  } finally {
+    closing.delete(id);
   }
-  if (exitPx === undefined || exitPx <= 0) exitPx = trade.entryPrice;
-
-  const dir = trade.side === "long" ? 1 : -1;
-  const legPnl = (exitPx - trade.entryPrice) * dir * closeSize;
-  // Round-trip fee for this leg (entry + exit side). The remaining size's entry
-  // fee is charged by closeTrade on the reduced size, so together they add up to
-  // exactly one entry fee on the original position.
-  const legFee = (trade.entryPrice + exitPx) * closeSize * FEE_RATE;
-
-  tradesRepo.update(trade.id, {
-    size: trade.size - closeSize,
-    bankedPnl: (trade.bankedPnl ?? 0) + legPnl,
-    bankedFees: (trade.bankedFees ?? 0) + legFee,
-  });
-  event(
-    "manage",
-    `Booked ${(frac * 100).toFixed(0)}% of ${trade.symbol} @ ${exitPx} — banked ${(legPnl - legFee).toFixed(2)} USDC`,
-    { fraction: frac, exitPx, legPnl, legFee, remainingSize: trade.size - closeSize },
-    { groupId: trade.groupId },
-  );
 }
 
 /**
@@ -311,7 +339,11 @@ async function applyManagement(
         if (fresh) await moveStop(fresh, fresh.entryPrice, true);
       }
     } else if (action.kind === "tp_hit") {
-      tradesRepo.update(t.id, { tpFilledCount: (t.tpFilledCount ?? 0) + 1 });
+      // Clamp to the number of TP levels so a stray "TP hit" message can't
+      // fabricate a TP leg that closeTrade would later bank profit for.
+      const cap = t.takeProfits?.length ?? 0;
+      const next = Math.min((t.tpFilledCount ?? 0) + 1, cap || (t.tpFilledCount ?? 0) + 1);
+      tradesRepo.update(t.id, { tpFilledCount: next });
     }
     const u = tradesRepo.get(t.id);
     if (u) broadcast({ type: "trade", trade: u });
@@ -710,6 +742,7 @@ export async function closeTrade(tradeId: string, exitPriceOverride?: number) {
         marginMode: "cross",
         maxSlippage: 0.01,
         reduceOnly: true, // never flip into an opposite position
+        force: true, // real position → close on the exchange even in test mode
       });
       if (result.ok) exitPrice = result.filledPrice;
     }

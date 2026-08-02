@@ -18,7 +18,20 @@ function num(v: string | undefined, def: number): number {
   return Number.isFinite(n) ? n : def;
 }
 
-const tradingEnv = (process.env.TRADING_ENV as TradingEnv) || "testnet";
+// Validate TRADING_ENV against the allowed set. An unknown/typo'd value must
+// NEVER silently fall through to the live-mainnet branch — fail closed to paper.
+const rawEnv = (process.env.TRADING_ENV ?? "testnet").trim();
+const VALID_ENVS: TradingEnv[] = ["testnet", "mainnet", "paper"];
+if (!VALID_ENVS.includes(rawEnv as TradingEnv)) {
+  // eslint-disable-next-line no-console
+  console.error(
+    `[config] Invalid TRADING_ENV="${rawEnv}". Must be one of ${VALID_ENVS.join(", ")}. ` +
+      `Falling back to "paper" (no real orders).`,
+  );
+}
+const tradingEnv: TradingEnv = VALID_ENVS.includes(rawEnv as TradingEnv)
+  ? (rawEnv as TradingEnv)
+  : "paper";
 
 export const config = {
   /** HTTP + WebSocket port for the desk API. */
