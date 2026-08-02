@@ -3,6 +3,7 @@ import type {
   Group,
   GroupInput,
   GroupSettings,
+  LogEntry,
   ParsedSignal,
   RiskRating,
   Signal,
@@ -398,6 +399,70 @@ export const trades = {
   count(): number {
     const r = db.prepare("SELECT COUNT(*) AS c FROM trades").get() as { c: number };
     return r.c;
+  },
+};
+
+/* -------------------------------- logs --------------------------------- */
+
+interface LogRow {
+  id: string;
+  ts: string;
+  level: string;
+  category: string;
+  message: string;
+  meta: string | null;
+  group_id: string | null;
+  signal_id: string | null;
+}
+
+function toLog(r: LogRow): LogEntry {
+  return {
+    id: r.id,
+    ts: r.ts,
+    level: r.level as LogEntry["level"],
+    category: r.category,
+    message: r.message,
+    meta: r.meta ? (JSON.parse(r.meta) as Record<string, unknown>) : undefined,
+    groupId: r.group_id ?? undefined,
+    signalId: r.signal_id ?? undefined,
+  };
+}
+
+const LOG_CAP = 5000;
+let logInserts = 0;
+
+export const logs = {
+  create(entry: LogEntry): void {
+    db.prepare(
+      `INSERT INTO logs (id, ts, level, category, message, meta, group_id, signal_id)
+       VALUES (@id, @ts, @level, @category, @message, @meta, @group_id, @signal_id)`,
+    ).run({
+      id: entry.id,
+      ts: entry.ts,
+      level: entry.level,
+      category: entry.category,
+      message: entry.message,
+      meta: entry.meta ? JSON.stringify(entry.meta) : null,
+      group_id: entry.groupId ?? null,
+      signal_id: entry.signalId ?? null,
+    });
+    // Periodically trim to the most recent LOG_CAP rows.
+    if (++logInserts % 200 === 0) {
+      db.prepare(
+        `DELETE FROM logs WHERE id NOT IN (SELECT id FROM logs ORDER BY ts DESC LIMIT ?)`,
+      ).run(LOG_CAP);
+    }
+  },
+  list(limit = 300, category?: string): LogEntry[] {
+    const rows = category
+      ? (db
+          .prepare("SELECT * FROM logs WHERE category = ? ORDER BY ts DESC LIMIT ?")
+          .all(category, limit) as LogRow[])
+      : (db.prepare("SELECT * FROM logs ORDER BY ts DESC LIMIT ?").all(limit) as LogRow[]);
+    return rows.map(toLog);
+  },
+  clear(): void {
+    db.prepare("DELETE FROM logs").run();
   },
 };
 

@@ -1,5 +1,6 @@
 import { config, alertsEnabled, authEnabled } from "./config.js";
 import { log, addLogSink } from "./logger.js";
+import { logs as logsRepo } from "./db/repositories.js";
 import { sendAlert } from "./alerts/notifier.js";
 import { llmReady } from "./signals/llm.js";
 import "./db/index.js"; // open + migrate
@@ -10,10 +11,15 @@ import { startMonitor, stopMonitor } from "./execution/monitor.js";
 import { broadcast } from "./ws/hub.js";
 
 async function main(): Promise<void> {
-  // Mirror server logs to connected desk clients.
-  addLogSink((level, message) =>
-    broadcast({ type: "log", level, message, t: new Date().toISOString() }),
-  );
+  // Persist every log entry and mirror it live to connected desk clients.
+  addLogSink((entry) => {
+    try {
+      logsRepo.create(entry);
+    } catch {
+      /* don't let persistence break logging */
+    }
+    broadcast({ type: "log", entry });
+  });
 
   seedDemo();
 

@@ -11,6 +11,7 @@ import { bearer, checkPassword, signToken, verifyToken } from "../auth.js";
 import { log } from "../logger.js";
 import {
   groups as groupsRepo,
+  logs as logsRepo,
   settings as settingsRepo,
   signals as signalsRepo,
   trades as tradesRepo,
@@ -280,6 +281,15 @@ export async function buildServer() {
     const trade = await closeTrade(req.params.id, parsed.data.exitPrice);
     if (!trade) return reply.code(404).send({ error: "not found" });
     return trade;
+  });
+
+  /* ------------------------------- logs ------------------------------- */
+  app.get<{ Querystring: { limit?: string; category?: string } }>("/api/logs", async (req) => {
+    return logsRepo.list(clampLimit(req.query.limit, 300, 3000), req.query.category);
+  });
+  app.delete("/api/logs", async () => {
+    logsRepo.clear();
+    return { ok: true };
   });
 
   /* ------------------------- stats & positions ------------------------ */

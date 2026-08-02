@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
-import type { DashboardStats, Group, Signal, Trade } from "@tttrading/shared";
+import type { DashboardStats, Group, LogEntry, Signal, Trade } from "@tttrading/shared";
 import { api, openWs, getToken, setToken, setAuthErrorHandler } from "./api.js";
 import { Overview } from "./pages/Overview.js";
 import { Trades } from "./pages/Trades.js";
 import { Signals } from "./pages/Signals.js";
 import { Messages } from "./pages/Messages.js";
 import { Groups } from "./pages/Groups.js";
+import { Logs } from "./pages/Logs.js";
 import { Login } from "./pages/Login.js";
 
-type Tab = "overview" | "trades" | "signals" | "messages" | "groups";
+type Tab = "overview" | "trades" | "signals" | "messages" | "groups" | "logs";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "overview", label: "Overview" },
@@ -16,6 +17,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "messages", label: "Messages" },
   { id: "trades", label: "Trades" },
   { id: "groups", label: "Groups & Settings" },
+  { id: "logs", label: "Logs" },
 ];
 
 export function App() {
@@ -27,6 +29,11 @@ export function App() {
   const [groups, setGroups] = useState<Group[]>([]);
   const [signals, setSignals] = useState<Signal[]>([]);
   const [trades, setTrades] = useState<Trade[]>([]);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+
+  const reloadLogs = useCallback(() => {
+    api.logs(500).then(setLogs).catch(() => {});
+  }, []);
 
   // Auth: "loading" until we know whether login is required and whether we're in.
   const [authState, setAuthState] = useState<"loading" | "in" | "out">("loading");
@@ -160,6 +167,9 @@ export function App() {
         case "settings":
           setHealth((h) => (h ? { ...h, shadowMode: e.settings.shadowMode } : h));
           break;
+        case "log":
+          setLogs((prev) => [e.entry, ...prev].slice(0, 800));
+          break;
       }
     });
   }, [authState]);
@@ -249,6 +259,7 @@ export function App() {
         )}
         {tab === "trades" && <Trades trades={trades} onChange={refresh} />}
         {tab === "groups" && <Groups groups={groups} onChange={refresh} />}
+        {tab === "logs" && <Logs logs={logs} onReload={reloadLogs} />}
       </main>
     </div>
   );

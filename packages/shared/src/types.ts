@@ -248,6 +248,22 @@ export interface BacktestResult {
   error?: string;
 }
 
+export type LogLevel = "info" | "warn" | "error";
+
+/** A persisted, structured log entry (pipeline trace + system events). */
+export interface LogEntry {
+  id: string;
+  ts: string;
+  level: LogLevel;
+  /** Grouping: "message" (incoming pipeline), "exec", "monitor", "system"… */
+  category: string;
+  message: string;
+  /** Optional structured context (parsed fields, order result, ids…). */
+  meta?: Record<string, unknown>;
+  groupId?: string;
+  signalId?: string;
+}
+
 /** Messages broadcast over the WebSocket to the desk. */
 export type WsEvent =
   | { type: "signal"; signal: Signal }
@@ -255,7 +271,7 @@ export type WsEvent =
   | { type: "group"; group: Group }
   | { type: "settings"; settings: GlobalSettings }
   | { type: "stats"; stats: DashboardStats }
-  | { type: "log"; level: "info" | "warn" | "error"; message: string; t: string };
+  | { type: "log"; entry: LogEntry };
 
 /** Payload to create/update a group from the desk. */
 export interface GroupInput {

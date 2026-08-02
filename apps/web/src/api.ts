@@ -3,6 +3,7 @@ import type {
   DashboardStats,
   Group,
   GroupInput,
+  LogEntry,
   Signal,
   Trade,
   WsEvent,
@@ -119,6 +120,10 @@ export const api = {
     req<Trade>(`/api/trades/${id}/close`, { method: "POST", body: JSON.stringify({ exitPrice }) }),
 
   stats: () => req<DashboardStats>("/api/stats"),
+
+  logs: (limit = 300, category?: string) =>
+    req<LogEntry[]>(`/api/logs?limit=${limit}${category ? `&category=${category}` : ""}`),
+  clearLogs: () => req<{ ok: boolean }>("/api/logs", { method: "DELETE" }),
 };
 
 /** Fetch a file with auth and trigger a browser download. */

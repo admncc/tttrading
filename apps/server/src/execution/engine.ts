@@ -1,6 +1,6 @@
 import type { Group, ParsedSignal, RiskRating, Signal } from "@tttrading/shared";
 import { config } from "../config.js";
-import { log } from "../logger.js";
+import { log, event } from "../logger.js";
 import { groups as groupsRepo, signals as signalsRepo, trades as tradesRepo } from "../db/repositories.js";
 import { hyperliquid } from "../hyperliquid/connector.js";
 import { parseSignal } from "../signals/parser.js";
@@ -27,6 +27,13 @@ function symbolAllowed(group: Group, symbol: string): boolean {
  * and either executes immediately (auto) or queues it for confirmation.
  */
 export async function handleIncoming(group: Group, rawText: string): Promise<Signal> {
+  const preview = rawText.replace(/\s+/g, " ").trim().slice(0, 160);
+  event("message", `Incoming from ${group.name}`, {
+    channel: group.telegramChannel,
+    length: rawText.length,
+    preview,
+  }, { groupId: group.id });
+
   const parsed = await parseSignal(rawText, group.settings.instructions);
 
   if (!parsed || parsed.confidence < ACT_THRESHOLD) {
@@ -37,9 +44,28 @@ export async function handleIncoming(group: Group, rawText: string): Promise<Sig
       status: "unparseable",
       parsed: parsed ?? undefined,
     });
+    event(
+      "message",
+      parsed ? `Parsed but below threshold — ignored` : `No signal detected — ignored`,
+      { confidence: parsed?.confidence, source: parsed?.source, threshold: ACT_THRESHOLD },
+      { groupId: group.id, signalId: signal.id },
+    );
     broadcast({ type: "signal", signal });
     return signal;
   }
+
+  event(
+    "message",
+    `Parsed ${parsed.side.toUpperCase()} ${parsed.symbol}`,
+    {
+      source: parsed.source,
+      confidence: parsed.confidence,
+      entry: parsed.entry,
+      stopLoss: parsed.stopLoss,
+      takeProfits: parsed.takeProfits,
+    },
+    { groupId: group.id },
+  );
 
   if (!group.enabled) {
     return finalizeIgnored(group, rawText, parsed, "group disabled");
@@ -50,6 +76,12 @@ export async function handleIncoming(group: Group, rawText: string): Promise<Sig
 
   // Traffic-light risk assessment from the channel's history + this signal.
   const risk = assessRisk(group.settings, parsed, tradesRepo.forGroup(group.id));
+  event(
+    "message",
+    `Risk ${risk.level.toUpperCase()} (${risk.score}/100)`,
+    { level: risk.level, score: risk.score, reasons: risk.reasons, sampleSize: risk.sampleSize },
+    { groupId: group.id },
+  );
 
   // Block high-risk (red) signals when configured, but track what they'd do.
   if (group.settings.blockRedTrades && risk.level === "red") {
@@ -63,7 +95,12 @@ export async function handleIncoming(group: Group, rawText: string): Promise<Sig
       error: `Blocked: red risk (${risk.score}/100)`,
     });
     await createShadowTrade(group, parsed, signal.id, risk);
-    log.info(`Blocked RED signal: ${parsed.side} ${parsed.symbol} (${group.name}) — tracking shadow`);
+    event(
+      "exec",
+      `BLOCKED red ${parsed.side} ${parsed.symbol} — tracking shadow`,
+      { score: risk.score },
+      { level: "warn", groupId: group.id, signalId: signal.id },
+    );
     alertBlocked(group.name, `${parsed.side} ${parsed.symbol}`, risk.score);
     broadcast({ type: "signal", signal });
     return signal;
@@ -78,8 +115,11 @@ export async function handleIncoming(group: Group, rawText: string): Promise<Sig
       parsed,
       risk,
     });
-    log.info(
-      `Signal queued for confirmation: ${parsed.side} ${parsed.symbol} (${group.name}) [${risk.level}]`,
+    event(
+      "message",
+      `Queued for confirmation: ${parsed.side} ${parsed.symbol}`,
+      { risk: risk.level },
+      { groupId: group.id, signalId: signal.id },
     );
     broadcast({ type: "signal", signal });
     return signal;
@@ -94,6 +134,12 @@ export async function handleIncoming(group: Group, rawText: string): Promise<Sig
     parsed,
     risk,
   });
+  event(
+    "exec",
+    `Auto-executing ${parsed.side} ${parsed.symbol}`,
+    undefined,
+    { groupId: group.id, signalId: signal.id },
+  );
   broadcast({ type: "signal", signal });
   return execute(signal, group, parsed, risk);
 }
@@ -112,7 +158,10 @@ function finalizeIgnored(
     parsed,
     error: reason,
   });
-  log.info(`Signal ignored (${reason}): ${parsed.symbol} ${group.name}`);
+  event("message", `Ignored (${reason}): ${parsed.symbol}`, { reason }, {
+    groupId: group.id,
+    signalId: signal.id,
+  });
   broadcast({ type: "signal", signal });
   return signal;
 }
@@ -209,11 +258,23 @@ async function execute(
 
   if (!result.ok) {
     const failed = signalsRepo.update(signal.id, { status: "failed", error: result.error })!;
-    log.error(`Order failed for ${parsed.symbol}: ${result.error}`);
+    event(
+      "exec",
+      `Order FAILED for ${parsed.symbol}: ${result.error}`,
+      { error: result.error, simulated: result.simulated },
+      { level: "error", groupId: group.id, signalId: signal.id },
+    );
     alertError(`order ${parsed.symbol} (${group.name})`, result.error ?? "unknown");
     broadcast({ type: "signal", signal: failed });
     return failed;
   }
+
+  event(
+    "exec",
+    `${result.simulated ? "Simulated" : "Live"} fill ${parsed.side} ${result.size} ${parsed.symbol} @ ${result.filledPrice}`,
+    { simulated: result.simulated, size: result.size, price: result.filledPrice, orderId: result.orderId },
+    { groupId: group.id, signalId: signal.id },
+  );
 
   // If the provider gave only one target, split it into several TP levels per
   // the group's settings. The stated entry (or the actual fill) is the base.
@@ -233,7 +294,21 @@ async function execute(
     takeProfits,
     slippage: maxSlippage,
   });
-  if (bracket.error) log.warn(`Bracket orders for ${parsed.symbol} failed: ${bracket.error}`);
+  if (bracket.error) {
+    event(
+      "exec",
+      `Bracket (SL/TP) placement failed for ${parsed.symbol}: ${bracket.error}`,
+      { error: bracket.error },
+      { level: "warn", groupId: group.id, signalId: signal.id },
+    );
+  } else if (bracket.protectedOnExchange) {
+    event(
+      "exec",
+      `SL/TP placed on exchange for ${parsed.symbol}`,
+      { sl: bracket.slOrderId, tps: bracket.tpOrderIds, levels: takeProfits },
+      { groupId: group.id, signalId: signal.id },
+    );
+  }
 
   const trade = tradesRepo.create({
     signalId: signal.id,
@@ -260,15 +335,17 @@ async function execute(
   });
 
   const executed = signalsRepo.update(signal.id, { status: "executed", tradeId: trade.id })!;
-  const prot =
-    parsed.stopLoss === undefined && (parsed.takeProfits?.length ?? 0) === 0
-      ? ""
-      : bracket.protectedOnExchange
-        ? " [SL/TP live]"
-        : " [SL/TP recorded]";
-  log.info(
-    `${result.simulated ? "SIMULATED" : "LIVE"} ${parsed.side} ${result.size} ${parsed.symbol} ` +
-      `@ ${result.filledPrice} (${group.name})${prot}`,
+  event(
+    "exec",
+    `Trade opened ${parsed.side} ${parsed.symbol} (${result.simulated ? "sim" : "live"})`,
+    {
+      tradeId: trade.id,
+      entry: trade.entryPrice,
+      size: trade.size,
+      leverage: trade.leverage,
+      protected: bracket.protectedOnExchange,
+    },
+    { groupId: group.id, signalId: signal.id },
   );
   alertOpened(trade);
   broadcast({ type: "signal", signal: executed });
