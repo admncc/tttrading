@@ -92,6 +92,9 @@ export function Overview({
   if (!stats) return <div className="empty">Loading…</div>;
   const o = stats.overall;
 
+  // Resting limit orders waiting for a fill (not yet positions).
+  const workingCount = trades.filter((t) => t.status === "working" && !t.shadow).length;
+
   // Live unrealized PnL across open (non-shadow) trades from current marks.
   const openTrades = trades.filter((t) => t.status === "open" && !t.shadow);
   let openUpnl = 0;
@@ -132,6 +135,7 @@ export function Overview({
         <Kpi label="Win Rate" value={pct(o.winRate)} />
         <Kpi label="Trades" value={String(o.trades)} />
         <Kpi label="Open" value={String(o.openTrades)} />
+        <Kpi label="Working orders" value={String(workingCount)} />
         <Kpi
           label="Open uPnL"
           value={marked > 0 ? usd(openUpnl) : "—"}
