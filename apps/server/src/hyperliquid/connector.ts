@@ -1,68 +1,36 @@
 import * as hl from "@nktkas/hyperliquid";
 import { privateKeyToAccount } from "viem/accounts";
-import type { TradeSide } from "@tttrading/shared";
+import type { ExchangeName, TradeSide } from "@tttrading/shared";
 import { config, hyperliquidReady } from "../config.js";
 import { settings } from "../db/repositories.js";
 import { log } from "../logger.js";
+import type {
+  AccountSummary,
+  AssetInfo,
+  BracketParams,
+  BracketResult,
+  ExchangeConnector,
+  FillLite,
+  LimitOrderRequest,
+  LimitOrderResult,
+  OrderRequest,
+  OrderResult,
+  Position,
+} from "../exchanges/types.js";
 
-export interface AssetInfo {
-  name: string;
-  index: number;
-  szDecimals: number;
-  maxLeverage: number;
-}
-
-export interface OrderRequest {
-  symbol: string;
-  side: TradeSide;
-  notionalUsd: number;
-  leverage: number;
-  marginMode: "cross" | "isolated";
-  maxSlippage: number;
-  /** Reduce-only (for closing/scaling out) — never opens/flips a position. */
-  reduceOnly?: boolean;
-  /**
-   * Force a real exchange order even when the global shadow/test switch is on.
-   * Used ONLY to manage an already-real position (close/reduce), so flipping
-   * test mode mid-trade can never strip a live position of its exit.
-   */
-  force?: boolean;
-}
-
-export interface OrderResult {
-  ok: boolean;
-  filledPrice: number;
-  size: number;
-  orderId?: string;
-  simulated: boolean;
-  error?: string;
-}
-
-export interface BracketResult {
-  slOrderId?: string;
-  tpOrderIds: string[];
-  protectedOnExchange: boolean;
-  error?: string;
-}
-
-export interface FillLite {
-  oid: string;
-  symbol: string;
-  size: number; // absolute
-  price: number;
-  side: "B" | "A"; // buy / sell
-  closedPnl: number;
-  fee: number;
-  time: number;
-}
-
-export interface Position {
-  symbol: string;
-  size: number; // signed
-  entryPrice: number;
-  unrealizedPnl: number;
-  leverage: number;
-}
+// Re-export the venue-agnostic DTOs so existing imports keep working.
+export type {
+  AccountSummary,
+  AssetInfo,
+  BracketParams,
+  BracketResult,
+  FillLite,
+  LimitOrderRequest,
+  LimitOrderResult,
+  OrderRequest,
+  OrderResult,
+  Position,
+} from "../exchanges/types.js";
 
 /**
  * Thin wrapper around @nktkas/hyperliquid. Reads market data with a read-only
@@ -70,7 +38,8 @@ export interface Position {
  * private key is configured and we're not in paper mode. In paper mode orders
  * are simulated against the live mid price so the desk still reflects reality.
  */
-export class HyperliquidConnector {
+export class HyperliquidConnector implements ExchangeConnector {
+  readonly name: ExchangeName = "hyperliquid";
   private transport: hl.HttpTransport;
   private info: hl.PublicClient;
   private exchange?: hl.WalletClient;

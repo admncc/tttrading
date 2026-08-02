@@ -98,6 +98,15 @@ export function Trades({
                   </td>
                   <td>
                     {t.symbol}
+                    {t.exchange && t.exchange !== "hyperliquid" ? (
+                      <span
+                        className="tag"
+                        title={`Executed on ${t.exchange}`}
+                        style={{ marginLeft: 6, textTransform: "capitalize" }}
+                      >
+                        {t.exchange}
+                      </span>
+                    ) : null}
                     {t.shadow ? (
                       <span className="tag" title="Blocked red signal (not a real position)" style={{ marginLeft: 6 }}>
                         shadow

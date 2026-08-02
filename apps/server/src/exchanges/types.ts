@@ -1,0 +1,139 @@
+import type { ExchangeName, TradeSide } from "@tttrading/shared";
+
+/**
+ * Venue-agnostic trading surface. Each connector (Hyperliquid, Aster, …) speaks
+ * this so the engine, monitor and price ticker can route a trade to whichever
+ * exchange lists its symbol without knowing the venue's REST dialect.
+ *
+ * Prices and sizes are always in the venue's quote currency (USDC/USDT) and base
+ * asset units respectively; symbols are the bare coin (e.g. "BTC", "LTC").
+ */
+
+export interface AssetInfo {
+  /** Bare coin symbol, e.g. "BTC". */
+  name: string;
+  /** Venue asset index (Hyperliquid) or 0 where not applicable. */
+  index: number;
+  /** Decimal places allowed for the order size. */
+  szDecimals: number;
+  /** Max leverage the venue allows for this asset. */
+  maxLeverage: number;
+}
+
+export interface OrderRequest {
+  symbol: string;
+  side: TradeSide;
+  notionalUsd: number;
+  leverage: number;
+  marginMode: "cross" | "isolated";
+  maxSlippage: number;
+  /** Reduce-only (for closing/scaling out) — never opens/flips a position. */
+  reduceOnly?: boolean;
+  /**
+   * Force a real exchange order even when the global shadow/test switch is on.
+   * Used ONLY to manage an already-real position (close/reduce), so flipping
+   * test mode mid-trade can never strip a live position of its exit.
+   */
+  force?: boolean;
+}
+
+export interface OrderResult {
+  ok: boolean;
+  filledPrice: number;
+  size: number;
+  orderId?: string;
+  simulated: boolean;
+  error?: string;
+}
+
+export interface LimitOrderRequest {
+  symbol: string;
+  side: TradeSide;
+  notionalUsd: number;
+  price: number;
+  leverage: number;
+  marginMode: "cross" | "isolated";
+}
+
+export interface LimitOrderResult {
+  ok: boolean;
+  status?: "resting" | "filled";
+  orderId?: string;
+  filledPrice?: number;
+  size: number;
+  simulated: boolean;
+  error?: string;
+}
+
+export interface BracketParams {
+  symbol: string;
+  side: TradeSide;
+  size: number;
+  stopLoss?: number;
+  takeProfits?: number[];
+  slippage: number;
+  /** Force real placement even in test mode (managing an already-real position). */
+  force?: boolean;
+}
+
+export interface BracketResult {
+  slOrderId?: string;
+  tpOrderIds: string[];
+  protectedOnExchange: boolean;
+  error?: string;
+}
+
+export interface FillLite {
+  oid: string;
+  symbol: string;
+  size: number; // absolute
+  price: number;
+  side: "B" | "A"; // buy / sell
+  closedPnl: number;
+  fee: number;
+  time: number;
+}
+
+export interface Position {
+  symbol: string;
+  size: number; // signed
+  entryPrice: number;
+  unrealizedPnl: number;
+  leverage: number;
+}
+
+export interface AccountSummary {
+  address: string;
+  accountValue: number;
+  withdrawable: number;
+  totalMarginUsed: number;
+}
+
+/** The methods the execution engine, monitor and ticker rely on, per venue. */
+export interface ExchangeConnector {
+  readonly name: ExchangeName;
+  /** True when this venue can sign & send real orders (keys present, not paper). */
+  readonly live: boolean;
+  /** True when orders must be simulated rather than sent (test switch or no key). */
+  simulating(): boolean;
+
+  getAsset(symbol: string): Promise<AssetInfo | undefined>;
+  getMidPrice(symbol: string): Promise<number | undefined>;
+  getAllMids(): Promise<Record<string, number>>;
+  getPositions(): Promise<Position[]>;
+  getAccountSummary(): Promise<AccountSummary | null>;
+  /**
+   * Recent fills for the account. `symbols` is an optional hint of the coins we
+   * currently care about — venues whose fills API is per-symbol (Aster/Binance)
+   * use it; venues that return everything (Hyperliquid) may ignore it.
+   */
+  getRecentFills(symbols?: string[]): Promise<FillLite[]>;
+  getOpenOrderIds(): Promise<Set<string>>;
+
+  placeMarketOrder(req: OrderRequest): Promise<OrderResult>;
+  placeLimitOrder(req: LimitOrderRequest): Promise<LimitOrderResult>;
+  placeBracketOrders(params: BracketParams): Promise<BracketResult>;
+  cancelOrders(symbol: string, orderIds: string[]): Promise<void>;
+}
+
+export type { ExchangeName };

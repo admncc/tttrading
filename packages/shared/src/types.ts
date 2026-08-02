@@ -5,6 +5,12 @@
 
 export type TradeSide = "long" | "short";
 
+/**
+ * Which venue a trade is (or would be) executed on. Hyperliquid is the primary;
+ * others act as backups for symbols the primary doesn't list.
+ */
+export type ExchangeName = "hyperliquid" | "aster" | "mexc";
+
 /** How a group's signals should reach the exchange. */
 export type ExecutionMode = "auto" | "confirm";
 
@@ -180,6 +186,8 @@ export interface Trade {
   side: TradeSide;
   status: TradeStatus;
   env: TradingEnv;
+  /** Venue the position lives on. Defaults to "hyperliquid" for legacy rows. */
+  exchange?: ExchangeName;
   leverage: number;
   /** Notional in USDC at entry. */
   notionalUsd: number;

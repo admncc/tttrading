@@ -2,7 +2,9 @@ import type { Trade } from "@tttrading/shared";
 import { config } from "../config.js";
 import { log } from "../logger.js";
 import { groups as groupsRepo, trades as tradesRepo } from "../db/repositories.js";
-import { hyperliquid, type FillLite } from "../hyperliquid/connector.js";
+import type { FillLite } from "../hyperliquid/connector.js";
+import { known as knownExchanges, byName } from "../exchanges/registry.js";
+import type { ExchangeConnector } from "../exchanges/types.js";
 import { closing, promoteWorkingToOpen, cancelWorkingTrade } from "./engine.js";
 import { alertClosed } from "../alerts/notifier.js";
 import { broadcast } from "../ws/hub.js";
@@ -19,20 +21,31 @@ let timer: ReturnType<typeof setInterval> | undefined;
  * the break-even move is guarded by a flag on the trade.
  */
 export async function reconcileOnce(): Promise<void> {
-  if (!hyperliquid.live) return;
-  // Only real positions are reconciled against the exchange; simulated ones
-  // (shadow/test mode) are resolved by evaluateSimulated().
+  // Reconcile each live venue against its own trades (a trade only reconciles on
+  // the exchange it lives on). Simulated trades are handled by evaluateSimulated().
+  for (const ex of knownExchanges().filter((e) => e.live)) {
+    try {
+      await reconcileExchange(ex);
+    } catch (err) {
+      log.error(`reconcile ${ex.name}:`, err instanceof Error ? err.message : err);
+    }
+  }
+}
+
+async function reconcileExchange(ex: ExchangeConnector): Promise<void> {
+  const onThis = (t: Trade) => byName(t.exchange).name === ex.name;
   // Skip trades a manual close/partial is actively working on (race guard).
-  const open = tradesRepo.open().filter((t) => !t.simulated && !closing.has(t.id));
-  const working = tradesRepo.working().filter((t) => !t.simulated);
+  const open = tradesRepo.open().filter((t) => !t.simulated && !closing.has(t.id) && onThis(t));
+  const working = tradesRepo.working().filter((t) => !t.simulated && onThis(t));
   // Nothing to reconcile if there are neither open positions NOR working orders.
   if (open.length === 0 && working.length === 0) return;
 
+  const symbols = [...new Set([...open, ...working].map((t) => t.symbol))];
   let fills: FillLite[];
   try {
-    fills = await hyperliquid.getRecentFills();
+    fills = await ex.getRecentFills(symbols);
   } catch (err) {
-    log.warn("reconcile: fills unavailable —", err instanceof Error ? err.message : err);
+    log.warn(`reconcile ${ex.name}: fills unavailable —`, err instanceof Error ? err.message : err);
     return;
   }
 
@@ -46,12 +59,12 @@ export async function reconcileOnce(): Promise<void> {
   let changed = false;
   for (const trade of open) {
     try {
-      if (await reconcileTrade(trade, byOid)) changed = true;
+      if (await reconcileTrade(ex, trade, byOid)) changed = true;
     } catch (err) {
       log.error(`reconcile ${trade.symbol} (${trade.id}):`, err instanceof Error ? err.message : err);
     }
   }
-  await reconcileWorking(byOid, working);
+  await reconcileWorking(ex, byOid, working);
   if (changed) pushStats();
 }
 
@@ -59,12 +72,16 @@ export async function reconcileOnce(): Promise<void> {
  * Live working (resting limit) orders: promote to a position when the entry
  * order fills, or cancel once the channel's limit timeout elapses.
  */
-async function reconcileWorking(byOid: Map<string, FillLite[]>, working: Trade[]): Promise<void> {
+async function reconcileWorking(
+  ex: ExchangeConnector,
+  byOid: Map<string, FillLite[]>,
+  working: Trade[],
+): Promise<void> {
   if (working.length === 0) return;
   // Resting order ids still open on the exchange (best-effort; empty on error).
   let openOids: Set<string> | undefined;
   try {
-    openOids = await hyperliquid.getOpenOrderIds();
+    openOids = await ex.getOpenOrderIds();
   } catch {
     openOids = undefined;
   }
@@ -91,7 +108,7 @@ async function reconcileWorking(byOid: Map<string, FillLite[]>, working: Trade[]
       // account's positions and promote from there instead of orphaning it.
       if (openOids && t.exchangeOrderId && !openOids.has(t.exchangeOrderId)) {
         try {
-          const positions = await hyperliquid.getPositions();
+          const positions = await ex.getPositions();
           const pos = positions.find(
             (p) => p.symbol.toUpperCase() === t.symbol.toUpperCase() && p.size !== 0 &&
               (t.side === "long" ? p.size > 0 : p.size < 0),
@@ -120,7 +137,11 @@ async function reconcileWorking(byOid: Map<string, FillLite[]>, working: Trade[]
   }
 }
 
-async function reconcileTrade(trade: Trade, byOid: Map<string, FillLite[]>): Promise<boolean> {
+async function reconcileTrade(
+  ex: ExchangeConnector,
+  trade: Trade,
+  byOid: Map<string, FillLite[]>,
+): Promise<boolean> {
   const tpOids = trade.tpOrderIds ?? [];
   const slOids = [trade.slOrderId].filter((x): x is string => !!x);
   const closingOids = [...tpOids, ...slOids];
@@ -183,7 +204,7 @@ async function reconcileTrade(trade: Trade, byOid: Map<string, FillLite[]>): Pro
   const group = groupsRepo.get(trade.groupId);
   const beAfter = group?.settings.breakevenAfterTp ?? 0;
   if (beAfter > 0 && tpFilled >= beAfter && !trade.slMovedToBreakeven && trade.slOrderId) {
-    await moveSlToBreakeven(trade, closedSize, group?.settings.maxSlippage ?? 0.01);
+    await moveSlToBreakeven(ex, trade, closedSize, group?.settings.maxSlippage ?? 0.01);
     changed = true;
   }
 
@@ -196,13 +217,18 @@ async function reconcileTrade(trade: Trade, byOid: Map<string, FillLite[]>): Pro
   return changed;
 }
 
-async function moveSlToBreakeven(trade: Trade, filledSize: number, slippage: number): Promise<void> {
+async function moveSlToBreakeven(
+  ex: ExchangeConnector,
+  trade: Trade,
+  filledSize: number,
+  slippage: number,
+): Promise<void> {
   const remaining = Math.max(0, trade.size - filledSize);
   if (remaining <= 0) return;
 
   // Place the new break-even stop FIRST, then cancel the old one — never leave
   // the position without a resting stop if placement fails.
-  const res = await hyperliquid.placeBracketOrders({
+  const res = await ex.placeBracketOrders({
     symbol: trade.symbol,
     side: trade.side,
     size: remaining,
@@ -217,7 +243,7 @@ async function moveSlToBreakeven(trade: Trade, filledSize: number, slippage: num
     );
     return;
   }
-  if (trade.slOrderId) await hyperliquid.cancelOrders(trade.symbol, [trade.slOrderId]);
+  if (trade.slOrderId) await ex.cancelOrders(trade.symbol, [trade.slOrderId]);
   const updated = tradesRepo.update(trade.id, {
     slOrderId: res.slOrderId,
     slMovedToBreakeven: true,
@@ -261,7 +287,7 @@ async function evaluateWorkingSim(): Promise<void> {
         await cancelWorkingTrade(t.id, `limit timeout (${timeoutH}h)`);
         continue;
       }
-      const mid = await hyperliquid.getMidPrice(t.symbol);
+      const mid = await byName(t.exchange).getMidPrice(t.symbol);
       if (!mid || mid <= 0) continue;
       const crossed = t.side === "long" ? mid <= t.entryPrice : mid >= t.entryPrice;
       if (crossed) await promoteWorkingToOpen(t.id, t.entryPrice, t.size);
@@ -272,7 +298,7 @@ async function evaluateWorkingSim(): Promise<void> {
 }
 
 async function evaluateSimulatedTrade(trade: Trade): Promise<boolean> {
-  const mid = await hyperliquid.getMidPrice(trade.symbol);
+  const mid = await byName(trade.exchange).getMidPrice(trade.symbol);
   if (!mid || mid <= 0) return false;
 
   const dir = trade.side === "long" ? 1 : -1;
@@ -353,7 +379,7 @@ async function evaluateSimulatedTrade(trade: Trade): Promise<boolean> {
 /** Start the periodic monitor loop: reconcile live trades + evaluate shadows. */
 export function startMonitor(): void {
   const interval = config.monitorIntervalMs;
-  const what = hyperliquid.live ? "reconcile + simulated eval" : "simulated eval";
+  const what = knownExchanges().some((e) => e.live) ? "reconcile + simulated eval" : "simulated eval";
   log.info(`Monitor running every ${Math.round(interval / 1000)}s (${what}).`);
   let ticking = false;
   timer = setInterval(() => {

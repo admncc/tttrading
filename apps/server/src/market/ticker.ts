@@ -1,7 +1,7 @@
 import { config } from "../config.js";
 import { log } from "../logger.js";
 import { trades as tradesRepo } from "../db/repositories.js";
-import { hyperliquid } from "../hyperliquid/connector.js";
+import { known as knownExchanges, byName } from "../exchanges/registry.js";
 import { broadcast } from "../ws/hub.js";
 
 let timer: ReturnType<typeof setInterval> | undefined;
@@ -23,19 +23,35 @@ export async function refreshPrices(): Promise<void> {
   if (ticking) return;
   ticking = true;
   try {
-    const symbols = new Set(
-      tradesRepo.open().filter((t) => !t.shadow).map((t) => t.symbol.toUpperCase()),
-    );
-    if (symbols.size === 0) {
+    const openTrades = tradesRepo.open().filter((t) => !t.shadow);
+    if (openTrades.length === 0) {
       if (Object.keys(latest).length) {
         latest = {};
         broadcast({ type: "prices", prices: latest });
       }
       return;
     }
-    const all = await hyperliquid.getAllMids();
+    // Group the symbols we hold by the venue they trade on, then pull each
+    // venue's marks once and merge (backups only hold HL-missing symbols, so
+    // there's no cross-venue key collision in practice).
+    const byExchange = new Map<string, Set<string>>();
+    for (const t of openTrades) {
+      const name = byName(t.exchange).name;
+      const set = byExchange.get(name) ?? new Set<string>();
+      set.add(t.symbol.toUpperCase());
+      byExchange.set(name, set);
+    }
     const prices: Record<string, number> = {};
-    for (const s of symbols) if (all[s] !== undefined) prices[s] = all[s]!;
+    for (const ex of knownExchanges()) {
+      const want = byExchange.get(ex.name);
+      if (!want || want.size === 0) continue;
+      try {
+        const mids = await ex.getAllMids();
+        for (const s of want) if (mids[s] !== undefined) prices[s] = mids[s]!;
+      } catch (err) {
+        log.warn(`price ticker (${ex.name}):`, err instanceof Error ? err.message : err);
+      }
+    }
     latest = prices;
     broadcast({ type: "prices", prices });
   } catch (err) {

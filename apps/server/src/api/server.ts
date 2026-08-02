@@ -20,6 +20,7 @@ import { dashboard, analytics } from "../stats/service.js";
 import { sanitizedBackup } from "../db/index.js";
 import { sendReport } from "../alerts/report.js";
 import { hyperliquid } from "../hyperliquid/connector.js";
+import { all as allExchanges } from "../exchanges/registry.js";
 import {
   cancelWorkingTrade,
   closeAllTrades,
@@ -142,6 +143,8 @@ export async function buildServer() {
     tradingPaused: settingsRepo.getTradingPaused(),
     authRequired: authEnabled,
     updateEnabled: config.selfUpdate.enabled,
+    // Venues in the routing chain (primary first) and whether each can trade live.
+    exchanges: allExchanges().map((e) => ({ name: e.name, live: e.live })),
     time: new Date().toISOString(),
   }));
 

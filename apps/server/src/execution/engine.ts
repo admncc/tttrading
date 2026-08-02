@@ -8,6 +8,8 @@ import {
   settings as settingsRepo,
 } from "../db/repositories.js";
 import { hyperliquid } from "../hyperliquid/connector.js";
+import { byName, resolveForSymbol } from "../exchanges/registry.js";
+import type { ExchangeConnector } from "../exchanges/types.js";
 import { parseSignal } from "../signals/parser.js";
 import { classifyManagement, type ManagementAction } from "../signals/management.js";
 import { expandTakeProfits } from "../signals/takeprofit.js";
@@ -21,6 +23,11 @@ const ACT_THRESHOLD = 0.6;
 
 /** Trade ids currently being closed/reduced, to prevent concurrent double-closes. */
 export const closing = new Set<string>();
+
+/** The venue a trade lives on (defaults to Hyperliquid for legacy rows). */
+function connectorFor(trade: Trade): ExchangeConnector {
+  return byName(trade.exchange);
+}
 
 function symbolAllowed(group: Group, symbol: string): boolean {
   const allow = group.settings.allowedSymbols;
@@ -181,10 +188,11 @@ function finalizeIgnored(
 
 /** Move a trade's stop-loss (break-even or explicit). Place-then-cancel when live. */
 async function moveStop(trade: Trade, newStop: number, breakeven: boolean): Promise<void> {
+  const ex = connectorFor(trade);
   // Real position with a live stop: replace it on the exchange (force, so this
   // still works with the global test switch on — the position is real).
-  if (!trade.simulated && hyperliquid.live && trade.slOrderId) {
-    const res = await hyperliquid.placeBracketOrders({
+  if (!trade.simulated && ex.live && trade.slOrderId) {
+    const res = await ex.placeBracketOrders({
       symbol: trade.symbol,
       side: trade.side,
       size: trade.size,
@@ -194,7 +202,7 @@ async function moveStop(trade: Trade, newStop: number, breakeven: boolean): Prom
       force: true,
     });
     if (res.protectedOnExchange && res.slOrderId) {
-      await hyperliquid.cancelOrders(trade.symbol, [trade.slOrderId]);
+      await ex.cancelOrders(trade.symbol, [trade.slOrderId]);
       tradesRepo.update(trade.id, {
         stopLoss: newStop,
         slOrderId: res.slOrderId,
@@ -236,6 +244,7 @@ async function partialClose(tradeInput: Trade, rawFraction: number): Promise<voi
   try {
     const trade = tradesRepo.get(id);
     if (!trade || trade.status !== "open" || trade.shadow) return;
+    const ex = connectorFor(trade);
     const intendedSize = trade.size * frac;
     if (intendedSize <= 0) return;
 
@@ -243,7 +252,7 @@ async function partialClose(tradeInput: Trade, rawFraction: number): Promise<voi
     // off THAT price (the connector derives size = notional / mid).
     let exitPx: number | undefined;
     try {
-      const mid = await hyperliquid.getMidPrice(trade.symbol);
+      const mid = await ex.getMidPrice(trade.symbol);
       if (mid && mid > 0) exitPx = mid;
     } catch {
       /* price feed down */
@@ -251,8 +260,8 @@ async function partialClose(tradeInput: Trade, rawFraction: number): Promise<voi
     if (exitPx === undefined || exitPx <= 0) exitPx = trade.entryPrice;
 
     let closedSize = intendedSize;
-    if (!trade.simulated && hyperliquid.live) {
-      const res = await hyperliquid.placeMarketOrder({
+    if (!trade.simulated && ex.live) {
+      const res = await ex.placeMarketOrder({
         symbol: trade.symbol,
         side: trade.side === "long" ? "short" : "long",
         notionalUsd: exitPx * intendedSize, // size off current price, not entry
@@ -365,7 +374,7 @@ async function applyManagement(
       // "SL to 999999" would otherwise force an instant stop-out).
       let price = t.entryPrice;
       try {
-        const mid = await hyperliquid.getMidPrice(t.symbol);
+        const mid = await connectorFor(t).getMidPrice(t.symbol);
         if (mid && mid > 0) price = mid;
       } catch {
         /* use entry as the reference */
@@ -430,12 +439,16 @@ async function createShadowTrade(
   signalId: string,
   risk: RiskRating,
 ): Promise<void> {
+  // Resolve the venue this symbol would trade on so a backup-only coin still
+  // gets a reference price and is tagged with the right exchange.
+  const resolved = await resolveForSymbol(parsed.symbol);
+  const ex = resolved.kind === "found" ? resolved.ex : hyperliquid;
   // Use the signal's stated entry so SL/TP geometry stays coherent; fall back to
   // the live mid only when the signal didn't give an entry.
   let entry = parsed.entry;
   if (entry === undefined) {
     try {
-      entry = await hyperliquid.getMidPrice(parsed.symbol);
+      entry = await ex.getMidPrice(parsed.symbol);
     } catch {
       /* no reference price available */
     }
@@ -456,6 +469,7 @@ async function createShadowTrade(
     side: parsed.side,
     status: "open",
     env: config.tradingEnv,
+    exchange: ex.name,
     leverage,
     notionalUsd: tradeSizeUsd,
     size: tradeSizeUsd / entry,
@@ -568,7 +582,11 @@ const MAX_ORDER_NOTIONAL = 10_000_000;
 /** Floor on the SL distance used for risk sizing, so a near-entry SL can't blow up size. */
 const MIN_STOP_DIST = 0.002; // 0.2%
 
-async function effectiveNotional(group: Group, parsed: ParsedSignal): Promise<number> {
+async function effectiveNotional(
+  group: Group,
+  parsed: ParsedSignal,
+  ex: ExchangeConnector,
+): Promise<number> {
   const s = group.settings;
   const mode = s.sizingMode ?? "fixed";
   // Never exceed a sane multiple of the channel's own fixed size, nor the hard cap.
@@ -578,7 +596,7 @@ async function effectiveNotional(group: Group, parsed: ParsedSignal): Promise<nu
   if (mode === "percentEquity" && (s.riskValue ?? 0) > 0) {
     const pct = Math.min(s.riskValue as number, 100); // margin can't exceed 100% of equity
     try {
-      const equity = (await hyperliquid.getAccountSummary())?.accountValue ?? 0;
+      const equity = (await ex.getAccountSummary())?.accountValue ?? 0;
       if (equity > 0) return clamp(equity * (pct / 100) * s.leverage);
     } catch {
       /* no equity reading — fall back */
@@ -589,7 +607,7 @@ async function effectiveNotional(group: Group, parsed: ParsedSignal): Promise<nu
     let ref = parsed.entry;
     if (ref === undefined) {
       try {
-        ref = await hyperliquid.getMidPrice(parsed.symbol);
+        ref = await ex.getMidPrice(parsed.symbol);
       } catch {
         /* fall back */
       }
@@ -638,8 +656,34 @@ async function execute(
     }
   }
 
-  // Position size per the group's sizing mode.
-  const tradeSizeUsd = await effectiveNotional(group, parsed);
+  // Route the symbol to a venue: Hyperliquid first, then any enabled backup
+  // (Aster, …) that lists it. Symbols on none are recorded FAILED (Crypto NOT
+  // found); when metadata is momentarily unavailable we fall back to the primary
+  // and let the order path surface any error. Uses public metadata (runs in test).
+  const resolved = await resolveForSymbol(parsed.symbol);
+  let ex: ExchangeConnector = hyperliquid;
+  if (resolved.kind === "found") {
+    ex = resolved.ex;
+  } else if (resolved.kind === "notFound") {
+    const venues = resolved.tried.join(", ") || "hyperliquid";
+    const reason = `Crypto NOT found: ${parsed.symbol} is not listed on ${venues} (${config.tradingEnv})`;
+    const failed = signalsRepo.update(signal.id, { status: "failed", error: reason })!;
+    event(
+      "exec",
+      `SKIP ${parsed.symbol}: not listed on any venue (${venues})`,
+      { symbol: parsed.symbol, tried: resolved.tried },
+      { level: "warn", groupId: group.id, signalId: signal.id },
+    );
+    broadcast({ type: "signal", signal: failed });
+    return failed;
+  } // "unavailable" → keep the primary and let the order path surface errors.
+
+  if (ex.name !== "hyperliquid") {
+    event("exec", `Routing ${parsed.symbol} to ${ex.name} (not on Hyperliquid)`, { exchange: ex.name }, { groupId: group.id, signalId: signal.id });
+  }
+
+  // Position size per the group's sizing mode (against the routed venue).
+  const tradeSizeUsd = await effectiveNotional(group, parsed, ex);
 
   // Global risk gate (kill-switch / limits) — applies to every new entry.
   const block = preTradeGate(tradeSizeUsd);
@@ -654,36 +698,11 @@ async function execute(
     return ignored;
   }
 
-  // Guard: the symbol must exist on the exchange. Some tickers a channel posts
-  // aren't listed on Hyperliquid — record FAILED (Crypto NOT found) rather than
-  // erroring out at order time. Uses public metadata, so it also runs in test.
-  try {
-    const asset = await hyperliquid.getAsset(parsed.symbol);
-    if (!asset) {
-      const reason = `Crypto NOT found: ${parsed.symbol} is not listed on Hyperliquid ${config.tradingEnv} perps`;
-      const failed = signalsRepo.update(signal.id, { status: "failed", error: reason })!;
-      event(
-        "exec",
-        `SKIP ${parsed.symbol}: not listed on the exchange`,
-        { symbol: parsed.symbol },
-        { level: "warn", groupId: group.id, signalId: signal.id },
-      );
-      broadcast({ type: "signal", signal: failed });
-      return failed;
-    }
-  } catch (err) {
-    // Metadata unavailable — don't block; let the order path surface any error.
-    log.warn(
-      `Asset check for ${parsed.symbol} failed:`,
-      err instanceof Error ? err.message : err,
-    );
-  }
-
   // Limit mode (default): rest an order at the signal's entry and wait for a
   // fill — it becomes a position only when filled. Needs an entry price;
   // otherwise fall through to market.
   if ((group.settings.entryMode ?? "limit") === "limit" && parsed.entry !== undefined) {
-    return executeLimit(signal, group, parsed, risk, tradeSizeUsd);
+    return executeLimit(signal, group, parsed, risk, tradeSizeUsd, ex);
   }
 
   // Market mode: don't chase an entry the market already ran past.
@@ -693,7 +712,7 @@ async function execute(
   if (parsed.entry !== undefined) {
     let mid: number | undefined;
     try {
-      mid = await hyperliquid.getMidPrice(parsed.symbol);
+      mid = await ex.getMidPrice(parsed.symbol);
     } catch {
       /* no price feed — can't judge, fall through and let the order try */
     }
@@ -717,7 +736,7 @@ async function execute(
     }
   }
 
-  const result = await hyperliquid.placeMarketOrder({
+  const result = await ex.placeMarketOrder({
     symbol: parsed.symbol,
     side: parsed.side,
     notionalUsd: tradeSizeUsd,
@@ -746,7 +765,7 @@ async function execute(
     { groupId: group.id, signalId: signal.id },
   );
 
-  return recordFilledEntry(signal, group, parsed, risk, tradeSizeUsd, {
+  return recordFilledEntry(signal, group, parsed, risk, tradeSizeUsd, ex, {
     filledPrice: result.filledPrice,
     filledSize: result.size,
     orderId: result.orderId,
@@ -764,6 +783,7 @@ async function recordFilledEntry(
   parsed: ParsedSignal,
   risk: RiskRating | undefined,
   notionalUsd: number,
+  ex: ExchangeConnector,
   fill: { filledPrice: number; filledSize: number; orderId?: string; simulated: boolean },
 ): Promise<Signal> {
   const entryRef = parsed.entry ?? fill.filledPrice;
@@ -781,7 +801,7 @@ async function recordFilledEntry(
       stopLoss = undefined;
     }
   }
-  const bracket = await hyperliquid.placeBracketOrders({
+  const bracket = await ex.placeBracketOrders({
     symbol: parsed.symbol,
     side: parsed.side,
     size: fill.filledSize,
@@ -801,6 +821,7 @@ async function recordFilledEntry(
     side: parsed.side,
     status: "open",
     env: config.tradingEnv,
+    exchange: ex.name,
     leverage: group.settings.leverage,
     notionalUsd,
     size: fill.filledSize,
@@ -842,13 +863,14 @@ async function executeLimit(
   parsed: ParsedSignal,
   risk: RiskRating | undefined,
   notionalUsd: number,
+  ex: ExchangeConnector,
 ): Promise<Signal> {
   const entry = parsed.entry!;
 
   // Don't place a limit that would cross the market far beyond maxSlippage —
   // that degenerates into an unbounded market sweep at a chased price.
   try {
-    const mid = await hyperliquid.getMidPrice(parsed.symbol);
+    const mid = await ex.getMidPrice(parsed.symbol);
     if (mid && mid > 0) {
       const tol = group.settings.maxSlippage;
       const crossesFar =
@@ -877,7 +899,7 @@ async function executeLimit(
     return ignored;
   }
 
-  const res = await hyperliquid.placeLimitOrder({
+  const res = await ex.placeLimitOrder({
     symbol: parsed.symbol,
     side: parsed.side,
     notionalUsd,
@@ -895,7 +917,7 @@ async function executeLimit(
 
   // Crossed immediately → it's a position now.
   if (res.status === "filled" && res.filledPrice) {
-    return recordFilledEntry(signal, group, parsed, risk, notionalUsd, {
+    return recordFilledEntry(signal, group, parsed, risk, notionalUsd, ex, {
       filledPrice: res.filledPrice,
       filledSize: res.size,
       orderId: res.orderId,
@@ -916,6 +938,7 @@ async function executeLimit(
     side: parsed.side,
     status: "working",
     env: config.tradingEnv,
+    exchange: ex.name,
     leverage: group.settings.leverage,
     notionalUsd,
     size: res.size,
@@ -960,19 +983,20 @@ export async function promoteWorkingToOpen(
   try {
     const t = tradesRepo.get(tradeId);
     if (!t || t.status !== "working") return t;
+    const ex = connectorFor(t);
     const size = filledSize > 0 ? filledSize : t.size;
     const entryPrice = filledPrice > 0 ? filledPrice : t.entryPrice;
     // Defensive: cancel any residual resting entry order so it can't fill again
     // into an untracked position (real trades only).
-    if (!t.simulated && hyperliquid.live && t.exchangeOrderId) {
+    if (!t.simulated && ex.live && t.exchangeOrderId) {
       try {
-        await hyperliquid.cancelOrders(t.symbol, [t.exchangeOrderId]);
+        await ex.cancelOrders(t.symbol, [t.exchangeOrderId]);
       } catch {
         /* best-effort */
       }
     }
     const slippage = groupsRepo.get(t.groupId)?.settings.maxSlippage ?? 0.01;
-    const bracket = await hyperliquid.placeBracketOrders({
+    const bracket = await ex.placeBracketOrders({
       symbol: t.symbol,
       side: t.side,
       size,
@@ -1009,9 +1033,9 @@ export async function cancelWorkingTrade(tradeId: string, reason: string): Promi
   try {
     const t = tradesRepo.get(tradeId);
     if (!t || t.status !== "working") return; // re-checked under the guard
-    if (!t.simulated && hyperliquid.live && t.exchangeOrderId) {
+    if (!t.simulated && connectorFor(t).live && t.exchangeOrderId) {
       try {
-        await hyperliquid.cancelOrders(t.symbol, [t.exchangeOrderId]);
+        await connectorFor(t).cancelOrders(t.symbol, [t.exchangeOrderId]);
       } catch (err) {
         log.warn(`cancelWorking ${t.symbol}:`, err instanceof Error ? err.message : err);
       }
@@ -1081,6 +1105,7 @@ export async function placeTestOrder(params: {
     side,
     status: "open",
     env: config.tradingEnv,
+    exchange: hyperliquid.name,
     leverage,
     notionalUsd,
     size: result.size,
@@ -1126,11 +1151,12 @@ export async function closeTrade(tradeId: string, exitPriceOverride?: number) {
   if (closing.has(tradeId)) return trade;
   closing.add(tradeId);
   try {
+    const ex = connectorFor(trade);
     let exitPrice = exitPriceOverride;
     if (exitPrice === undefined || exitPrice <= 0) {
       let mid: number | undefined;
       try {
-        mid = await hyperliquid.getMidPrice(trade.symbol);
+        mid = await ex.getMidPrice(trade.symbol);
       } catch {
         /* price feed down */
       }
@@ -1142,7 +1168,7 @@ export async function closeTrade(tradeId: string, exitPriceOverride?: number) {
       (x): x is string => !!x,
     );
     if (restingIds.length) {
-      await hyperliquid.cancelOrders(trade.symbol, restingIds);
+      await ex.cancelOrders(trade.symbol, restingIds);
     }
 
     // Portion already scaled out at TP levels vs the remainder we now close.
@@ -1153,8 +1179,8 @@ export async function closeTrade(tradeId: string, exitPriceOverride?: number) {
     const remainingFraction = Math.max(0, 1 - tpFilled * fraction);
     const remainingSize = remainingFraction * trade.size;
 
-    if (!trade.simulated && hyperliquid.live && remainingSize > 0) {
-      const result = await hyperliquid.placeMarketOrder({
+    if (!trade.simulated && ex.live && remainingSize > 0) {
+      const result = await ex.placeMarketOrder({
         symbol: trade.symbol,
         side: trade.side === "long" ? "short" : "long",
         notionalUsd: exitPrice * remainingSize,

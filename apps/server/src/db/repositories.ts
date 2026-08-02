@@ -78,6 +78,7 @@ interface TradeRow {
   side: string;
   status: string;
   env: string;
+  exchange: string | null;
   leverage: number;
   notional_usd: number;
   size: number;
@@ -113,6 +114,7 @@ function toTrade(r: TradeRow): Trade {
     side: r.side as Trade["side"],
     status: r.status as TradeStatus,
     env: r.env as Trade["env"],
+    exchange: (r.exchange as Trade["exchange"]) ?? undefined,
     leverage: r.leverage,
     notionalUsd: r.notional_usd,
     size: r.size,
@@ -337,11 +339,11 @@ export const trades = {
     const id = nanoid();
     const openedAt = input.openedAt ?? now();
     db.prepare(
-      `INSERT INTO trades (id, signal_id, group_id, group_name, symbol, side, status, env,
+      `INSERT INTO trades (id, signal_id, group_id, group_name, symbol, side, status, env, exchange,
         leverage, notional_usd, size, entry_price, exit_price, stop_loss, take_profits,
         realized_pnl, fees, banked_pnl, banked_fees, exchange_order_id, sl_order_id, tp_order_ids, bracket_protected,
         tp_filled_count, sl_moved_to_breakeven, risk, shadow, simulated, error, opened_at, closed_at)
-       VALUES (@id, @signal_id, @group_id, @group_name, @symbol, @side, @status, @env,
+       VALUES (@id, @signal_id, @group_id, @group_name, @symbol, @side, @status, @env, @exchange,
         @leverage, @notional_usd, @size, @entry_price, @exit_price, @stop_loss, @take_profits,
         @realized_pnl, @fees, @banked_pnl, @banked_fees, @exchange_order_id, @sl_order_id, @tp_order_ids, @bracket_protected,
         @tp_filled_count, @sl_moved_to_breakeven, @risk, @shadow, @simulated, @error, @opened_at, @closed_at)`,
@@ -354,6 +356,7 @@ export const trades = {
       side: input.side,
       status: input.status,
       env: input.env,
+      exchange: input.exchange ?? null,
       leverage: input.leverage,
       notional_usd: input.notionalUsd,
       size: input.size,

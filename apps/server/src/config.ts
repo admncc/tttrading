@@ -62,6 +62,23 @@ export const config = {
     accountAddress: process.env.HL_ACCOUNT_ADDRESS || "",
   },
 
+  aster: {
+    /**
+     * Aster (asterdex.com) — a backup venue for symbols Hyperliquid doesn't
+     * list. Participates in routing only when enabled (or when an API key is
+     * present). Real orders need both key & secret; otherwise it behaves like
+     * paper (market data + simulated fills), exactly like the HL connector.
+     */
+    enabled:
+      bool(process.env.ASTER_ENABLED, false) || !!(process.env.ASTER_API_KEY || "").trim(),
+    apiKey: (process.env.ASTER_API_KEY || "").trim(),
+    apiSecret: (process.env.ASTER_API_SECRET || "").trim(),
+    /** USDⓈ-M futures REST host. Override for testnet. */
+    baseUrl: (process.env.ASTER_BASE_URL || "https://fapi.asterdex.com").replace(/\/+$/, ""),
+    /** Fallback max leverage when exchangeInfo doesn't report one per symbol. */
+    defaultMaxLeverage: num(process.env.ASTER_MAX_LEVERAGE, 20),
+  },
+
   telegram: {
     apiId: num(process.env.TG_API_ID, 0),
     apiHash: process.env.TG_API_HASH || "",
@@ -136,6 +153,11 @@ export const alertsEnabled = !!(config.alerts.telegramBotToken && config.alerts.
 
 export function hyperliquidReady(): boolean {
   return !config.isPaper && !!config.hyperliquid.privateKey;
+}
+
+/** Aster can sign & send real orders (key + secret present, not paper mode). */
+export function asterReady(): boolean {
+  return !config.isPaper && !!config.aster.apiKey && !!config.aster.apiSecret;
 }
 
 export function telegramReady(): boolean {

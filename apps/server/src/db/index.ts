@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS trades (
   side TEXT NOT NULL,
   status TEXT NOT NULL,
   env TEXT NOT NULL,
+  exchange TEXT,                  -- venue: hyperliquid | aster | mexc
   leverage REAL NOT NULL,
   notional_usd REAL NOT NULL,
   size REAL NOT NULL,
@@ -112,6 +113,7 @@ function migrate(database: Database.Database): void {
       simulated: "INTEGER",
       banked_pnl: "REAL",
       banked_fees: "REAL",
+      exchange: "TEXT",
     },
     signals: {
       risk: "TEXT",
