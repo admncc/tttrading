@@ -241,6 +241,49 @@ export interface DashboardStats {
   riskAudit: RiskAudit;
 }
 
+/** Deeper performance metrics for the analytics view. */
+export interface AdvancedStats extends PerformanceStats {
+  grossProfit: number;
+  grossLoss: number;
+  /** Average winning trade PnL. */
+  avgWin: number;
+  /** Average losing trade PnL (negative). */
+  avgLoss: number;
+  /** Expectancy = average realized PnL per closed trade. */
+  expectancy: number;
+  /** Average realized reward:risk (PnL ÷ initial risk from entry→SL). */
+  avgRR: number;
+  /** Closed trades that had a stop-loss (basis for avgRR). */
+  rrSampleSize: number;
+  /** Largest peak-to-trough drop on the cumulative realized-PnL curve. */
+  maxDrawdown: number;
+  /** Average time in trade for closed trades, in hours. */
+  avgHoldHours: number;
+  /** Total fees paid across closed trades. */
+  totalFees: number;
+}
+
+/** One analytics row: performance for a group, symbol, or side. */
+export interface AnalyticsBucket {
+  key: string;
+  label: string;
+  stats: AdvancedStats;
+  /** Cumulative realized-PnL curve for this bucket. */
+  equityCurve: EquityPoint[];
+}
+
+export interface AnalyticsResponse {
+  overall: AdvancedStats;
+  byGroup: AnalyticsBucket[];
+  bySymbol: AnalyticsBucket[];
+  bySide: AnalyticsBucket[];
+  equityCurve: EquityPoint[];
+  /** Number of closed trades the analysis is based on. */
+  closedTrades: number;
+  /** Whether simulated (test-mode) trades are included. */
+  includesSimulated: boolean;
+}
+
 /** Result of replaying a channel's historical signals against real prices. */
 export interface BacktestResult {
   groupId: string;

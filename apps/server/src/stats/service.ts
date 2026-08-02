@@ -1,4 +1,7 @@
 import type {
+  AdvancedStats,
+  AnalyticsBucket,
+  AnalyticsResponse,
   DashboardStats,
   EquityPoint,
   GroupPerformance,
@@ -105,4 +108,124 @@ export function dashboard(): DashboardStats {
 /** Recompute and push the dashboard to all connected clients. */
 export function pushStats(): void {
   broadcast({ type: "stats", stats: dashboard() });
+}
+
+/* ------------------------------ analytics ------------------------------ */
+
+/** Largest peak-to-trough drop on a chronological cumulative-PnL series. */
+function maxDrawdown(closed: Trade[]): number {
+  const ordered = closed
+    .filter((t) => t.closedAt)
+    .sort((a, b) => (a.closedAt! < b.closedAt! ? -1 : 1));
+  let cum = 0;
+  let peak = 0;
+  let maxDd = 0;
+  for (const t of ordered) {
+    cum += t.realizedPnl ?? 0;
+    if (cum > peak) peak = cum;
+    const dd = peak - cum;
+    if (dd > maxDd) maxDd = dd;
+  }
+  return Number(maxDd.toFixed(2));
+}
+
+/** Extended metrics on top of the base performance stats. */
+function computeAdvanced(list: Trade[]): AdvancedStats {
+  const base = computeStats(list);
+  const closed = list.filter((t) => t.status === "closed" && Number.isFinite(t.realizedPnl));
+  const winsPnl = closed.map((t) => t.realizedPnl as number).filter((p) => p >= 0);
+  const lossPnl = closed.map((t) => t.realizedPnl as number).filter((p) => p < 0);
+  const grossProfit = winsPnl.reduce((s, p) => s + p, 0);
+  const grossLoss = Math.abs(lossPnl.reduce((s, p) => s + p, 0));
+  const holdHours = closed
+    .filter((t) => t.closedAt)
+    .map((t) => (new Date(t.closedAt!).getTime() - new Date(t.openedAt).getTime()) / 3_600_000)
+    .filter((h) => Number.isFinite(h) && h >= 0);
+  const totalFees = closed.reduce((s, t) => s + (t.fees ?? 0), 0);
+  // Realized reward:risk = PnL ÷ (initial risk from entry→SL), for trades that
+  // had a stop-loss and a positive size.
+  const rrs = closed
+    .map((t) => {
+      if (t.stopLoss === undefined || !(t.size > 0)) return undefined;
+      const riskPerUnit = Math.abs(t.entryPrice - t.stopLoss);
+      const riskAmount = riskPerUnit * t.size;
+      if (!(riskAmount > 0)) return undefined;
+      return (t.realizedPnl as number) / riskAmount;
+    })
+    .filter((r): r is number => r !== undefined && Number.isFinite(r));
+  return {
+    ...base,
+    avgRR: rrs.length ? Number((rrs.reduce((s, r) => s + r, 0) / rrs.length).toFixed(2)) : 0,
+    rrSampleSize: rrs.length,
+    grossProfit: Number(grossProfit.toFixed(2)),
+    grossLoss: Number(grossLoss.toFixed(2)),
+    avgWin: winsPnl.length ? Number((grossProfit / winsPnl.length).toFixed(2)) : 0,
+    avgLoss: lossPnl.length ? Number((-grossLoss / lossPnl.length).toFixed(2)) : 0,
+    expectancy: base.avgPnl,
+    maxDrawdown: maxDrawdown(closed),
+    avgHoldHours: holdHours.length
+      ? Number((holdHours.reduce((s, h) => s + h, 0) / holdHours.length).toFixed(1))
+      : 0,
+    totalFees: Number(totalFees.toFixed(2)),
+  };
+}
+
+function bucketCurve(list: Trade[]): EquityPoint[] {
+  return equityCurve(list);
+}
+
+function bucket(key: string, label: string, list: Trade[]): AnalyticsBucket {
+  return { key, label, stats: computeAdvanced(list), equityCurve: bucketCurve(list) };
+}
+
+/**
+ * Rich analytics across groups, symbols and sides. Excludes shadow trades
+ * (hypothetical) unless requested; simulated (test-mode) trades are included so
+ * the view isn't empty on testnet.
+ */
+export function analytics(opts: {
+  from?: string;
+  to?: string;
+  includeShadow?: boolean;
+} = {}): AnalyticsResponse {
+  let list = tradesRepo.list(10000);
+  if (!opts.includeShadow) list = list.filter((t) => !t.shadow);
+  if (opts.from) list = list.filter((t) => t.openedAt >= opts.from!);
+  if (opts.to) list = list.filter((t) => t.openedAt <= opts.to!);
+
+  const byKey = <K extends string>(pick: (t: Trade) => K): Map<K, Trade[]> => {
+    const m = new Map<K, Trade[]>();
+    for (const t of list) {
+      const k = pick(t);
+      const arr = m.get(k);
+      if (arr) arr.push(t);
+      else m.set(k, [t]);
+    }
+    return m;
+  };
+
+  const groupBuckets: AnalyticsBucket[] = [...byKey((t) => t.groupId).entries()]
+    .map(([id, ts]) => bucket(id, ts[0]!.groupName || id, ts))
+    .sort((a, b) => b.stats.realizedPnl - a.stats.realizedPnl);
+
+  const symbolBuckets: AnalyticsBucket[] = [...byKey((t) => t.symbol).entries()]
+    .map(([sym, ts]) => bucket(sym, sym, ts))
+    .sort((a, b) => b.stats.realizedPnl - a.stats.realizedPnl);
+
+  const sideBuckets: AnalyticsBucket[] = (["long", "short"] as const)
+    .map((side) => bucket(side, side, list.filter((t) => t.side === side)))
+    .filter((b) => b.stats.trades > 0);
+
+  const includesSimulated = list.some((t) => t.simulated);
+  const closedTrades = list.filter((t) => t.status === "closed").length;
+
+  return {
+    overall: computeAdvanced(list),
+    byGroup: groupBuckets,
+    bySymbol: symbolBuckets,
+    bySide: sideBuckets,
+    equityCurve: equityCurve(list),
+    closedTrades,
+    includesSimulated,
+  };
 }

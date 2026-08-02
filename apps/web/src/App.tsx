@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { DashboardStats, Group, LogEntry, Signal, Trade } from "@tttrading/shared";
 import { api, openWs, getToken, setToken, setAuthErrorHandler } from "./api.js";
 import { Overview } from "./pages/Overview.js";
+import { Analytics } from "./pages/Analytics.js";
 import { Trades } from "./pages/Trades.js";
 import { Signals } from "./pages/Signals.js";
 import { Messages } from "./pages/Messages.js";
@@ -9,10 +10,11 @@ import { Groups } from "./pages/Groups.js";
 import { Logs } from "./pages/Logs.js";
 import { Login } from "./pages/Login.js";
 
-type Tab = "overview" | "trades" | "signals" | "messages" | "groups" | "logs";
+type Tab = "overview" | "analytics" | "trades" | "signals" | "messages" | "groups" | "logs";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "overview", label: "Overview" },
+  { id: "analytics", label: "Analytics" },
   { id: "signals", label: "Signals" },
   { id: "messages", label: "Messages" },
   { id: "trades", label: "Trades" },
@@ -251,6 +253,7 @@ export function App() {
           </div>
         )}
         {tab === "overview" && <Overview stats={stats} signals={signals} trades={trades} />}
+        {tab === "analytics" && <Analytics />}
         {tab === "signals" && (
           <Signals signals={signals} groups={groups} onChange={refresh} />
         )}

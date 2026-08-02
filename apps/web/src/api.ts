@@ -1,4 +1,5 @@
 import type {
+  AnalyticsResponse,
   BacktestResult,
   DashboardStats,
   Group,
@@ -130,6 +131,14 @@ export const api = {
 
   telegramHealth: () => req<TelegramHealth>("/api/telegram/health"),
   account: () => req<AccountInfo>("/api/account"),
+  analytics: (opts: { from?: string; to?: string; includeShadow?: boolean } = {}) => {
+    const p = new URLSearchParams();
+    if (opts.from) p.set("from", opts.from);
+    if (opts.to) p.set("to", opts.to);
+    if (opts.includeShadow) p.set("includeShadow", "true");
+    const qs = p.toString();
+    return req<AnalyticsResponse>(`/api/analytics${qs ? `?${qs}` : ""}`);
+  },
   testOrder: (symbol: string, side: "long" | "short", notionalUsd: number, leverage: number) =>
     req<Trade>("/api/test-order", {
       method: "POST",

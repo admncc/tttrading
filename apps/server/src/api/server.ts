@@ -16,7 +16,7 @@ import {
   signals as signalsRepo,
   trades as tradesRepo,
 } from "../db/repositories.js";
-import { dashboard } from "../stats/service.js";
+import { dashboard, analytics } from "../stats/service.js";
 import { hyperliquid } from "../hyperliquid/connector.js";
 import {
   closeTrade,
@@ -327,6 +327,17 @@ export async function buildServer() {
 
   /* ------------------------- stats & positions ------------------------ */
   app.get("/api/stats", async () => dashboard());
+
+  // Rich analytics: performance by group, symbol and side, with filters.
+  app.get<{ Querystring: { from?: string; to?: string; includeShadow?: string } }>(
+    "/api/analytics",
+    async (req) =>
+      analytics({
+        from: req.query.from,
+        to: req.query.to,
+        includeShadow: req.query.includeShadow === "true",
+      }),
+  );
 
   // Manually trigger a full monitor pass (reconcile live trades + simulated).
   app.post("/api/reconcile", async () => {
