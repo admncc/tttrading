@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import type { Group, GroupInput } from "@tttrading/shared";
+import type { BacktestResult, Group, GroupInput } from "@tttrading/shared";
 import { api } from "../api.js";
+import { pct, pnlClass, usd } from "../format.js";
 
 /** Panel to configure the Anthropic key/model for LLM signal parsing. */
 function AiSettings() {
@@ -90,6 +91,7 @@ const BLANK: GroupInput = {
     tpLevels: 3,
     breakevenAfterTp: 0,
     blockRedTrades: false,
+    instructions: "",
   },
 };
 
@@ -249,6 +251,15 @@ function GroupForm({
           </select>
         </div>
       </div>
+      <div className="field">
+        <label>Instructions for the AI parser (channel-specific)</label>
+        <textarea
+          rows={5}
+          placeholder="e.g. Entries use '$SYM Buying Now / Entry: CMP till X / TP: y / SL: z'. 'Invalidation' means SL. Prices sometimes drop the leading '0.'. 'moving SL to entry' = break-even; 'invalidated'/'stopped' = close. Ignore education/Q&A posts."
+          value={g.settings.instructions ?? ""}
+          onChange={(e) => setS({ instructions: e.target.value })}
+        />
+      </div>
       <div className="btn-row">
         <button className="primary" disabled={busy || !g.name} onClick={save}>
           {busy ? "Saving…" : "Save"}
@@ -263,9 +274,77 @@ function GroupForm({
   );
 }
 
+/** Backtest / channel-analysis result panel. */
+function BacktestPanel({ r }: { r: BacktestResult }) {
+  const s = r.stats;
+  return (
+    <div
+      className="panel"
+      style={{ background: "var(--panel-2)", margin: "0 0 10px", padding: 14 }}
+    >
+      {r.error ? (
+        <div className="neg">Analysis error: {r.error}</div>
+      ) : (
+        <>
+          <div style={{ marginBottom: 8 }}>
+            <strong>Backtest</strong>{" "}
+            <span className="muted">
+              re-parsed {r.reparsed} · tested {r.tested} · skipped {r.skipped} · risk{" "}
+              <span className="pos">{r.riskCounts.green}🟢</span>{" "}
+              <span className="warn">{r.riskCounts.yellow}🟡</span>{" "}
+              <span className="neg">{r.riskCounts.red}🔴</span>
+            </span>
+          </div>
+          {r.tested === 0 ? (
+            <div className="muted">
+              No simulatable signals (channel is mostly prose/management — see the analysis
+              notes; better handled with per-channel instructions + LLM).
+            </div>
+          ) : (
+            <div className="kpi-grid" style={{ margin: 0 }}>
+              <div className="kpi">
+                <div className="label">Win rate</div>
+                <div className="value">{pct(s.winRate)}</div>
+              </div>
+              <div className="kpi">
+                <div className="label">PnL (sim)</div>
+                <div className={`value ${pnlClass(s.realizedPnl)}`}>{usd(s.realizedPnl)}</div>
+              </div>
+              <div className="kpi">
+                <div className="label">Profit factor</div>
+                <div className="value">
+                  {Number.isFinite(s.profitFactor) ? s.profitFactor.toFixed(2) : "∞"}
+                </div>
+              </div>
+              <div className="kpi">
+                <div className="label">Avg / trade</div>
+                <div className={`value ${pnlClass(s.avgPnl)}`}>{usd(s.avgPnl)}</div>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 export function Groups({ groups, onChange }: { groups: Group[]; onChange: () => void }) {
   const [editing, setEditing] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [results, setResults] = useState<Record<string, BacktestResult>>({});
+  const [analyzing, setAnalyzing] = useState<string | null>(null);
+
+  const analyze = async (id: string) => {
+    setAnalyzing(id);
+    try {
+      const res = await api.backtest(id);
+      setResults((r) => ({ ...r, [id]: res }));
+    } catch (e) {
+      alert(`Analyze failed: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setAnalyzing(null);
+    }
+  };
 
   const create = async (g: GroupInput) => {
     try {
@@ -332,6 +411,13 @@ export function Groups({ groups, onChange }: { groups: Group[]; onChange: () => 
                 {!g.enabled && <span className="tag">disabled</span>}
               </div>
               <div className="btn-row">
+                <button
+                  className="primary"
+                  disabled={analyzing === g.id}
+                  onClick={() => analyze(g.id)}
+                >
+                  {analyzing === g.id ? "Analyzing…" : "Analyze"}
+                </button>
                 <button onClick={() => api.exportGroup(g.id, g.name).catch((e) => alert(String(e)))}>
                   Export
                 </button>
@@ -341,6 +427,7 @@ export function Groups({ groups, onChange }: { groups: Group[]; onChange: () => 
                 </button>
               </div>
             </div>
+            {results[g.id] && <BacktestPanel r={results[g.id]!} />}
             <div className="muted">
               {g.settings.leverage}x · {g.settings.tradeSizeUsd.toLocaleString()} USDC ·{" "}
               {g.settings.executionMode} · {g.settings.marginMode} ·{" "}
@@ -348,6 +435,7 @@ export function Groups({ groups, onChange }: { groups: Group[]; onChange: () => 
               {g.settings.autoSplitSingleTp ? `split→${g.settings.tpLevels} TP` : "TP as-is"}
               {g.settings.breakevenAfterTp > 0 && ` · BE after TP${g.settings.breakevenAfterTp}`}
               {g.settings.blockRedTrades && " · blocks red"}
+              {g.settings.instructions?.trim() && " · 📝 AI instructions"}
               {g.settings.allowedSymbols && g.settings.allowedSymbols.length > 0 && (
                 <> · {g.settings.allowedSymbols.join(", ")}</>
               )}

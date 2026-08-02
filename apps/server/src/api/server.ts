@@ -25,6 +25,7 @@ import {
 } from "../execution/engine.js";
 import { reconcileOnce, evaluateSimulated } from "../execution/monitor.js";
 import { backfillAll, backfillGroup } from "../telegram/backfill.js";
+import { backtestGroup } from "../backtest/engine.js";
 import { exportAllText, exportGroupText, safeFilename } from "../export/text.js";
 import { broadcast, register, unregister, type SocketLike } from "../ws/hub.js";
 
@@ -38,6 +39,7 @@ const groupSettingsSchema = z.object({
   tpLevels: z.number().int().min(1).max(10),
   breakevenAfterTp: z.number().int().min(0).max(10),
   blockRedTrades: z.boolean(),
+  instructions: z.string().max(8000).optional(),
   allowedSymbols: z.array(z.string()).optional(),
 });
 
@@ -205,6 +207,14 @@ export async function buildServer() {
   app.post<{ Params: { id: string } }>("/api/groups/:id/backfill", async (req) =>
     backfillGroup(req.params.id, daysOf(req.body)),
   );
+
+  // Re-parse a channel's history and backtest it against real prices.
+  app.post<{ Params: { id: string } }>("/api/groups/:id/backtest", async (req) => {
+    const body = req.body as { horizonDays?: number; interval?: string } | undefined;
+    const horizon = Math.min(Math.max(Math.floor(Number(body?.horizonDays)) || 14, 1), 60);
+    const interval = typeof body?.interval === "string" ? body.interval : "1h";
+    return backtestGroup(req.params.id, horizon, interval);
+  });
 
   // Export a channel's full message transcript (timestamp + text) as .txt.
   app.get<{ Params: { id: string } }>("/api/groups/:id/export", async (req, reply) => {

@@ -1,4 +1,5 @@
 import type {
+  BacktestResult,
   DashboardStats,
   Group,
   GroupInput,
@@ -82,6 +83,12 @@ export const api = {
 
   exportGroup: (id: string, name: string) => downloadFile(`/api/groups/${id}/export`, `${name}.txt`),
   exportAll: () => downloadFile("/api/export", "all-channels.txt"),
+
+  backtest: (id: string, horizonDays = 14) =>
+    req<BacktestResult>(`/api/groups/${id}/backtest`, {
+      method: "POST",
+      body: JSON.stringify({ horizonDays }),
+    }),
 
   backfill: (days: number) =>
     req<{ groupId: string; groupName: string; imported: number; error?: string }[]>("/api/backfill", {

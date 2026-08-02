@@ -27,7 +27,7 @@ function symbolAllowed(group: Group, symbol: string): boolean {
  * and either executes immediately (auto) or queues it for confirmation.
  */
 export async function handleIncoming(group: Group, rawText: string): Promise<Signal> {
-  const parsed = await parseSignal(rawText);
+  const parsed = await parseSignal(rawText, group.settings.instructions);
 
   if (!parsed || parsed.confidence < ACT_THRESHOLD) {
     const signal = signalsRepo.create({

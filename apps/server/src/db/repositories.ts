@@ -264,20 +264,21 @@ export const signals = {
   },
   update(
     id: string,
-    patch: Partial<Pick<Signal, "status" | "error" | "tradeId" | "parsed">>,
+    patch: Partial<Pick<Signal, "status" | "error" | "tradeId" | "parsed" | "risk">>,
   ): Signal | undefined {
     const existing = this.get(id);
     if (!existing) return undefined;
     const merged = { ...existing, ...patch };
     db.prepare(
       `UPDATE signals SET status=@status, error=@error, trade_id=@trade_id,
-        parsed=@parsed, updated_at=@updated_at WHERE id=@id`,
+        parsed=@parsed, risk=@risk, updated_at=@updated_at WHERE id=@id`,
     ).run({
       id,
       status: merged.status,
       error: merged.error ?? null,
       trade_id: merged.tradeId ?? null,
       parsed: merged.parsed ? JSON.stringify(merged.parsed) : null,
+      risk: merged.risk ? JSON.stringify(merged.risk) : null,
       updated_at: now(),
     });
     return this.get(id);

@@ -12,12 +12,17 @@ const LLM_MIN = 0.5;
  * confidence, fall back to the LLM (when configured). Returns the best result
  * or null when the message isn't an actionable signal.
  */
-export async function parseSignal(text: string): Promise<ParsedSignal | null> {
+export async function parseSignal(
+  text: string,
+  instructions?: string,
+): Promise<ParsedSignal | null> {
   const rx = parseWithRegex(text);
-  if (rx && rx.confidence >= REGEX_TRUST) return rx;
+  // With channel instructions, prefer the LLM even on a decent regex hit —
+  // the instructions encode this channel's quirks the regex can't know.
+  if (rx && rx.confidence >= REGEX_TRUST && !instructions?.trim()) return rx;
 
   if (llmReady()) {
-    const llm = await parseWithLlm(text);
+    const llm = await parseWithLlm(text, instructions);
     if (llm && llm.confidence >= LLM_MIN) return llm;
     // The LLM judged this NOT an actionable signal (or low confidence). Trust it
     // over a shaky sub-threshold regex hit to avoid false-positive trades.

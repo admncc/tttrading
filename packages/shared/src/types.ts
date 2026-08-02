@@ -59,6 +59,12 @@ export interface GroupSettings {
    * we can verify whether blocking them was the right call.
    */
   blockRedTrades: boolean;
+  /**
+   * Free-text, channel-specific parsing instructions given to the LLM as extra
+   * context (formats, how entries/SL/TP are written, edit/cancel conventions,
+   * quirks). Persisted per channel; can be refined over time.
+   */
+  instructions?: string;
   /** If set, ignore signals for symbols not in this allow-list. */
   allowedSymbols?: string[];
 }
@@ -224,6 +230,22 @@ export interface DashboardStats {
   byGroup: GroupPerformance[];
   equityCurve: EquityPoint[];
   riskAudit: RiskAudit;
+}
+
+/** Result of replaying a channel's historical signals against real prices. */
+export interface BacktestResult {
+  groupId: string;
+  groupName: string;
+  /** Signals re-parsed with the current parser. */
+  reparsed: number;
+  /** Signals that had enough info to simulate. */
+  tested: number;
+  /** Parsed-but-not-simulatable (no SL/TP, symbol unavailable, no candles). */
+  skipped: number;
+  stats: PerformanceStats;
+  /** Distribution of the re-parsed signals' risk levels. */
+  riskCounts: { green: number; yellow: number; red: number };
+  error?: string;
 }
 
 /** Messages broadcast over the WebSocket to the desk. */

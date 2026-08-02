@@ -70,13 +70,19 @@ interface ExtractInput {
 }
 
 /** Parse a message with Claude. Returns null if not a signal or on error. */
-export async function parseWithLlm(text: string): Promise<ParsedSignal | null> {
+export async function parseWithLlm(
+  text: string,
+  instructions?: string,
+): Promise<ParsedSignal | null> {
   if (!llmReady()) return null;
+  const system = instructions?.trim()
+    ? `${SYSTEM}\n\nChannel-specific guidance (follow it):\n${instructions.trim()}`
+    : SYSTEM;
   try {
     const res = await getClient().messages.create({
       model: effectiveModel(),
       max_tokens: 512,
-      system: SYSTEM,
+      system,
       tools: [EXTRACT_TOOL],
       tool_choice: { type: "tool", name: "record_signal" },
       messages: [{ role: "user", content: text }],
