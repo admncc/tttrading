@@ -56,11 +56,22 @@ export const api = {
       authRequired: boolean;
       updateEnabled: boolean;
     }>("/api/health"),
-  getSettings: () => req<{ shadowMode: boolean }>("/api/settings"),
+  getSettings: () =>
+    req<{
+      shadowMode: boolean;
+      anthropicConfigured: boolean;
+      anthropicKeySource: string;
+      anthropicModel: string;
+    }>("/api/settings"),
   updateSettings: (shadowMode: boolean) =>
     req<{ shadowMode: boolean }>("/api/settings", {
       method: "PUT",
       body: JSON.stringify({ shadowMode }),
+    }),
+  saveAnthropic: (anthropicKey: string | undefined, anthropicModel: string | undefined) =>
+    req<{ anthropicConfigured: boolean; anthropicModel: string }>("/api/settings", {
+      method: "PUT",
+      body: JSON.stringify({ anthropicKey, anthropicModel }),
     }),
 
   checkUpdate: () =>

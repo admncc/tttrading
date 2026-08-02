@@ -27,19 +27,21 @@ function emptyStats(): PerformanceStats {
 
 export function computeStats(list: Trade[]): PerformanceStats {
   const s = emptyStats();
-  s.trades = list.length;
   let grossProfit = 0;
   let grossLoss = 0;
   const closedPnls: number[] = [];
 
   for (const t of list) {
+    // failed/canceled trades never opened a position — exclude from counts.
+    if (t.status !== "open" && t.status !== "closed") continue;
+    s.trades++;
     s.totalNotional += t.notionalUsd;
     if (t.status === "open") {
       s.openTrades++;
       continue;
     }
-    if (t.realizedPnl === undefined) continue;
-    const pnl = t.realizedPnl;
+    if (!Number.isFinite(t.realizedPnl)) continue;
+    const pnl = t.realizedPnl as number;
     s.realizedPnl += pnl;
     closedPnls.push(pnl);
     if (pnl >= 0) {

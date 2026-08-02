@@ -1,6 +1,7 @@
-import { config, alertsEnabled } from "./config.js";
+import { config, alertsEnabled, authEnabled } from "./config.js";
 import { log, addLogSink } from "./logger.js";
 import { sendAlert } from "./alerts/notifier.js";
+import { llmReady } from "./signals/llm.js";
 import "./db/index.js"; // open + migrate
 import { seedDemo } from "./db/seed.js";
 import { buildServer } from "./api/server.js";
@@ -24,6 +25,10 @@ async function main(): Promise<void> {
   startMonitor();
 
   log.info(`Alerts ${alertsEnabled ? "enabled (Telegram bot)" : "disabled"}.`);
+  log.info(`LLM signal fallback ${llmReady() ? "enabled" : "disabled (regex only)"}.`);
+  if (authEnabled && !process.env.AUTH_SECRET) {
+    log.warn("AUTH_SECRET not set — session tokens will not survive a restart. Set a persistent AUTH_SECRET.");
+  }
   if (alertsEnabled) void sendAlert(`🤖 TT Desk started (${config.tradingEnv}).`);
 
   const shutdown = async () => {

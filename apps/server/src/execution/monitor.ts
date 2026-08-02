@@ -62,19 +62,18 @@ async function reconcileTrade(trade: Trade, byOid: Map<string, FillLite[]>): Pro
   const closedSize = tradeFills.reduce((s, f) => s + f.size, 0);
   const grossPnl = tradeFills.reduce((s, f) => s + f.closedPnl, 0);
   const fees = tradeFills.reduce((s, f) => s + f.fee, 0);
-  const tpFilled = tpOids.filter((o) => (byOid.get(o)?.length ?? 0) > 0).length;
 
-  let changed = false;
+  // Count a TP level as filled only when its cumulative fill meets that level's
+  // expected allocation (a single partial fill must not count the whole level).
+  const n = tpOids.length;
+  const perTpExpected = n > 0 ? trade.size / n : 0;
+  const tpFilled = tpOids.filter((o) => {
+    const filled = (byOid.get(o) ?? []).reduce((s, f) => s + f.size, 0);
+    return perTpExpected > 0 ? filled >= perTpExpected * 0.9 : filled > 0;
+  }).length;
 
-  // 1) Move stop-loss to break-even once enough TP levels have filled.
-  const group = groupsRepo.get(trade.groupId);
-  const beAfter = group?.settings.breakevenAfterTp ?? 0;
-  if (beAfter > 0 && tpFilled >= beAfter && !trade.slMovedToBreakeven && trade.slOrderId) {
-    await moveSlToBreakeven(trade, closedSize, group?.settings.maxSlippage ?? 0.01);
-    changed = true;
-  }
-
-  // 2) Fully closed on the exchange?
+  // 1) Fully closed on the exchange? (checked first, so a closing tick never
+  //    also tries to move the stop for a flat position).
   const fullyClosed = closedSize >= trade.size * 0.999;
   if (fullyClosed) {
     const notional = tradeFills.reduce((s, f) => s + f.price * f.size, 0);
@@ -98,6 +97,16 @@ async function reconcileTrade(trade: Trade, byOid: Map<string, FillLite[]>): Pro
     return true;
   }
 
+  let changed = false;
+
+  // 2) Move stop-loss to break-even once enough TP levels have filled.
+  const group = groupsRepo.get(trade.groupId);
+  const beAfter = group?.settings.breakevenAfterTp ?? 0;
+  if (beAfter > 0 && tpFilled >= beAfter && !trade.slMovedToBreakeven && trade.slOrderId) {
+    await moveSlToBreakeven(trade, closedSize, group?.settings.maxSlippage ?? 0.01);
+    changed = true;
+  }
+
   // 3) Partial progress — surface the TP count in the desk.
   if (tpFilled !== (trade.tpFilledCount ?? 0)) {
     const updated = tradesRepo.update(trade.id, { tpFilledCount: tpFilled });
@@ -111,7 +120,8 @@ async function moveSlToBreakeven(trade: Trade, filledSize: number, slippage: num
   const remaining = Math.max(0, trade.size - filledSize);
   if (remaining <= 0) return;
 
-  if (trade.slOrderId) await hyperliquid.cancelOrders(trade.symbol, [trade.slOrderId]);
+  // Place the new break-even stop FIRST, then cancel the old one — never leave
+  // the position without a resting stop if placement fails.
   const res = await hyperliquid.placeBracketOrders({
     symbol: trade.symbol,
     side: trade.side,
@@ -120,6 +130,13 @@ async function moveSlToBreakeven(trade: Trade, filledSize: number, slippage: num
     takeProfits: [],
     slippage,
   });
+  if (!res.protectedOnExchange || !res.slOrderId) {
+    log.warn(
+      `Break-even stop placement failed for ${trade.symbol} (${res.error ?? "no id"}); keeping existing SL.`,
+    );
+    return;
+  }
+  if (trade.slOrderId) await hyperliquid.cancelOrders(trade.symbol, [trade.slOrderId]);
   const updated = tradesRepo.update(trade.id, {
     slOrderId: res.slOrderId,
     slMovedToBreakeven: true,
@@ -223,9 +240,18 @@ export function startMonitor(): void {
   const interval = config.monitorIntervalMs;
   const what = hyperliquid.live ? "reconcile + simulated eval" : "simulated eval";
   log.info(`Monitor running every ${Math.round(interval / 1000)}s (${what}).`);
+  let ticking = false;
   timer = setInterval(() => {
-    void reconcileOnce();
-    void evaluateSimulated();
+    if (ticking) return; // skip if the previous tick is still running
+    ticking = true;
+    void (async () => {
+      try {
+        await reconcileOnce();
+        await evaluateSimulated();
+      } finally {
+        ticking = false;
+      }
+    })();
   }, interval);
 }
 

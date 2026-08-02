@@ -1,7 +1,6 @@
 import type { ParsedSignal } from "@tttrading/shared";
-import { llmReady } from "../config.js";
 import { parseWithRegex } from "./regex.js";
-import { parseWithLlm } from "./llm.js";
+import { parseWithLlm, llmReady } from "./llm.js";
 
 /** Confidence at or above which the regex result is trusted without the LLM. */
 const REGEX_TRUST = 0.75;
@@ -20,8 +19,11 @@ export async function parseSignal(text: string): Promise<ParsedSignal | null> {
   if (llmReady()) {
     const llm = await parseWithLlm(text);
     if (llm && llm.confidence >= LLM_MIN) return llm;
+    // The LLM judged this NOT an actionable signal (or low confidence). Trust it
+    // over a shaky sub-threshold regex hit to avoid false-positive trades.
+    return null;
   }
 
-  // Fall back to a low-confidence regex hit if we have one.
+  // No LLM configured: fall back to a low-confidence regex hit if we have one.
   return rx;
 }

@@ -15,7 +15,11 @@ export function getTelegramClient(): TelegramClient | null {
 }
 
 export function normalizeChannel(channel: string): string {
-  return channel.replace(/^@/, "").replace(/^https:\/\/t\.me\//, "").toLowerCase();
+  return channel
+    .replace(/^@/, "")
+    .replace(/^https:\/\/t\.me\//, "")
+    .replace(/^-100/, "") // collapse Telegram's marked channel id to the bare id
+    .toLowerCase();
 }
 
 /** Find the group whose configured channel matches this message's chat. */

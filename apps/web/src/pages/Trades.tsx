@@ -21,6 +21,8 @@ export function Trades({ trades, onChange }: { trades: Trade[]; onChange: () => 
     try {
       await api.closeTrade(id);
       onChange();
+    } catch (e) {
+      alert(`Close failed: ${e instanceof Error ? e.message : e}`);
     } finally {
       setBusyId(null);
     }

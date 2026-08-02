@@ -1,11 +1,30 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { ParsedSignal, TradeSide } from "@tttrading/shared";
-import { config, llmReady } from "../config.js";
+import { config } from "../config.js";
+import { settings } from "../db/repositories.js";
 import { log } from "../logger.js";
 
+/** Effective key/model: desk-configured value (DB) wins over the .env default. */
+function effectiveKey(): string {
+  return settings.getAnthropicKey() || config.anthropic.apiKey;
+}
+function effectiveModel(): string {
+  return settings.getAnthropicModel() || config.anthropic.model;
+}
+
+/** Whether the LLM fallback is available (key set via desk or env). */
+export function llmReady(): boolean {
+  return !!effectiveKey();
+}
+
 let client: Anthropic | null = null;
+let clientKey = "";
 function getClient(): Anthropic {
-  if (!client) client = new Anthropic({ apiKey: config.anthropic.apiKey });
+  const key = effectiveKey();
+  if (!client || clientKey !== key) {
+    client = new Anthropic({ apiKey: key });
+    clientKey = key;
+  }
   return client;
 }
 
@@ -55,7 +74,7 @@ export async function parseWithLlm(text: string): Promise<ParsedSignal | null> {
   if (!llmReady()) return null;
   try {
     const res = await getClient().messages.create({
-      model: config.anthropic.model,
+      model: effectiveModel(),
       max_tokens: 512,
       system: SYSTEM,
       tools: [EXTRACT_TOOL],
@@ -68,16 +87,25 @@ export async function parseWithLlm(text: string): Promise<ParsedSignal | null> {
     );
     if (!toolUse) return null;
     const input = toolUse.input as ExtractInput;
-    if (!input.is_signal || !input.symbol || !input.side) return null;
+
+    // Validate — tool schemas are advisory, not enforced.
+    if (!input.is_signal) return null;
+    if (typeof input.symbol !== "string" || !input.symbol.trim()) return null;
+    if (input.side !== "long" && input.side !== "short") return null;
+    const num = (v: unknown): number | undefined =>
+      typeof v === "number" && Number.isFinite(v) ? v : undefined;
+    const tps = Array.isArray(input.take_profits)
+      ? input.take_profits.filter((n): n is number => typeof n === "number" && Number.isFinite(n))
+      : [];
 
     return {
-      symbol: input.symbol.toUpperCase(),
+      symbol: input.symbol.trim().toUpperCase(),
       side: input.side,
-      entry: input.entry,
-      stopLoss: input.stop_loss,
-      takeProfits: input.take_profits?.length ? input.take_profits : undefined,
-      leverageHint: input.leverage,
-      confidence: Math.max(0, Math.min(1, input.confidence ?? 0.7)),
+      entry: num(input.entry),
+      stopLoss: num(input.stop_loss),
+      takeProfits: tps.length ? tps : undefined,
+      leverageHint: num(input.leverage),
+      confidence: Math.max(0, Math.min(1, num(input.confidence) ?? 0.7)),
       source: "llm",
     };
   } catch (err) {

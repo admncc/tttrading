@@ -19,6 +19,8 @@ export interface OrderRequest {
   leverage: number;
   marginMode: "cross" | "isolated";
   maxSlippage: number;
+  /** Reduce-only (for closing/scaling out) — never opens/flips a position. */
+  reduceOnly?: boolean;
 }
 
 export interface OrderResult {
@@ -228,15 +230,26 @@ export class HyperliquidConnector {
             b: isBuy,
             p: String(limitPx),
             s: String(size),
-            r: false,
+            r: req.reduceOnly ?? false,
             t: { limit: { tif: "Ioc" } },
           },
         ],
         grouping: "na",
       })) as unknown as HlOrderResponse;
 
-      const parsed = parseOrderResponse(result, limitPx);
-      return { ...parsed, size, simulated: false };
+      const parsed = parseOrderResponse(result);
+      if (!parsed.ok) {
+        return { ok: false, filledPrice: limitPx, size: 0, simulated: false, error: parsed.error };
+      }
+      // Use the ACTUAL filled size, not the requested size (partial fills).
+      const filledSize = parsed.filledSize && parsed.filledSize > 0 ? parsed.filledSize : size;
+      return {
+        ok: true,
+        filledPrice: parsed.filledPrice,
+        size: filledSize,
+        orderId: parsed.orderId,
+        simulated: false,
+      };
     } catch (err) {
       return {
         ok: false,
@@ -437,22 +450,35 @@ interface HlOrderResponse {
   };
 }
 
-function parseOrderResponse(res: HlOrderResponse, fallbackPx: number): Omit<OrderResult, "size" | "simulated"> {
+interface ParsedOrder {
+  ok: boolean;
+  filledPrice: number;
+  filledSize?: number;
+  orderId?: string;
+  error?: string;
+}
+
+function parseOrderResponse(res: HlOrderResponse): ParsedOrder {
   const statuses = res.response?.data?.statuses ?? [];
   for (const s of statuses) {
     if ("filled" in s) {
-      return { ok: true, filledPrice: Number(s.filled.avgPx), orderId: String(s.filled.oid) };
+      return {
+        ok: true,
+        filledPrice: Number(s.filled.avgPx),
+        filledSize: Number(s.filled.totalSz),
+        orderId: String(s.filled.oid),
+      };
     }
+    // An IOC order that rests did NOT fill immediately — treat as no fill.
     if ("resting" in s) {
-      // IOC that didn't fill immediately (unlikely with slippage buffer).
-      return { ok: true, filledPrice: fallbackPx, orderId: String(s.resting.oid) };
+      return { ok: false, filledPrice: 0, error: "IOC order did not fill immediately" };
     }
     if ("error" in s) {
-      return { ok: false, filledPrice: fallbackPx, error: s.error };
+      return { ok: false, filledPrice: 0, error: s.error };
     }
   }
-  const ok = res.status === "ok";
-  return { ok, filledPrice: fallbackPx, error: ok ? undefined : `Unexpected response: ${res.status}` };
+  // No per-order status => no confirmed fill; never book a phantom position.
+  return { ok: false, filledPrice: 0, error: `No fill in response (status: ${res.status})` };
 }
 
 /* ------------------------------ rounding ------------------------------- */
@@ -469,8 +495,10 @@ export function roundSize(size: number, szDecimals: number): number {
  */
 export function roundPx(px: number, szDecimals: number): number {
   if (px <= 0) return px;
+  // Hyperliquid allows integer prices with more than 5 sig figs; only reduce to
+  // 5 significant figures for sub-100000 prices, then cap decimal places.
+  if (px >= 100000) return Math.round(px);
   const maxDecimals = Math.max(0, 6 - szDecimals);
-  // 5 significant figures
   const sig = Number(px.toPrecision(5));
   const factor = 10 ** maxDecimals;
   return Math.round(sig * factor) / factor;

@@ -60,7 +60,8 @@ export async function backfillGroup(groupId: string, days = 30, maxMessages = 80
     // getMessages returns newest-first; stop once we pass the cutoff.
     for (const m of messages as Api.Message[]) {
       const date = (m as { date?: number }).date ?? 0;
-      if (date && date < cutoff) break;
+      if (!date) continue; // no timestamp -> can't window or dedup; skip
+      if (date < cutoff) break;
       const text = (m as { message?: string }).message;
       if (!text) continue;
 

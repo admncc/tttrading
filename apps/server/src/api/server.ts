@@ -66,7 +66,12 @@ export async function buildServer() {
     },
   );
 
-  await app.register(cors, { origin: true });
+  const corsOrigin = config.corsOrigin
+    ? config.corsOrigin === "*"
+      ? true
+      : config.corsOrigin.split(",").map((s) => s.trim())
+    : false; // same-origin only (desk is served from this API)
+  await app.register(cors, { origin: corsOrigin });
   await app.register(websocket);
 
   /* -------------------------------- auth ------------------------------ */
@@ -83,14 +88,28 @@ export async function buildServer() {
     }
   });
 
+  // Simple in-memory brute-force throttle for the login endpoint.
+  const loginAttempts = new Map<string, { count: number; until: number }>();
+  const MAX_ATTEMPTS = 8;
+  const LOCK_MS = 5 * 60_000;
+
   app.post("/api/login", async (req, reply) => {
     if (!authEnabled) return { token: null, authRequired: false };
+    const ip = req.ip || "unknown";
+    const rec = loginAttempts.get(ip);
+    const now = Date.now();
+    if (rec && rec.count >= MAX_ATTEMPTS && now < rec.until) {
+      return reply.code(429).send({ error: "too many attempts — try again later" });
+    }
     const schema = z.object({ password: z.string() });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: "password required" });
     if (!checkPassword(parsed.data.password)) {
+      const count = (rec && now < rec.until ? rec.count : 0) + 1;
+      loginAttempts.set(ip, { count, until: now + LOCK_MS });
       return reply.code(401).send({ error: "invalid password" });
     }
+    loginAttempts.delete(ip);
     return { token: signToken(), authRequired: true };
   });
 
@@ -118,16 +137,38 @@ export async function buildServer() {
   });
 
   /* -------------------------- global settings ------------------------- */
-  app.get("/api/settings", async () => ({ shadowMode: settingsRepo.getShadowMode() }));
+  app.get("/api/settings", async () => ({
+    shadowMode: settingsRepo.getShadowMode(),
+    // Never expose the key itself — only whether one is configured (desk or env).
+    anthropicConfigured: !!(settingsRepo.getAnthropicKey() || config.anthropic.apiKey),
+    anthropicKeySource: settingsRepo.getAnthropicKey() ? "desk" : config.anthropic.apiKey ? "env" : "none",
+    anthropicModel: settingsRepo.getAnthropicModel() || config.anthropic.model,
+  }));
 
   app.put("/api/settings", async (req, reply) => {
-    const parsed = z.object({ shadowMode: z.boolean() }).safeParse(req.body);
+    const schema = z.object({
+      shadowMode: z.boolean().optional(),
+      anthropicKey: z.string().optional(), // "" clears the desk-stored key
+      anthropicModel: z.string().optional(),
+    });
+    const parsed = schema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
-    settingsRepo.setShadowMode(parsed.data.shadowMode);
-    const shadowMode = settingsRepo.getShadowMode();
-    log.info(`Shadow (test) mode ${shadowMode ? "ENABLED" : "DISABLED — LIVE TRADING"}.`);
-    broadcast({ type: "settings", settings: { shadowMode } });
-    return { shadowMode };
+    const { shadowMode, anthropicKey, anthropicModel } = parsed.data;
+    if (shadowMode !== undefined) {
+      settingsRepo.setShadowMode(shadowMode);
+      log.info(`Shadow (test) mode ${shadowMode ? "ENABLED" : "DISABLED — LIVE TRADING"}.`);
+      broadcast({ type: "settings", settings: { shadowMode } });
+    }
+    if (anthropicKey !== undefined) {
+      settingsRepo.setAnthropicKey(anthropicKey.trim());
+      log.info(`Anthropic key ${anthropicKey.trim() ? "updated via desk" : "cleared"}.`);
+    }
+    if (anthropicModel !== undefined) settingsRepo.setAnthropicModel(anthropicModel.trim());
+    return {
+      shadowMode: settingsRepo.getShadowMode(),
+      anthropicConfigured: !!(settingsRepo.getAnthropicKey() || config.anthropic.apiKey),
+      anthropicModel: settingsRepo.getAnthropicModel() || config.anthropic.model,
+    };
   });
 
   /* ------------------------------ groups ------------------------------ */
@@ -156,15 +197,14 @@ export async function buildServer() {
   });
 
   // Import channel history for analysis (parsed + risk-scored, never executed).
-  app.post("/api/backfill", async (req) => {
-    const days = Number((req.body as { days?: number } | undefined)?.days) || 30;
-    return backfillAll(days);
-  });
-
-  app.post<{ Params: { id: string } }>("/api/groups/:id/backfill", async (req) => {
-    const days = Number((req.body as { days?: number } | undefined)?.days) || 30;
-    return backfillGroup(req.params.id, days);
-  });
+  const daysOf = (body: unknown): number => {
+    const d = Math.floor(Number((body as { days?: number } | undefined)?.days));
+    return Number.isFinite(d) && d > 0 ? Math.min(d, 365) : 30;
+  };
+  app.post("/api/backfill", async (req) => backfillAll(daysOf(req.body)));
+  app.post<{ Params: { id: string } }>("/api/groups/:id/backfill", async (req) =>
+    backfillGroup(req.params.id, daysOf(req.body)),
+  );
 
   // Export a channel's full message transcript (timestamp + text) as .txt.
   app.get<{ Params: { id: string } }>("/api/groups/:id/export", async (req, reply) => {
@@ -185,9 +225,13 @@ export async function buildServer() {
   });
 
   /* ------------------------------ signals ----------------------------- */
+  const clampLimit = (raw: string | undefined, def: number, max: number): number => {
+    const n = Math.floor(Number(raw));
+    return Number.isFinite(n) && n > 0 ? Math.min(n, max) : def;
+  };
+
   app.get<{ Querystring: { limit?: string } }>("/api/signals", async (req) => {
-    const limit = req.query.limit ? Number(req.query.limit) : 200;
-    return signalsRepo.list(limit);
+    return signalsRepo.list(clampLimit(req.query.limit, 200, 2000));
   });
 
   app.get("/api/signals/pending", async () => signalsRepo.pending());
@@ -216,8 +260,7 @@ export async function buildServer() {
 
   /* ------------------------------ trades ------------------------------ */
   app.get<{ Querystring: { limit?: string } }>("/api/trades", async (req) => {
-    const limit = req.query.limit ? Number(req.query.limit) : 500;
-    return tradesRepo.list(limit);
+    return tradesRepo.list(clampLimit(req.query.limit, 500, 5000));
   });
 
   app.post<{ Params: { id: string } }>("/api/trades/:id/close", async (req, reply) => {

@@ -20,7 +20,7 @@ export function assessRisk(
   const reasons: string[] = [];
 
   const closed = history.filter(
-    (t) => t.status === "closed" && t.realizedPnl !== undefined && !t.shadow,
+    (t) => t.status === "closed" && Number.isFinite(t.realizedPnl) && !t.shadow,
   );
   const n = closed.length;
 

@@ -13,16 +13,19 @@ services:
       PORT: "4000"
       DB_PATH: /data/tttrading.sqlite
       WEB_DIST: /app/apps/web/dist
-      # In-app "Update" button (git pull + rebuild). See the security note below.
-      ALLOW_SELF_UPDATE: "true"
-      REPO_DIR: /repo
+      # In-app "Update" button. Opt-in via .env (ALLOW_SELF_UPDATE=true) AND a
+      # DESK_PASSWORD must be set — the server refuses self-update without auth.
+      ALLOW_SELF_UPDATE: ${ALLOW_SELF_UPDATE:-false}
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-tttrading}
+      # Repo mounted at the SAME path as on the host so compose resolves the
+      # build context + relative bind mounts correctly during a self-update.
+      REPO_DIR: ${PWD:-/repo}
     volumes:
       # Persist the SQLite database outside the container.
       - ./data:/data
-      # --- Self-update (optional) --------------------------------------
-      # Lets the "Update" button run `git pull` + rebuild from inside the
-      # container. This mounts the Docker socket, which grants the container
-      # root-equivalent control of the host — only enable on a server you
-      # trust. Remove these two lines (and ALLOW_SELF_UPDATE above) to disable.
-      - ./:/repo
+      # --- Self-update (optional; comment out to fully disable) ----------
+      # Grants the container control of the host Docker daemon — only on a
+      # server you trust, and only meaningful with ALLOW_SELF_UPDATE=true +
+      # DESK_PASSWORD set. Same-path mount keeps compose paths host-correct.
+      - ${PWD:-./}:${PWD:-/repo}
       - /var/run/docker.sock:/var/run/docker.sock

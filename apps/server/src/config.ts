@@ -80,11 +80,19 @@ export const config = {
   /** Directory of the built web app to serve in production (if present). */
   webDist: process.env.WEB_DIST || path.resolve(__dirname, "../../web/dist"),
 
+  /**
+   * CORS allow-list. Empty => same-origin only (the desk is served from the API,
+   * so this is the safe default). Set CORS_ORIGIN to "*" or a comma list to open.
+   */
+  corsOrigin: process.env.CORS_ORIGIN || "",
+
   selfUpdate: {
     /** Allow the "Update" button to pull + rebuild. Off by default (security). */
     enabled: bool(process.env.ALLOW_SELF_UPDATE, false),
-    /** Path to the git checkout to update (bind-mounted in Docker). */
+    /** Path to the git checkout to update (bind-mounted at the same host path). */
     repoDir: process.env.REPO_DIR || path.resolve(__dirname, "../../.."),
+    /** docker compose project name (must match the running stack). */
+    project: process.env.COMPOSE_PROJECT_NAME || "tttrading",
     /** Override the update command; empty => sensible default (see update.ts). */
     command: process.env.UPDATE_COMMAND || "",
   },

@@ -364,16 +364,19 @@ export const trades = {
     if (!existing) return undefined;
     const m = { ...existing, ...patch };
     db.prepare(
-      `UPDATE trades SET status=@status, exit_price=@exit_price, realized_pnl=@realized_pnl,
+      `UPDATE trades SET status=@status, exit_price=@exit_price, stop_loss=@stop_loss,
+        take_profits=@take_profits, realized_pnl=@realized_pnl,
         fees=@fees, exchange_order_id=@exchange_order_id, sl_order_id=@sl_order_id,
         tp_order_ids=@tp_order_ids, bracket_protected=@bracket_protected,
         tp_filled_count=@tp_filled_count, sl_moved_to_breakeven=@sl_moved_to_breakeven,
-        error=@error, closed_at=@closed_at
+        risk=@risk, shadow=@shadow, simulated=@simulated, error=@error, closed_at=@closed_at
        WHERE id=@id`,
     ).run({
       id,
       status: m.status,
       exit_price: m.exitPrice ?? null,
+      stop_loss: m.stopLoss ?? null,
+      take_profits: m.takeProfits ? JSON.stringify(m.takeProfits) : null,
       realized_pnl: m.realizedPnl ?? null,
       fees: m.fees ?? null,
       exchange_order_id: m.exchangeOrderId ?? null,
@@ -383,6 +386,9 @@ export const trades = {
       tp_filled_count: m.tpFilledCount ?? null,
       sl_moved_to_breakeven:
         m.slMovedToBreakeven === undefined ? null : m.slMovedToBreakeven ? 1 : 0,
+      risk: m.risk ? JSON.stringify(m.risk) : null,
+      shadow: m.shadow === undefined ? null : m.shadow ? 1 : 0,
+      simulated: m.simulated === undefined ? null : m.simulated ? 1 : 0,
       error: m.error ?? null,
       closed_at: m.closedAt ?? null,
     });
@@ -417,5 +423,18 @@ export const settings = {
   },
   setShadowMode(on: boolean): void {
     kvSet("shadowMode", on ? "true" : "false");
+  },
+  /** Anthropic API key set via the desk (empty string => not set). */
+  getAnthropicKey(): string {
+    return kvGet("anthropicKey") ?? "";
+  },
+  setAnthropicKey(key: string): void {
+    kvSet("anthropicKey", key);
+  },
+  getAnthropicModel(): string {
+    return kvGet("anthropicModel") ?? "";
+  },
+  setAnthropicModel(model: string): void {
+    kvSet("anthropicModel", model);
   },
 };

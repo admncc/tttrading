@@ -13,6 +13,9 @@ import { pushStats } from "../stats/service.js";
 /** Minimum confidence required to act on a parsed signal. */
 const ACT_THRESHOLD = 0.6;
 
+/** Trade ids currently being closed, to prevent concurrent double-closes. */
+const closing = new Set<string>();
+
 function symbolAllowed(group: Group, symbol: string): boolean {
   const allow = group.settings.allowedSymbols;
   if (!allow || allow.length === 0) return true;
@@ -294,51 +297,76 @@ export async function closeTrade(tradeId: string, exitPriceOverride?: number) {
   if (!trade || trade.status !== "open") return trade;
   // Shadow trades are hypothetical — resolved by the monitor, never sent to the exchange.
   if (trade.shadow) return trade;
-
-  let exitPrice = exitPriceOverride;
-  if (exitPrice === undefined) {
-    try {
-      exitPrice = (await hyperliquid.getMidPrice(trade.symbol)) ?? trade.entryPrice;
-    } catch {
-      exitPrice = trade.entryPrice; // fall back to entry if the price feed is down
+  // Guard against double-close (double click, or racing the monitor).
+  if (closing.has(tradeId)) return trade;
+  closing.add(tradeId);
+  try {
+    let exitPrice = exitPriceOverride;
+    if (exitPrice === undefined || exitPrice <= 0) {
+      let mid: number | undefined;
+      try {
+        mid = await hyperliquid.getMidPrice(trade.symbol);
+      } catch {
+        /* price feed down */
+      }
+      exitPrice = mid && mid > 0 ? mid : trade.entryPrice;
     }
-  }
 
-  // Cancel any resting SL/TP orders so they don't fire after we close.
-  const restingIds = [trade.slOrderId, ...(trade.tpOrderIds ?? [])].filter(
-    (x): x is string => !!x,
-  );
-  if (restingIds.length) {
-    await hyperliquid.cancelOrders(trade.symbol, restingIds);
-  }
+    // Cancel any resting SL/TP orders so they don't fire after we close.
+    const restingIds = [trade.slOrderId, ...(trade.tpOrderIds ?? [])].filter(
+      (x): x is string => !!x,
+    );
+    if (restingIds.length) {
+      await hyperliquid.cancelOrders(trade.symbol, restingIds);
+    }
 
-  if (!trade.simulated && hyperliquid.live) {
-    const result = await hyperliquid.placeMarketOrder({
-      symbol: trade.symbol,
-      side: trade.side === "long" ? "short" : "long", // reduce
-      notionalUsd: exitPrice * trade.size,
-      leverage: trade.leverage,
-      marginMode: "cross",
-      maxSlippage: 0.01,
+    // Portion already scaled out at TP levels vs the remainder we now close.
+    const tps = trade.takeProfits ?? [];
+    const n = tps.length;
+    const fraction = n > 0 ? 1 / n : 0;
+    const tpFilled = Math.min(trade.tpFilledCount ?? 0, n);
+    const remainingFraction = Math.max(0, 1 - tpFilled * fraction);
+    const remainingSize = remainingFraction * trade.size;
+
+    if (!trade.simulated && hyperliquid.live && remainingSize > 0) {
+      const result = await hyperliquid.placeMarketOrder({
+        symbol: trade.symbol,
+        side: trade.side === "long" ? "short" : "long",
+        notionalUsd: exitPrice * remainingSize,
+        leverage: trade.leverage,
+        marginMode: "cross",
+        maxSlippage: 0.01,
+        reduceOnly: true, // never flip into an opposite position
+      });
+      if (result.ok) exitPrice = result.filledPrice;
+    }
+
+    const dir = trade.side === "long" ? 1 : -1;
+    // Banked profit from already-filled TP legs + the remainder at the exit.
+    let gross = 0;
+    let legNotional = 0;
+    for (let i = 0; i < tpFilled; i++) {
+      gross += (tps[i]! - trade.entryPrice) * dir * fraction * trade.size;
+      legNotional += tps[i]! * fraction * trade.size;
+    }
+    gross += (exitPrice - trade.entryPrice) * dir * remainingSize;
+    const feeBase = trade.entryPrice * trade.size + legNotional + exitPrice * remainingSize;
+    const fees = feeBase * 0.00035;
+    const updated = tradesRepo.update(tradeId, {
+      status: "closed",
+      exitPrice,
+      realizedPnl: gross - fees,
+      fees: (trade.fees ?? 0) + fees,
+      closedAt: new Date().toISOString(),
     });
-    if (result.ok) exitPrice = result.filledPrice;
+    if (updated) {
+      broadcast({ type: "trade", trade: updated });
+      pushStats();
+      alertClosed(updated);
+      log.info(`Closed ${trade.symbol} ${trade.side} — PnL ${(gross - fees).toFixed(2)} USDC`);
+    }
+    return updated;
+  } finally {
+    closing.delete(tradeId);
   }
-
-  const dir = trade.side === "long" ? 1 : -1;
-  const grossPnl = (exitPrice - trade.entryPrice) * dir * trade.size;
-  const fees = trade.notionalUsd * 0.00035;
-  const updated = tradesRepo.update(tradeId, {
-    status: "closed",
-    exitPrice,
-    realizedPnl: grossPnl - fees,
-    fees: (trade.fees ?? 0) + fees,
-    closedAt: new Date().toISOString(),
-  });
-  if (updated) {
-    broadcast({ type: "trade", trade: updated });
-    pushStats();
-    alertClosed(updated);
-    log.info(`Closed ${trade.symbol} ${trade.side} — PnL ${(grossPnl - fees).toFixed(2)} USDC`);
-  }
-  return updated;
 }

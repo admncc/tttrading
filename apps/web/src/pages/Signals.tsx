@@ -72,9 +72,13 @@ export function Signals({
   const pending = signals.filter((s) => s.status === "pending");
 
   const act = async (id: string, action: "confirm" | "reject") => {
-    if (action === "confirm") await api.confirmSignal(id);
-    else await api.rejectSignal(id);
-    onChange();
+    try {
+      if (action === "confirm") await api.confirmSignal(id);
+      else await api.rejectSignal(id);
+      onChange();
+    } catch (e) {
+      alert(`${action} failed: ${e instanceof Error ? e.message : e}`);
+    }
   };
 
   return (

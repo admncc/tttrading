@@ -1,6 +1,80 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Group, GroupInput } from "@tttrading/shared";
 import { api } from "../api.js";
+
+/** Panel to configure the Anthropic key/model for LLM signal parsing. */
+function AiSettings() {
+  const [configured, setConfigured] = useState(false);
+  const [source, setSource] = useState("none");
+  const [model, setModel] = useState("");
+  const [key, setKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const load = () =>
+    api
+      .getSettings()
+      .then((s) => {
+        setConfigured(s.anthropicConfigured);
+        setSource(s.anthropicKeySource);
+        setModel(s.anthropicModel);
+      })
+      .catch(() => {});
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const save = async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await api.saveAnthropic(key.trim() || undefined, model.trim() || undefined);
+      setKey("");
+      setMsg("Saved.");
+      await load();
+    } catch (e) {
+      setMsg(`Failed: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="panel">
+      <h2>AI parsing (Anthropic)</h2>
+      <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>
+        Enables the LLM fallback for messages the regex parser can't read.{" "}
+        {configured ? `Key configured (source: ${source}).` : "No key set — regex only."}
+      </div>
+      <div className="form-grid">
+        <div className="field">
+          <label>API key {configured ? "(leave blank to keep current)" : ""}</label>
+          <input
+            type="password"
+            placeholder={configured ? "•••••••• set" : "sk-ant-..."}
+            value={key}
+            onChange={(e) => setKey(e.target.value)}
+          />
+        </div>
+        <div className="field">
+          <label>Model</label>
+          <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="claude-sonnet-5" />
+        </div>
+      </div>
+      <div className="btn-row">
+        <button className="primary" disabled={busy} onClick={save}>
+          {busy ? "Saving…" : "Save AI settings"}
+        </button>
+        {key && (
+          <button className="danger" disabled={busy} onClick={() => { setKey(""); void api.saveAnthropic("", undefined).then(load); }}>
+            Clear key
+          </button>
+        )}
+        {msg && <span className="muted" style={{ fontSize: 12 }}>{msg}</span>}
+      </div>
+    </div>
+  );
+}
 
 const BLANK: GroupInput = {
   name: "",
@@ -194,19 +268,31 @@ export function Groups({ groups, onChange }: { groups: Group[]; onChange: () => 
   const [creating, setCreating] = useState(false);
 
   const create = async (g: GroupInput) => {
-    await api.createGroup(g);
-    setCreating(false);
-    onChange();
+    try {
+      await api.createGroup(g);
+      setCreating(false);
+      onChange();
+    } catch (e) {
+      alert(`Create failed: ${e instanceof Error ? e.message : e}`);
+    }
   };
   const update = async (id: string, g: GroupInput) => {
-    await api.updateGroup(id, g);
-    setEditing(null);
-    onChange();
+    try {
+      await api.updateGroup(id, g);
+      setEditing(null);
+      onChange();
+    } catch (e) {
+      alert(`Save failed: ${e instanceof Error ? e.message : e}`);
+    }
   };
   const remove = async (id: string) => {
     if (!confirm("Delete this group?")) return;
-    await api.deleteGroup(id);
-    onChange();
+    try {
+      await api.deleteGroup(id);
+      onChange();
+    } catch (e) {
+      alert(`Delete failed: ${e instanceof Error ? e.message : e}`);
+    }
   };
 
   return (
@@ -222,6 +308,8 @@ export function Groups({ groups, onChange }: { groups: Group[]; onChange: () => 
           </button>
         </div>
       </div>
+
+      <AiSettings />
 
       {creating && (
         <GroupForm initial={BLANK} onSave={create} onCancel={() => setCreating(false)} />
