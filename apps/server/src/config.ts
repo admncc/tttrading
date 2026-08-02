@@ -75,6 +75,14 @@ export const config = {
     onFill: bool(process.env.ALERT_ON_FILL, true),
     onError: bool(process.env.ALERT_ON_ERROR, true),
     onBlocked: bool(process.env.ALERT_ON_BLOCKED, false),
+    /** Send a daily performance summary to the alert chat. */
+    dailyReport: bool(process.env.ALERT_DAILY_REPORT, false),
+    /** Send a weekly performance summary to the alert chat. */
+    weeklyReport: bool(process.env.ALERT_WEEKLY_REPORT, false),
+    /** Hour (UTC) at which the daily/weekly report is sent. */
+    reportHour: num(process.env.ALERT_REPORT_HOUR, 8),
+    /** Weekday for the weekly report (0=Sun … 1=Mon … 6=Sat). */
+    reportWeekday: num(process.env.ALERT_REPORT_WEEKDAY, 1),
   },
 
   /** Directory of the built web app to serve in production (if present). */

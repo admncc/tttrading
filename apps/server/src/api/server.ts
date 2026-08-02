@@ -17,6 +17,7 @@ import {
   trades as tradesRepo,
 } from "../db/repositories.js";
 import { dashboard, analytics } from "../stats/service.js";
+import { sendReport } from "../alerts/report.js";
 import { hyperliquid } from "../hyperliquid/connector.js";
 import {
   closeTrade,
@@ -327,6 +328,14 @@ export async function buildServer() {
 
   /* ------------------------- stats & positions ------------------------ */
   app.get("/api/stats", async () => dashboard());
+
+  // Send a daily/weekly performance report to the alert chat now (test/manual).
+  app.post<{ Querystring: { period?: string } }>("/api/report/send", async (req, reply) => {
+    const period = req.query.period === "weekly" ? "weekly" : "daily";
+    const sent = await sendReport(period);
+    if (!sent) return reply.code(400).send({ error: "alerts not configured" });
+    return { ok: true, period };
+  });
 
   // Rich analytics: performance by group, symbol and side, with filters.
   app.get<{ Querystring: { from?: string; to?: string; includeShadow?: string } }>(

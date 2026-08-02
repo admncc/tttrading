@@ -158,6 +158,18 @@ export function Analytics() {
           >
             {includeShadow ? "✓ shadow" : "shadow"}
           </button>
+          <button
+            className="ghost"
+            title="Send a daily summary to the Telegram alert chat now"
+            onClick={() =>
+              api
+                .sendReport("daily")
+                .then(() => alert("Daily report sent to the alert chat."))
+                .catch((e) => alert(`Report failed: ${e instanceof Error ? e.message : e}`))
+            }
+          >
+            Send report
+          </button>
           <button className="ghost" onClick={load}>
             ↻
           </button>

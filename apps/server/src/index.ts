@@ -8,6 +8,7 @@ import { seedDemo } from "./db/seed.js";
 import { buildServer } from "./api/server.js";
 import { startTelegram, stopTelegram } from "./telegram/listener.js";
 import { startMonitor, stopMonitor } from "./execution/monitor.js";
+import { startReports, stopReports } from "./alerts/report.js";
 import { broadcast } from "./ws/hub.js";
 
 async function main(): Promise<void> {
@@ -29,6 +30,7 @@ async function main(): Promise<void> {
 
   await startTelegram();
   startMonitor();
+  startReports();
 
   log.info(`Alerts ${alertsEnabled ? "enabled (Telegram bot)" : "disabled"}.`);
   log.info(`LLM signal fallback ${llmReady() ? "enabled" : "disabled (regex only)"}.`);
@@ -40,6 +42,7 @@ async function main(): Promise<void> {
   const shutdown = async () => {
     log.info("Shutting down...");
     stopMonitor();
+    stopReports();
     await stopTelegram();
     await app.close();
     process.exit(0);
