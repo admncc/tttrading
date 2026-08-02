@@ -8,17 +8,43 @@ function shortAddr(a: string): string {
 
 export function AccountPanel() {
   const [a, setA] = useState<AccountInfo | null>(null);
+  const [amount, setAmount] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
 
+  const load = () => api.account().then(setA).catch(() => {});
   useEffect(() => {
     let alive = true;
-    const load = () => api.account().then((d) => alive && setA(d)).catch(() => {});
-    void load();
-    const poll = setInterval(load, 20_000);
+    const run = () => api.account().then((d) => alive && setA(d)).catch(() => {});
+    void run();
+    const poll = setInterval(run, 20_000);
     return () => {
       alive = false;
       clearInterval(poll);
     };
   }, []);
+
+  const move = async (toPerp: boolean) => {
+    const amt = Number(amount);
+    if (!Number.isFinite(amt) || amt <= 0) {
+      setMsg("Enter a positive amount.");
+      return;
+    }
+    const dir = toPerp ? "Spot → Perps" : "Perps → Spot";
+    if (!confirm(`Transfer ${amt} USDC (${dir})? This is a real ${a?.env} transfer.`)) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      await api.transferUsd(amt, toPerp);
+      setMsg(`Transferred ${amt} USDC (${dir}).`);
+      setAmount("");
+      await load();
+    } catch (e) {
+      setMsg(`Failed: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   if (!a) return null;
 
@@ -73,6 +99,45 @@ export function AccountPanel() {
               Could not read account: {a.error}
             </div>
           )}
+
+          <div style={{ marginBottom: a.positions.length ? 16 : 0 }}>
+            <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
+              Move collateral between spot and the perps account. Perp trading uses
+              the <strong>Perps</strong> balance.
+            </div>
+            <div className="btn-row" style={{ alignItems: "center" }}>
+              <input
+                style={{ maxWidth: 160 }}
+                type="number"
+                min={0}
+                placeholder="USDC amount"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+              />
+              <button
+                className="primary"
+                disabled={busy}
+                onClick={() => void move(true)}
+                title="Fund perp trading"
+              >
+                {busy ? "…" : "Spot → Perps"}
+              </button>
+              <button className="ghost" disabled={busy} onClick={() => void move(false)}>
+                Perps → Spot
+              </button>
+              {a.spotUsdc !== undefined && a.spotUsdc > 0 && (
+                <button
+                  className="ghost"
+                  disabled={busy}
+                  onClick={() => setAmount(String(Math.floor(a.spotUsdc!)))}
+                  title="Fill with your full spot balance"
+                >
+                  Max
+                </button>
+              )}
+              {msg && <span className="muted" style={{ fontSize: 12 }}>{msg}</span>}
+            </div>
+          </div>
 
           {a.positions.length > 0 && (
             <div className="table-scroll">

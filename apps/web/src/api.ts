@@ -129,6 +129,11 @@ export const api = {
 
   telegramHealth: () => req<TelegramHealth>("/api/telegram/health"),
   account: () => req<AccountInfo>("/api/account"),
+  transferUsd: (amount: number, toPerp: boolean) =>
+    req<{ ok: boolean }>("/api/account/transfer", {
+      method: "POST",
+      body: JSON.stringify({ amount, toPerp }),
+    }),
 
   suggestInstructions: (id: string) =>
     req<{ instructions: string; rationale: string; sampleSize: number; error?: string }>(

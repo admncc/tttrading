@@ -201,6 +201,21 @@ export class HyperliquidConnector {
     };
   }
 
+  /**
+   * Move USDC between the spot/unified wallet and the perps margin account.
+   * toPerp=true funds perp trading (Spot -> Perp). Requires a signing key.
+   */
+  async transferUsd(amount: number, toPerp: boolean): Promise<{ ok: boolean; error?: string }> {
+    if (!this.live || !this.exchange) return { ok: false, error: "not connected (no signing key)" };
+    if (!Number.isFinite(amount) || amount <= 0) return { ok: false, error: "amount must be > 0" };
+    try {
+      await this.exchange.usdClassTransfer({ amount: String(amount), toPerp });
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
   /** Spot USDC balance (the unified/spot wallet) for the configured account. */
   async getSpotUsdc(): Promise<number | null> {
     const address = this.publicAddress();

@@ -338,6 +338,24 @@ export async function buildServer() {
   // last activity), so a silent outage is visible in the desk.
   app.get("/api/telegram/health", async () => getListenerHealth());
 
+  // Move USDC between the spot/unified wallet and the perps margin account.
+  // A deliberate, user-initiated account operation (not an automated trade), so
+  // it runs whenever a signing key is present — even in shadow/test mode.
+  app.post<{ Body: { amount?: number; toPerp?: boolean } }>(
+    "/api/account/transfer",
+    async (req, reply) => {
+      const amount = Number(req.body?.amount);
+      const toPerp = req.body?.toPerp !== false; // default: spot -> perp
+      if (!Number.isFinite(amount) || amount <= 0) {
+        return reply.code(400).send({ error: "amount must be a positive number" });
+      }
+      const res = await hyperliquid.transferUsd(amount, toPerp);
+      if (!res.ok) return reply.code(400).send({ error: res.error });
+      log.info(`Transferred ${amount} USDC ${toPerp ? "spot→perp" : "perp→spot"}.`);
+      return { ok: true };
+    },
+  );
+
   app.get("/api/positions", async () => {
     try {
       return await hyperliquid.getPositions();
