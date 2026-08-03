@@ -649,6 +649,30 @@ export const settings = {
   setExchangeFlag(key: string, on: boolean): void {
     kvSet(`ex:${key}`, on ? "true" : "false");
   },
+  /** Venue routing priority (first = tried first). Non-secret; survives backup. */
+  getExchangePriority(): string[] {
+    const def = ["hyperliquid", "aster", "mexc"];
+    const raw = kvGet("exchangePriority");
+    if (!raw) return def;
+    try {
+      const arr = JSON.parse(raw) as unknown;
+      if (Array.isArray(arr)) {
+        const valid = arr.filter((x): x is string => typeof x === "string" && def.includes(x));
+        // Append any venue missing from a stale/partial stored list.
+        for (const v of def) if (!valid.includes(v)) valid.push(v);
+        if (valid.length) return valid;
+      }
+    } catch {
+      /* fall back to default */
+    }
+    return def;
+  },
+  setExchangePriority(order: string[]): void {
+    const known = ["hyperliquid", "aster", "mexc"];
+    const valid = order.filter((x) => known.includes(x));
+    for (const v of known) if (!valid.includes(v)) valid.push(v);
+    kvSet("exchangePriority", JSON.stringify(valid));
+  },
   /** Every desk-stored exchange key (for backup redaction). */
   exchangeKeys(): string[] {
     const rows = db

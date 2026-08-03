@@ -79,6 +79,8 @@ export function Settings() {
   const [asterSecret, setAsterSecret] = useState("");
   const [asterSecretClear, setAsterSecretClear] = useState(false);
   const [asterBase, setAsterBase] = useState("");
+  // Routing priority (ordered venue names)
+  const [priority, setPriority] = useState<string[]>([]);
   // MEXC
   const [mexcEnabled, setMexcEnabled] = useState(false);
   const [mexcKey, setMexcKey] = useState("");
@@ -92,6 +94,7 @@ export function Settings() {
       .exchanges()
       .then((c) => {
         setCfg(c);
+        setPriority(c.priority);
         setHlAddr(c.hyperliquid.accountAddress ?? "");
         setAsterEnabled(c.aster.enabled);
         setAsterBase(c.aster.baseUrl);
@@ -108,6 +111,7 @@ export function Settings() {
     setMsg(null);
     setErr(null);
     const patch: ExchangesPatch = {
+      priority,
       hyperliquid: {
         ...(hlKeyClear ? { privateKey: "" } : hlKey ? { privateKey: hlKey } : {}),
         accountAddress: hlAddr,
@@ -148,6 +152,16 @@ export function Settings() {
     }
   };
 
+  const movePriority = (i: number, dir: -1 | 1) => {
+    setPriority((p) => {
+      const next = [...p];
+      const j = i + dir;
+      if (j < 0 || j >= next.length) return p;
+      [next[i], next[j]] = [next[j]!, next[i]!];
+      return next;
+    });
+  };
+
   return (
     <div>
       <div className="row-between">
@@ -161,8 +175,8 @@ export function Settings() {
       <p className="muted" style={{ marginTop: 0, maxWidth: 720 }}>
         Keys entered here are stored on the server and take precedence over any set via environment
         variables. Secrets are write-only — they're never sent back to the browser and are stripped
-        from backups. Signals route to Hyperliquid first, then to any enabled backup that lists the
-        coin. <strong>Test on each venue's testnet before going live.</strong>
+        from backups. A signal routes to the first enabled venue (in the priority order below) that
+        lists the coin. <strong>Test on each venue's testnet before going live.</strong>
       </p>
 
       {err && <div className="panel" style={{ color: "#ef4444" }}>{err}</div>}
@@ -170,6 +184,44 @@ export function Settings() {
         <div className="empty">Loading…</div>
       ) : (
         <>
+          {/* Routing priority */}
+          <div className="panel">
+            <h3 style={{ margin: "0 0 8px" }}>Routing priority</h3>
+            <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>
+              A signal goes to the first venue that lists its coin. If an opposing position is already
+              open there, it moves to the next enabled venue (cross-venue hedge).
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, maxWidth: 360 }}>
+              {priority.map((name, i) => (
+                <div
+                  key={name}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    border: "1px solid var(--border)",
+                    borderRadius: 8,
+                    padding: "8px 12px",
+                  }}
+                >
+                  <span className="muted" style={{ width: 18 }}>{i + 1}.</span>
+                  <span style={{ flex: 1, textTransform: "capitalize" }}>{name}</span>
+                  <button className="ghost" disabled={i === 0} onClick={() => movePriority(i, -1)} title="Up">
+                    ↑
+                  </button>
+                  <button
+                    className="ghost"
+                    disabled={i === priority.length - 1}
+                    onClick={() => movePriority(i, 1)}
+                    title="Down"
+                  >
+                    ↓
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+
           {/* Hyperliquid */}
           <div className="panel">
             <div className="row-between">

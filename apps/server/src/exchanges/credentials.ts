@@ -11,6 +11,11 @@ import { settings } from "../db/repositories.js";
  * restart; the Hyperliquid connector rebuilds its signer when its key changes.
  */
 
+/** Venue routing priority order (names), first = tried first. */
+export function exchangePriority(): string[] {
+  return settings.getExchangePriority();
+}
+
 /* ------------------------------ Hyperliquid ---------------------------- */
 export function hlPrivateKey(): string {
   return settings.getExchangeValue("hl.privateKey") || config.hyperliquid.privateKey;

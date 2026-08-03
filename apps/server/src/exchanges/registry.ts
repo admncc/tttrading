@@ -3,22 +3,36 @@ import { log } from "../logger.js";
 import { hyperliquid } from "../hyperliquid/connector.js";
 import { aster } from "./aster.js";
 import { mexc } from "./mexc.js";
-import { asterEnabled, mexcEnabled } from "./credentials.js";
+import { asterEnabled, exchangePriority, mexcEnabled } from "./credentials.js";
 import type { AssetInfo, ExchangeConnector } from "./types.js";
 
+const CONNECTORS: Record<string, ExchangeConnector> = { hyperliquid, aster, mexc };
+
 /**
- * The venues we route across, in PRIORITY order. Hyperliquid is always the
- * primary; a backup only ever catches symbols the primary doesn't list. A
- * backup participates only when it's enabled (env flag or an API key present).
+ * The venues we route across, in the operator-configured PRIORITY order (first =
+ * tried first). A signal routes to the first venue that lists its symbol. A
+ * backup participates only when enabled (desk toggle / env flag / API key).
+ * Hyperliquid is always included (base venue); backups only when enabled.
  */
 function enabledExchanges(): ExchangeConnector[] {
-  const list: ExchangeConnector[] = [hyperliquid];
-  if (asterEnabled()) list.push(aster);
-  if (mexcEnabled()) list.push(mexc);
-  return list;
+  const enabled: Record<string, boolean> = {
+    hyperliquid: true,
+    aster: asterEnabled(),
+    mexc: mexcEnabled(),
+  };
+  const out: ExchangeConnector[] = [];
+  for (const name of exchangePriority()) {
+    const ex = CONNECTORS[name];
+    if (ex && enabled[name] && !out.includes(ex)) out.push(ex);
+  }
+  // Safety: append any enabled venue missing from the priority list.
+  for (const [name, ex] of Object.entries(CONNECTORS)) {
+    if (enabled[name] && !out.includes(ex)) out.push(ex);
+  }
+  return out;
 }
 
-/** The primary venue — the default for reads, account panels and test orders. */
+/** The primary venue for account panel / transfers / test orders (Hyperliquid). */
 export const primary: ExchangeConnector = hyperliquid;
 
 /** Look up a connector by its stored name; falls back to the primary. */

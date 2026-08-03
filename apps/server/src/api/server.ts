@@ -275,6 +275,7 @@ export async function buildServer() {
   // in the DB and override the env; secrets are redacted from backups.
   const exchangesPayload = () => ({
     env: config.tradingEnv,
+    priority: settingsRepo.getExchangePriority(),
     hyperliquid: {
       name: "hyperliquid" as const,
       primary: true,
@@ -326,6 +327,7 @@ export async function buildServer() {
       .transform((s) => s.trim())
       .refine(isSafeExchangeUrl, "must be a public https:// URL (no internal/loopback hosts)");
     const schema = z.object({
+      priority: z.array(z.enum(["hyperliquid", "aster", "mexc"])).max(3).optional(),
       hyperliquid: z
         .object({
           privateKey: z.string().max(200).optional(), // "" clears the desk-stored key
@@ -353,6 +355,7 @@ export async function buildServer() {
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     const d = parsed.data;
 
+    if (d.priority) settingsRepo.setExchangePriority(d.priority);
     if (d.hyperliquid) {
       if (d.hyperliquid.privateKey !== undefined) {
         settingsRepo.setExchangeValue("hl.privateKey", d.hyperliquid.privateKey.trim());

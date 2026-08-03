@@ -32,6 +32,7 @@ export interface AccountInfo {
 
 export interface ExchangesConfig {
   env: string;
+  priority: string[];
   hyperliquid: {
     name: "hyperliquid";
     primary: boolean;
@@ -63,6 +64,7 @@ export interface ExchangesConfig {
 }
 
 export interface ExchangesPatch {
+  priority?: string[];
   hyperliquid?: { privateKey?: string; accountAddress?: string };
   aster?: { enabled?: boolean; apiKey?: string; apiSecret?: string; baseUrl?: string };
   mexc?: { enabled?: boolean; apiKey?: string; apiSecret?: string; baseUrl?: string };
