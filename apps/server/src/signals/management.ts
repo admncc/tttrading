@@ -35,6 +35,13 @@ const RE_CANCEL_WORD = /\bcancel(?:led|ed|ing)?\b/i;
 // "risk free" / "move SL to entry / breakeven".
 const RE_BE =
   /\b(break\s*even|risk[-\s]?free)\b|\bmov\w+\b[^.\n]{0,40}\b(?:sl|stop|invalidation)\b[^.\n]{0,25}\b(?:entry|break\s*even|be)\b/i;
+// "move to BE" with the bare abbreviation. Case-SENSITIVE uppercase BE + a move
+// verb, so it won't fire on ordinary prose like "going to be" / "to be honest".
+const RE_BE_ABBR = /\bmov\w+[^.\n]{0,25}\bto\s+BE\b/;
+/** True when the message asks to move the stop to break-even (spelled or "to BE"). */
+function isBreakeven(text: string): boolean {
+  return RE_BE.test(text) || RE_BE_ABBR.test(text);
+}
 // "moving the SL/invalidation to 61491.4".
 const RE_SLMOVE =
   /\b(?:mov\w+|adjust\w*|trail\w*|reduc\w*\s+risk)\b[^.\n]{0,40}\b(sl|stop\s*loss|stop|invalidation)\b[^0-9\n]{0,20}([0-9][0-9.,]*)/i;
@@ -74,13 +81,13 @@ export function classifyManagementAll(text: string): ManagementAction[] {
   if (pm) {
     const pct = Number(pm[1]);
     if (Number.isFinite(pct) && pct > 0 && pct < 100) {
-      add({ kind: "partial_close", symbol, fraction: pct / 100, alsoBreakeven: RE_BE.test(text), note: `book ${pct}%` });
+      add({ kind: "partial_close", symbol, fraction: pct / 100, alsoBreakeven: isBreakeven(text), note: `book ${pct}%` });
       partial = true;
     }
   }
 
   // Break-even as its own intent only when a partial didn't already fold it in.
-  if (!partial && RE_BE.test(text)) add({ kind: "sl_breakeven", symbol, note: "SL to break-even" });
+  if (!partial && isBreakeven(text)) add({ kind: "sl_breakeven", symbol, note: "SL to break-even" });
 
   const sm = text.match(RE_SLMOVE);
   if (sm) {

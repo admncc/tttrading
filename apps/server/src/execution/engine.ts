@@ -328,10 +328,15 @@ async function partialClose(tradeInput: Trade, rawFraction: number): Promise<voi
  * symbol we truly have a position/order in, so unrelated chatter can't select one.
  */
 function deriveSymbol(action: ManagementAction, held: string[], rawText: string): string | undefined {
-  return (
-    action.symbol?.toUpperCase() ??
-    held.find((c) => new RegExp(`\\b${c.replace(/[^A-Z0-9]/g, "")}\\b`, "i").test(rawText))
-  );
+  if (action.symbol) return action.symbol.toUpperCase();
+  // Derive from held coins named in the text — but ONLY tickers ≥3 chars, so
+  // short word-like symbols (ME, OP, ID, BE, GO) can't match ordinary English
+  // ("book 50% for me"). Two-char coins must be tagged ($OP) or be the sole
+  // managed position (the single-position fallback in applyManagement handles that).
+  return held.find((c) => {
+    const clean = c.replace(/[^A-Z0-9]/g, "");
+    return clean.length >= 3 && new RegExp(`\\b${clean}\\b`, "i").test(rawText);
+  });
 }
 
 /**
@@ -1341,14 +1346,6 @@ export async function closeTrade(tradeId: string, exitPriceOverride?: number) {
       exitPrice = mid && mid > 0 ? mid : trade.entryPrice;
     }
 
-    // Cancel any resting SL/TP orders so they don't fire after we close.
-    const restingIds = [trade.slOrderId, ...(trade.tpOrderIds ?? [])].filter(
-      (x): x is string => !!x,
-    );
-    if (restingIds.length) {
-      await ex.cancelOrders(trade.symbol, restingIds);
-    }
-
     // Portion already scaled out at TP levels vs the remainder we now close.
     const tps = trade.takeProfits ?? [];
     const n = tps.length;
@@ -1358,6 +1355,9 @@ export async function closeTrade(tradeId: string, exitPriceOverride?: number) {
     const remainingSize = remainingFraction * trade.size;
 
     if (!trade.simulated && ex.live && remainingSize > 0) {
+      // Send the reduce-only close FIRST — the resting SL/TP are only cancelled
+      // AFTER it confirms, so a failed close never strips a still-live position
+      // of its protection.
       const result = await ex.placeMarketOrder({
         symbol: trade.symbol,
         side: trade.side === "long" ? "short" : "long",
@@ -1369,14 +1369,42 @@ export async function closeTrade(tradeId: string, exitPriceOverride?: number) {
         force: true, // real position → close on the exchange even in test mode
       });
       if (!result.ok) {
-        // The exchange did NOT reduce the position — do not mark it closed, or
-        // the desk would show a flat trade while a live position runs on with
-        // its SL/TP already cancelled above.
-        log.error(`closeTrade: exchange close failed for ${trade.symbol}: ${result.error}`);
-        alertError(`close ${trade.symbol} (${trade.groupName})`, result.error ?? "unknown");
-        return tradesRepo.get(tradeId);
+        // The order was rejected. If the position is ALREADY FLAT on the exchange
+        // (it netted against an opposite trade, or was closed manually there),
+        // don't leave a ghost "open" trade that can never be closed — book it as
+        // closed at the mid. Only keep the error when a real position still runs;
+        // its SL/TP are still in place because we haven't cancelled them yet.
+        let flat = false;
+        try {
+          const positions = await ex.getPositions();
+          flat = !positions.some(
+            (p) =>
+              p.symbol.toUpperCase() === trade.symbol.toUpperCase() &&
+              p.size !== 0 &&
+              (trade.side === "long" ? p.size > 0 : p.size < 0),
+          );
+        } catch {
+          flat = false; // couldn't verify — treat as still-open and surface the error
+        }
+        if (!flat) {
+          log.error(`closeTrade: exchange close failed for ${trade.symbol}: ${result.error}`);
+          alertError(`close ${trade.symbol} (${trade.groupName})`, result.error ?? "unknown");
+          return tradesRepo.get(tradeId);
+        }
+        log.warn(`closeTrade: ${trade.symbol} already flat on ${ex.name} (${result.error}) — booking as closed at mid.`);
+        // fall through: exitPrice stays the mid we resolved above.
+      } else {
+        exitPrice = result.filledPrice;
       }
-      exitPrice = result.filledPrice;
+    }
+
+    // Position is now closed/flat (or simulated) — NOW cancel any resting SL/TP so
+    // they can't fire on a future position. cancelOrders no-ops when not live.
+    const restingIds = [trade.slOrderId, ...(trade.tpOrderIds ?? [])].filter(
+      (x): x is string => !!x,
+    );
+    if (restingIds.length) {
+      await ex.cancelOrders(trade.symbol, restingIds);
     }
 
     const dir = trade.side === "long" ? 1 : -1;

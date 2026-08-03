@@ -15,6 +15,37 @@ import type { FastifyRequest } from "fastify";
 function audit(req: FastifyRequest, message: string, meta?: Record<string, unknown>): void {
   event("audit", message, { ...meta, ip: req.ip }, { level: "warn" });
 }
+
+/**
+ * A desk-entered exchange base URL must be a PUBLIC https host — the connectors
+ * send the API key in a header, so allowing an internal/loopback/metadata host
+ * would be an SSRF + key-exfiltration vector. Empty clears to the env default.
+ * (Advanced/local overrides can still be set via the env var, which is trusted.)
+ */
+function isSafeExchangeUrl(s: string): boolean {
+  if (s === "") return true;
+  let u: URL;
+  try {
+    u = new URL(s);
+  } catch {
+    return false;
+  }
+  if (u.protocol !== "https:") return false;
+  const h = u.hostname.toLowerCase();
+  if (h === "localhost" || h.endsWith(".local") || h.endsWith(".internal") || h.endsWith(".lan")) return false;
+  if (h.includes(":") || h === "0.0.0.0") return false; // IPv6 literal / wildcard
+  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (m) {
+    const a = Number(m[1]);
+    const b = Number(m[2]);
+    // Block private / loopback / link-local / multicast IPv4 literals.
+    if (a === 0 || a === 10 || a === 127 || a >= 224) return false;
+    if (a === 169 && b === 254) return false;
+    if (a === 192 && b === 168) return false;
+    if (a === 172 && b >= 16 && b <= 31) return false;
+  }
+  return true;
+}
 import {
   groups as groupsRepo,
   logs as logsRepo,
@@ -120,11 +151,18 @@ export async function buildServer() {
   // Guard every /api route except health and login. WebSocket auth is handled
   // inside the /ws handler (query token). No-op when auth is disabled.
   app.addHook("onRequest", async (req, reply) => {
-    if (!authEnabled) return;
     if (req.method === "OPTIONS") return;
     const path = req.url.split("?")[0] ?? "";
     if (!path.startsWith("/api/")) return;
     if (path === "/api/health" || path === "/api/login") return;
+    if (!authEnabled) {
+      // No password configured: allow safe reads, but FAIL CLOSED on every
+      // mutation (a mutating route must never run unauthenticated — closing a
+      // position, confirming a signal, changing keys, etc.). Set DESK_PASSWORD.
+      const m = req.method.toUpperCase();
+      if (m === "GET" || m === "HEAD") return;
+      return reply.code(403).send({ error: "Set DESK_PASSWORD to enable changes." });
+    }
     if (!verifyToken(bearer(req.headers.authorization))) {
       return reply.code(401).send({ error: "unauthorized" });
     }
@@ -285,7 +323,8 @@ export async function buildServer() {
     const url = z
       .string()
       .max(200)
-      .refine((s) => s === "" || /^https?:\/\//.test(s.trim()), "must be an http(s) URL");
+      .transform((s) => s.trim())
+      .refine(isSafeExchangeUrl, "must be a public https:// URL (no internal/loopback hosts)");
     const schema = z.object({
       hyperliquid: z
         .object({
@@ -547,7 +586,7 @@ export async function buildServer() {
 
   // Manually set/move the stop-loss on a trade.
   app.post<{ Params: { id: string } }>("/api/trades/:id/stop", async (req, reply) => {
-    const parsed = z.object({ price: z.number().positive() }).safeParse(req.body ?? {});
+    const parsed = z.object({ price: z.number().finite().positive().max(1e12) }).safeParse(req.body ?? {});
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     const res = await setTradeStop(req.params.id, parsed.data.price);
     if (!res.ok) return reply.code(400).send({ error: res.error });
@@ -558,7 +597,7 @@ export async function buildServer() {
   // Manually replace the take-profit levels on a trade.
   app.post<{ Params: { id: string } }>("/api/trades/:id/take-profits", async (req, reply) => {
     const parsed = z
-      .object({ prices: z.array(z.number().positive()).max(20) })
+      .object({ prices: z.array(z.number().finite().positive().max(1e12)).max(20) })
       .safeParse(req.body ?? {});
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     const res = await setTradeTakeProfits(req.params.id, parsed.data.prices);

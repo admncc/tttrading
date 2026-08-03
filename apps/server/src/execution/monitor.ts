@@ -89,10 +89,12 @@ async function reconcileExchange(ex: ExchangeConnector): Promise<void> {
     }
   }
   await reconcileWorking(ex, byOid, working);
-  // MEXC: SL/TP fire as plan orders whose triggered fills carry a DIFFERENT order
-  // id than the plan id we stored, so fill-matching (above) can't see the close.
-  // Fall back to position state — if the position is flat, book the close.
-  if (ex.name === "mexc" && open.length > 0) {
+  // Position-state fallback for closes that fill-matching can't see: MEXC SL/TP
+  // plan orders (whose triggered fills carry a different id), and — critically —
+  // positions that vanished on the exchange without a bracket fill, e.g. a manual
+  // ETH long + short that NETTED to flat on Hyperliquid. If the position is gone,
+  // book the trade closed. Guarded against misconfigured reads (see the fn).
+  if (open.length > 0) {
     try {
       if (await reconcileByPosition(ex, open, fills)) changed = true;
     } catch (err) {
@@ -116,6 +118,19 @@ async function reconcileByPosition(
   fills: FillLite[],
 ): Promise<boolean> {
   const positions = await ex.getPositions(); // throws → caller skips (inconclusive)
+  // Guard against a misconfigured read (e.g. wrong account address → always an
+  // empty list) mass-closing real trades: when NO positions are returned, only
+  // proceed if the account clearly reads (positive equity). Otherwise it's
+  // inconclusive — leave the trades untouched (the user can still close manually).
+  if (positions.length === 0) {
+    let equity = 0;
+    try {
+      equity = (await ex.getAccountSummary())?.accountValue ?? 0;
+    } catch {
+      return false;
+    }
+    if (!(equity > 0)) return false;
+  }
   let changed = false;
   for (const t of open) {
     if (closing.has(t.id)) continue;
