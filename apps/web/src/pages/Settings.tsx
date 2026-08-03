@@ -1,5 +1,13 @@
 import { useEffect, useState } from "react";
-import { api, type ExchangesConfig, type ExchangesPatch } from "../api.js";
+import { api, type ExchangesConfig, type ExchangesPatch, type HlVenue } from "../api.js";
+
+/** Local edit state for one Hyperliquid network venue. */
+interface HlEdit {
+  key: string;
+  clear: boolean;
+  addr: string;
+  enabled: boolean;
+}
 
 /** A masked secret field: empty means "leave unchanged"; a clear toggle wipes it. */
 function SecretField({
@@ -62,16 +70,69 @@ function VenueBadge({ live, enabled }: { live: boolean; enabled?: boolean }) {
   );
 }
 
+/** One Hyperliquid network venue (mainnet or testnet) with keys + enable. */
+function HlPanel({
+  label,
+  subtitle,
+  venue,
+  edit,
+  onEdit,
+}: {
+  label: string;
+  subtitle: string;
+  venue: HlVenue;
+  edit: HlEdit;
+  onEdit: (patch: Partial<HlEdit>) => void;
+}) {
+  return (
+    <div className="panel">
+      <div className="row-between">
+        <h3 style={{ margin: 0 }}>
+          {label} <span className="muted" style={{ fontSize: 12 }}>· {subtitle}</span>
+          <VenueBadge live={venue.live} enabled={edit.enabled} />
+        </h3>
+        <label className="muted" style={{ fontSize: 13, display: "inline-flex", gap: 6 }}>
+          <input type="checkbox" checked={edit.enabled} onChange={(e) => onEdit({ enabled: e.target.checked })} />
+          enabled
+        </label>
+      </div>
+      <SecretField
+        label="Private key (API/agent wallet, 0x…)"
+        configured={venue.privateKeyConfigured}
+        value={edit.key}
+        onChange={(v) => onEdit({ key: v })}
+        clear={edit.clear}
+        onClear={(v) => onEdit({ clear: v })}
+      />
+      <label style={{ display: "block", marginBottom: 8 }}>
+        <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>
+          Account address (master, for reading state — optional)
+        </div>
+        <input
+          value={edit.addr}
+          onChange={(e) => onEdit({ addr: e.target.value })}
+          placeholder="0x… (defaults to the signer)"
+          style={{ width: "100%" }}
+        />
+      </label>
+      {venue.signer && (
+        <div className="muted" style={{ fontSize: 11 }}>
+          Signer address: <code>{venue.signer}</code>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Settings() {
   const [cfg, setCfg] = useState<ExchangesConfig | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
-  // HL
-  const [hlKey, setHlKey] = useState("");
-  const [hlKeyClear, setHlKeyClear] = useState(false);
-  const [hlAddr, setHlAddr] = useState("");
+  // HL (mainnet + testnet as separate venues)
+  const [hlMain, setHlMain] = useState<HlEdit>({ key: "", clear: false, addr: "", enabled: false });
+  const [hlTest, setHlTest] = useState<HlEdit>({ key: "", clear: false, addr: "", enabled: false });
   // Aster
   const [asterEnabled, setAsterEnabled] = useState(false);
   const [asterKey, setAsterKey] = useState("");
@@ -95,7 +156,8 @@ export function Settings() {
       .then((c) => {
         setCfg(c);
         setPriority(c.priority);
-        setHlAddr(c.hyperliquid.accountAddress ?? "");
+        setHlMain({ key: "", clear: false, addr: c.hyperliquid.accountAddress ?? "", enabled: c.hyperliquid.enabled });
+        setHlTest({ key: "", clear: false, addr: c.hyperliquidTestnet.accountAddress ?? "", enabled: c.hyperliquidTestnet.enabled });
         setAsterEnabled(c.aster.enabled);
         setAsterBase(c.aster.baseUrl);
         setMexcEnabled(c.mexc.enabled);
@@ -110,12 +172,15 @@ export function Settings() {
     setSaving(true);
     setMsg(null);
     setErr(null);
+    const hlPatch = (e: HlEdit) => ({
+      enabled: e.enabled,
+      accountAddress: e.addr,
+      ...(e.clear ? { privateKey: "" } : e.key ? { privateKey: e.key } : {}),
+    });
     const patch: ExchangesPatch = {
       priority,
-      hyperliquid: {
-        ...(hlKeyClear ? { privateKey: "" } : hlKey ? { privateKey: hlKey } : {}),
-        accountAddress: hlAddr,
-      },
+      hyperliquid: hlPatch(hlMain),
+      hyperliquidTestnet: hlPatch(hlTest),
       aster: {
         enabled: asterEnabled,
         baseUrl: asterBase,
@@ -133,8 +198,8 @@ export function Settings() {
       const c = await api.saveExchanges(patch);
       setCfg(c);
       // Reset the secret inputs (values are write-only; never echoed back).
-      setHlKey("");
-      setHlKeyClear(false);
+      setHlMain({ key: "", clear: false, addr: c.hyperliquid.accountAddress ?? "", enabled: c.hyperliquid.enabled });
+      setHlTest({ key: "", clear: false, addr: c.hyperliquidTestnet.accountAddress ?? "", enabled: c.hyperliquidTestnet.enabled });
       setAsterKey("");
       setAsterKeyClear(false);
       setAsterSecret("");
@@ -143,7 +208,6 @@ export function Settings() {
       setMexcKeyClear(false);
       setMexcSecret("");
       setMexcSecretClear(false);
-      setHlAddr(c.hyperliquid.accountAddress ?? "");
       setMsg("Saved. Keys apply immediately; a restart is not required.");
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -222,35 +286,21 @@ export function Settings() {
             </div>
           </div>
 
-          {/* Hyperliquid */}
-          <div className="panel">
-            <div className="row-between">
-              <h3 style={{ margin: 0 }}>
-                Hyperliquid <span className="muted" style={{ fontSize: 12 }}>· primary</span>
-                <VenueBadge live={cfg.hyperliquid.live} />
-              </h3>
-              <span className="muted" style={{ fontSize: 12 }}>env: {cfg.env}</span>
-            </div>
-            <SecretField
-              label="Private key (API/agent wallet, 0x…)"
-              configured={cfg.hyperliquid.privateKeyConfigured}
-              value={hlKey}
-              onChange={setHlKey}
-              clear={hlKeyClear}
-              onClear={setHlKeyClear}
-            />
-            <label style={{ display: "block", marginBottom: 8 }}>
-              <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>
-                Account address (master, for reading state — optional)
-              </div>
-              <input value={hlAddr} onChange={(e) => setHlAddr(e.target.value)} placeholder="0x… (defaults to the signer)" style={{ width: "100%" }} />
-            </label>
-            {cfg.hyperliquid.signer && (
-              <div className="muted" style={{ fontSize: 11 }}>
-                Signer address: <code>{cfg.hyperliquid.signer}</code>
-              </div>
-            )}
-          </div>
+          {/* Hyperliquid — mainnet & testnet as separate venues */}
+          <HlPanel
+            label="Hyperliquid Mainnet"
+            subtitle="real funds"
+            venue={cfg.hyperliquid}
+            edit={hlMain}
+            onEdit={(p) => setHlMain((s) => ({ ...s, ...p }))}
+          />
+          <HlPanel
+            label="Hyperliquid Testnet"
+            subtitle="test funds"
+            venue={cfg.hyperliquidTestnet}
+            edit={hlTest}
+            onEdit={(p) => setHlTest((s) => ({ ...s, ...p }))}
+          />
 
           {/* Aster */}
           <div className="panel">

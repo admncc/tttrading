@@ -651,7 +651,7 @@ export const settings = {
   },
   /** Venue routing priority (first = tried first). Non-secret; survives backup. */
   getExchangePriority(): string[] {
-    const def = ["hyperliquid", "aster", "mexc"];
+    const def = ["hyperliquid", "hyperliquid-testnet", "aster", "mexc"];
     const raw = kvGet("exchangePriority");
     if (!raw) return def;
     try {
@@ -668,7 +668,7 @@ export const settings = {
     return def;
   },
   setExchangePriority(order: string[]): void {
-    const known = ["hyperliquid", "aster", "mexc"];
+    const known = ["hyperliquid", "hyperliquid-testnet", "aster", "mexc"];
     const valid = order.filter((x) => known.includes(x));
     for (const v of known) if (!valid.includes(v)) valid.push(v);
     kvSet("exchangePriority", JSON.stringify(valid));

@@ -1,22 +1,29 @@
 import type { ExchangeName } from "@tttrading/shared";
 import { log } from "../logger.js";
-import { hyperliquid } from "../hyperliquid/connector.js";
+import { hyperliquid, hyperliquidTestnet, HyperliquidConnector } from "../hyperliquid/connector.js";
 import { aster } from "./aster.js";
 import { mexc } from "./mexc.js";
-import { asterEnabled, exchangePriority, mexcEnabled } from "./credentials.js";
+import { asterEnabled, exchangePriority, hlEnabled, mexcEnabled } from "./credentials.js";
+import { config } from "../config.js";
 import type { AssetInfo, ExchangeConnector } from "./types.js";
 
-const CONNECTORS: Record<string, ExchangeConnector> = { hyperliquid, aster, mexc };
+const CONNECTORS: Record<string, ExchangeConnector> = {
+  hyperliquid,
+  "hyperliquid-testnet": hyperliquidTestnet,
+  aster,
+  mexc,
+};
 
 /**
  * The venues we route across, in the operator-configured PRIORITY order (first =
  * tried first). A signal routes to the first venue that lists its symbol. A
- * backup participates only when enabled (desk toggle / env flag / API key).
- * Hyperliquid is always included (base venue); backups only when enabled.
+ * venue participates only when enabled — Hyperliquid mainnet and testnet are two
+ * separate venues, each toggled independently (Settings → Exchanges).
  */
 function enabledExchanges(): ExchangeConnector[] {
   const enabled: Record<string, boolean> = {
-    hyperliquid: true,
+    hyperliquid: hlEnabled("mainnet"),
+    "hyperliquid-testnet": hlEnabled("testnet"),
     aster: asterEnabled(),
     mexc: mexcEnabled(),
   };
@@ -32,17 +39,27 @@ function enabledExchanges(): ExchangeConnector[] {
   return out;
 }
 
-/** The primary venue for account panel / transfers / test orders (Hyperliquid). */
-export const primary: ExchangeConnector = hyperliquid;
-
-/** Look up a connector by its stored name; falls back to the primary. */
+/** Look up a connector by its stored name; falls back to mainnet Hyperliquid. */
 export function byName(name: ExchangeName | undefined): ExchangeConnector {
   if (name === "aster") return aster;
   if (name === "mexc") return mexc;
+  if (name === "hyperliquid-testnet") return hyperliquidTestnet;
   return hyperliquid;
 }
 
-/** All venues currently in the routing chain (primary first). */
+/**
+ * The Hyperliquid connector the account panel / transfer / test-order use: the
+ * live HL venue with the highest routing priority, else the TRADING_ENV network,
+ * else mainnet. (Those features are Hyperliquid-specific.)
+ */
+export function activeHyperliquid(): HyperliquidConnector {
+  for (const ex of enabledExchanges()) {
+    if ((ex === hyperliquid || ex === hyperliquidTestnet) && ex.live) return ex as HyperliquidConnector;
+  }
+  return config.tradingEnv === "mainnet" ? hyperliquid : hyperliquidTestnet;
+}
+
+/** All venues currently in the routing chain (priority order). */
 export function all(): ExchangeConnector[] {
   return enabledExchanges();
 }
@@ -53,7 +70,7 @@ export function all(): ExchangeConnector[] {
  * live position keeps reconciling even after it's been removed from routing.
  */
 export function known(): ExchangeConnector[] {
-  return [hyperliquid, aster, mexc];
+  return [hyperliquid, hyperliquidTestnet, aster, mexc];
 }
 
 export type Resolution =

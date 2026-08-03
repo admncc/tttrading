@@ -30,18 +30,21 @@ export interface AccountInfo {
   error?: string;
 }
 
+export interface HlVenue {
+  name: string;
+  enabled: boolean;
+  live: boolean;
+  privateKeyConfigured: boolean;
+  keySource: string;
+  accountAddress: string | null;
+  signer: string | null;
+}
+
 export interface ExchangesConfig {
   env: string;
   priority: string[];
-  hyperliquid: {
-    name: "hyperliquid";
-    primary: boolean;
-    live: boolean;
-    privateKeyConfigured: boolean;
-    privateKeySource: string;
-    accountAddress: string | null;
-    signer: string | null;
-  };
+  hyperliquid: HlVenue;
+  hyperliquidTestnet: HlVenue;
   aster: {
     name: "aster";
     enabled: boolean;
@@ -65,7 +68,8 @@ export interface ExchangesConfig {
 
 export interface ExchangesPatch {
   priority?: string[];
-  hyperliquid?: { privateKey?: string; accountAddress?: string };
+  hyperliquid?: { enabled?: boolean; privateKey?: string; accountAddress?: string };
+  hyperliquidTestnet?: { enabled?: boolean; privateKey?: string; accountAddress?: string };
   aster?: { enabled?: boolean; apiKey?: string; apiSecret?: string; baseUrl?: string };
   mexc?: { enabled?: boolean; apiKey?: string; apiSecret?: string; baseUrl?: string };
 }

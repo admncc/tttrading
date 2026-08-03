@@ -7,8 +7,7 @@ import {
   trades as tradesRepo,
   settings as settingsRepo,
 } from "../db/repositories.js";
-import { hyperliquid } from "../hyperliquid/connector.js";
-import { byName, resolveAllForSymbol, resolveForSymbol } from "../exchanges/registry.js";
+import { activeHyperliquid, byName, resolveAllForSymbol, resolveForSymbol } from "../exchanges/registry.js";
 import type { ExchangeConnector } from "../exchanges/types.js";
 import { parseSignal } from "../signals/parser.js";
 import { classifyManagementAll, type ManagementAction } from "../signals/management.js";
@@ -487,7 +486,7 @@ async function createShadowTrade(
   // Resolve the venue this symbol would trade on so a backup-only coin still
   // gets a reference price and is tagged with the right exchange.
   const resolved = await resolveForSymbol(parsed.symbol);
-  const ex = resolved.kind === "found" ? resolved.ex : hyperliquid;
+  const ex = resolved.kind === "found" ? resolved.ex : activeHyperliquid();
   // Use the signal's stated entry so SL/TP geometry stays coherent; fall back to
   // the live mid only when the signal didn't give an entry.
   let entry = parsed.entry;
@@ -706,7 +705,7 @@ async function execute(
   // found); when metadata is momentarily unavailable we fall back to the primary
   // and let the order path surface any error. Uses public metadata (runs in test).
   const resolved = await resolveAllForSymbol(parsed.symbol);
-  let ex: ExchangeConnector = hyperliquid;
+  let ex: ExchangeConnector = activeHyperliquid();
   if (resolved.kind === "found") {
     let venues = resolved.venues;
     // Conflict policy: if a venue already holds an OPPOSING position for this
@@ -746,7 +745,7 @@ async function execute(
     return failed;
   } // "unavailable" → keep the primary and let the order path surface errors.
 
-  if (ex.name !== "hyperliquid") {
+  if (ex.name !== "hyperliquid" && ex.name !== "hyperliquid-testnet") {
     event("exec", `Routing ${parsed.symbol} to ${ex.name}`, { exchange: ex.name }, { groupId: group.id, signalId: signal.id });
   }
 
@@ -1256,14 +1255,15 @@ export async function placeTestOrder(params: {
   const block = preTradeGate(notionalUsd);
   if (block) return { ok: false, error: block };
 
+  const hl = activeHyperliquid();
   try {
-    const asset = await hyperliquid.getAsset(symbol);
-    if (!asset) return { ok: false, error: `Crypto NOT found: ${symbol} is not listed on Hyperliquid ${config.tradingEnv} perps` };
+    const asset = await hl.getAsset(symbol);
+    if (!asset) return { ok: false, error: `Crypto NOT found: ${symbol} is not listed on ${hl.name}` };
   } catch {
     /* metadata unavailable — let the order path surface any error */
   }
 
-  const result = await hyperliquid.placeMarketOrder({
+  const result = await hl.placeMarketOrder({
     symbol,
     side,
     notionalUsd,
@@ -1288,7 +1288,7 @@ export async function placeTestOrder(params: {
     side,
     status: "open",
     env: config.tradingEnv,
-    exchange: hyperliquid.name,
+    exchange: hl.name,
     leverage,
     notionalUsd,
     size: result.size,

@@ -17,15 +17,44 @@ export function exchangePriority(): string[] {
 }
 
 /* ------------------------------ Hyperliquid ---------------------------- */
-export function hlPrivateKey(): string {
-  return settings.getExchangeValue("hl.privateKey") || config.hyperliquid.privateKey;
+export type HlNetwork = "testnet" | "mainnet";
+
+export function hlPrivateKey(net: HlNetwork): string {
+  const desk = settings.getExchangeValue(`hl.${net}.privateKey`);
+  if (desk) return desk;
+  // Legacy single desk key mapped to the TRADING_ENV network (backward compat).
+  if (config.tradingEnv === net) {
+    const legacy = settings.getExchangeValue("hl.privateKey");
+    if (legacy) return legacy;
+  }
+  return config.hyperliquid[net].privateKey;
 }
-export function hlAccountAddress(): string {
-  return settings.getExchangeValue("hl.accountAddress") || config.hyperliquid.accountAddress;
+export function hlAccountAddress(net: HlNetwork): string {
+  const desk = settings.getExchangeValue(`hl.${net}.accountAddress`);
+  if (desk) return desk;
+  if (config.tradingEnv === net) {
+    const legacy = settings.getExchangeValue("hl.accountAddress");
+    if (legacy) return legacy;
+  }
+  return config.hyperliquid[net].accountAddress;
 }
-/** Hyperliquid can sign & send real orders (key present, not paper mode). */
-export function hlReady(): boolean {
-  return !config.isPaper && !!hlPrivateKey();
+/** A Hyperliquid network can sign & send real orders (key present, not paper). */
+export function hlReady(net: HlNetwork): boolean {
+  return !config.isPaper && !!hlPrivateKey(net);
+}
+/**
+ * Whether a Hyperliquid network participates in routing. An explicit desk toggle
+ * wins; otherwise the TRADING_ENV network is on by default and the other only
+ * when it has a key (so adding a mainnet key auto-enables mainnet).
+ */
+export function hlEnabled(net: HlNetwork): boolean {
+  const v = settings.getExchangeFlag(`hl.${net}.enabled`);
+  if (v !== undefined) return v;
+  if (config.tradingEnv === net) return true;
+  // Paper mode isn't tied to a network — keep mainnet on as the market-data /
+  // simulation venue so routing always has somewhere to go.
+  if (config.isPaper && net === "mainnet") return true;
+  return !!hlPrivateKey(net);
 }
 
 /* --------------------------------- Aster ------------------------------- */

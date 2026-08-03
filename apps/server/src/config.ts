@@ -56,10 +56,26 @@ export const config = {
   priceTickerMs: num(process.env.PRICE_TICKER_MS, 300000),
 
   hyperliquid: {
-    /** Private key of the Hyperliquid API/agent wallet (0x...). */
-    privateKey: process.env.HL_PRIVATE_KEY || "",
-    /** Main account address (for reading state); defaults to wallet address. */
-    accountAddress: process.env.HL_ACCOUNT_ADDRESS || "",
+    // Per-network keys so testnet and mainnet can run as separate venues. The
+    // legacy HL_PRIVATE_KEY / HL_ACCOUNT_ADDRESS map to the network named by
+    // TRADING_ENV (backward compatible); HL_TESTNET_* / HL_MAINNET_* set each
+    // explicitly and win over the legacy vars.
+    testnet: {
+      privateKey:
+        (process.env.HL_TESTNET_PRIVATE_KEY || "").trim() ||
+        (tradingEnv === "testnet" ? (process.env.HL_PRIVATE_KEY || "").trim() : ""),
+      accountAddress:
+        (process.env.HL_TESTNET_ACCOUNT_ADDRESS || "").trim() ||
+        (tradingEnv === "testnet" ? (process.env.HL_ACCOUNT_ADDRESS || "").trim() : ""),
+    },
+    mainnet: {
+      privateKey:
+        (process.env.HL_MAINNET_PRIVATE_KEY || "").trim() ||
+        (tradingEnv === "mainnet" ? (process.env.HL_PRIVATE_KEY || "").trim() : ""),
+      accountAddress:
+        (process.env.HL_MAINNET_ACCOUNT_ADDRESS || "").trim() ||
+        (tradingEnv === "mainnet" ? (process.env.HL_ACCOUNT_ADDRESS || "").trim() : ""),
+    },
   },
 
   aster: {
@@ -169,7 +185,7 @@ export const authEnabled = !!config.auth.password;
 export const alertsEnabled = !!(config.alerts.telegramBotToken && config.alerts.telegramChatId);
 
 export function hyperliquidReady(): boolean {
-  return !config.isPaper && !!config.hyperliquid.privateKey;
+  return !config.isPaper && (!!config.hyperliquid.testnet.privateKey || !!config.hyperliquid.mainnet.privateKey);
 }
 
 /** Aster can sign & send real orders (key + secret present, not paper mode). */

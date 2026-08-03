@@ -9,7 +9,7 @@ export type TradeSide = "long" | "short";
  * Which venue a trade is (or would be) executed on. Hyperliquid is the primary;
  * others act as backups for symbols the primary doesn't list.
  */
-export type ExchangeName = "hyperliquid" | "aster" | "mexc";
+export type ExchangeName = "hyperliquid" | "hyperliquid-testnet" | "aster" | "mexc";
 
 /** How a group's signals should reach the exchange. */
 export type ExecutionMode = "auto" | "confirm";

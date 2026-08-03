@@ -132,6 +132,26 @@ function migrate(database: Database.Database): void {
       }
     }
   }
+
+  // Hyperliquid was split into separate testnet/mainnet venues. Legacy trades
+  // labelled "hyperliquid" (or NULL from before the column existed) must be
+  // relabelled by their env so they reconcile on the CORRECT network connector —
+  // a testnet trade must never be managed against mainnet. Idempotent.
+  try {
+    const tRes = database
+      .prepare(
+        "UPDATE trades SET exchange='hyperliquid-testnet' WHERE (exchange IS NULL OR exchange='hyperliquid') AND env='testnet'",
+      )
+      .run();
+    const mRes = database
+      .prepare("UPDATE trades SET exchange='hyperliquid' WHERE exchange IS NULL AND env='mainnet'")
+      .run();
+    if (tRes.changes || mRes.changes) {
+      log.info(`Migrated: relabelled ${tRes.changes} testnet + ${mRes.changes} mainnet legacy trades to venue names.`);
+    }
+  } catch (err) {
+    log.warn("Trade venue relabel migration skipped:", err instanceof Error ? err.message : err);
+  }
 }
 
 export const db: Database.Database = open();

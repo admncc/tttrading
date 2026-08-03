@@ -56,14 +56,15 @@ import {
 import { dashboard, analytics } from "../stats/service.js";
 import { sanitizedBackup } from "../db/index.js";
 import { sendReport } from "../alerts/report.js";
-import { hyperliquid } from "../hyperliquid/connector.js";
-import { all as allExchanges, byName as exchangeByName } from "../exchanges/registry.js";
+import { hyperliquid, hyperliquidTestnet } from "../hyperliquid/connector.js";
+import { all as allExchanges, activeHyperliquid, byName as exchangeByName } from "../exchanges/registry.js";
 import {
   asterApiKey,
   asterApiSecret,
   asterBaseUrl,
   asterEnabled,
   hlAccountAddress,
+  hlEnabled,
   hlPrivateKey,
   mexcApiKey,
   mexcApiSecret,
@@ -197,7 +198,7 @@ export async function buildServer() {
   app.get("/api/health", async () => ({
     ok: true,
     env: config.tradingEnv,
-    live: hyperliquid.live,
+    live: activeHyperliquid().live,
     shadowMode: settingsRepo.getShadowMode(),
     tradingPaused: settingsRepo.getTradingPaused(),
     authRequired: authEnabled,
@@ -273,22 +274,24 @@ export async function buildServer() {
   // Never returns secret values — only whether each key is configured, plus the
   // non-secret bits (enabled, base URL, addresses). Desk-entered keys are stored
   // in the DB and override the env; secrets are redacted from backups.
+  const hlBlock = (net: "mainnet" | "testnet", conn: typeof hyperliquid, name: string) => ({
+    name,
+    enabled: hlEnabled(net),
+    live: conn.live,
+    privateKeyConfigured: !!hlPrivateKey(net),
+    keySource: settingsRepo.hasExchangeValue(`hl.${net}.privateKey`)
+      ? "desk"
+      : config.hyperliquid[net].privateKey
+        ? "env"
+        : "none",
+    accountAddress: hlAccountAddress(net) || null,
+    signer: conn.signerAddress(),
+  });
   const exchangesPayload = () => ({
     env: config.tradingEnv,
     priority: settingsRepo.getExchangePriority(),
-    hyperliquid: {
-      name: "hyperliquid" as const,
-      primary: true,
-      live: hyperliquid.live,
-      privateKeyConfigured: !!hlPrivateKey(),
-      privateKeySource: settingsRepo.hasExchangeValue("hl.privateKey")
-        ? "desk"
-        : config.hyperliquid.privateKey
-          ? "env"
-          : "none",
-      accountAddress: hlAccountAddress() || null,
-      signer: hyperliquid.signerAddress(),
-    },
+    hyperliquid: hlBlock("mainnet", hyperliquid, "hyperliquid"),
+    hyperliquidTestnet: hlBlock("testnet", hyperliquidTestnet, "hyperliquid-testnet"),
     aster: {
       name: "aster" as const,
       enabled: asterEnabled(),
@@ -326,14 +329,17 @@ export async function buildServer() {
       .max(200)
       .transform((s) => s.trim())
       .refine(isSafeExchangeUrl, "must be a public https:// URL (no internal/loopback hosts)");
+    const hlSchema = z
+      .object({
+        enabled: z.boolean().optional(),
+        privateKey: z.string().max(200).optional(), // "" clears the desk-stored key
+        accountAddress: z.string().max(120).optional(),
+      })
+      .optional();
     const schema = z.object({
-      priority: z.array(z.enum(["hyperliquid", "aster", "mexc"])).max(3).optional(),
-      hyperliquid: z
-        .object({
-          privateKey: z.string().max(200).optional(), // "" clears the desk-stored key
-          accountAddress: z.string().max(120).optional(),
-        })
-        .optional(),
+      priority: z.array(z.enum(["hyperliquid", "hyperliquid-testnet", "aster", "mexc"])).max(4).optional(),
+      hyperliquid: hlSchema,
+      hyperliquidTestnet: hlSchema,
       aster: z
         .object({
           enabled: z.boolean().optional(),
@@ -356,16 +362,24 @@ export async function buildServer() {
     const d = parsed.data;
 
     if (d.priority) settingsRepo.setExchangePriority(d.priority);
-    if (d.hyperliquid) {
-      if (d.hyperliquid.privateKey !== undefined) {
-        settingsRepo.setExchangeValue("hl.privateKey", d.hyperliquid.privateKey.trim());
-        log.info(`Hyperliquid key ${d.hyperliquid.privateKey.trim() ? "updated via desk" : "cleared"}.`);
+    const applyHl = (
+      net: "mainnet" | "testnet",
+      conn: typeof hyperliquid,
+      patch: { enabled?: boolean; privateKey?: string; accountAddress?: string } | undefined,
+    ) => {
+      if (!patch) return;
+      if (patch.enabled !== undefined) settingsRepo.setExchangeFlag(`hl.${net}.enabled`, patch.enabled);
+      if (patch.privateKey !== undefined) {
+        settingsRepo.setExchangeValue(`hl.${net}.privateKey`, patch.privateKey.trim());
+        log.info(`Hyperliquid ${net} key ${patch.privateKey.trim() ? "updated via desk" : "cleared"}.`);
       }
-      if (d.hyperliquid.accountAddress !== undefined) {
-        settingsRepo.setExchangeValue("hl.accountAddress", d.hyperliquid.accountAddress.trim());
+      if (patch.accountAddress !== undefined) {
+        settingsRepo.setExchangeValue(`hl.${net}.accountAddress`, patch.accountAddress.trim());
       }
-      hyperliquid.reloadCredentials(); // rebuild the signer with the new key
-    }
+      conn.reloadCredentials(); // rebuild the signer with the new key
+    };
+    applyHl("mainnet", hyperliquid, d.hyperliquid);
+    applyHl("testnet", hyperliquidTestnet, d.hyperliquidTestnet);
     if (d.aster) {
       if (d.aster.enabled !== undefined) settingsRepo.setExchangeFlag("aster.enabled", d.aster.enabled);
       if (d.aster.apiKey !== undefined) {
@@ -402,17 +416,18 @@ export async function buildServer() {
   // Mainnet-readiness checklist for the desk (before flipping to live).
   app.get("/api/readiness", async () => {
     const g = settingsRepo.getGlobalSettings();
+    const hl = activeHyperliquid();
     let accountValue: number | undefined;
     try {
-      accountValue = (await hyperliquid.getAccountSummary())?.accountValue;
+      accountValue = (await hl.getAccountSummary())?.accountValue;
     } catch {
       /* ignore */
     }
     const checks = [
-      { key: "signingKey", ok: hyperliquid.live, label: "Signing key configured" },
+      { key: "signingKey", ok: hl.live, label: "Signing key configured" },
       {
         key: "accountAddress",
-        ok: !!hlAccountAddress() || hyperliquid.live,
+        ok: !!hl.publicAddress(),
         label: "Account address set",
       },
       { key: "balance", ok: (accountValue ?? 0) > 0, label: "Perps account funded" },
@@ -673,7 +688,7 @@ export async function buildServer() {
       if (!Number.isFinite(amount) || amount <= 0 || amount > 1e9) {
         return reply.code(400).send({ error: "amount must be a positive number below 1e9" });
       }
-      const res = await hyperliquid.transferUsd(amount, toPerp);
+      const res = await activeHyperliquid().transferUsd(amount, toPerp);
       if (!res.ok) return reply.code(400).send({ error: res.error });
       audit(req, `transferred ${amount} USDC ${toPerp ? "spot→perp" : "perp→spot"}`, { amount, toPerp });
       log.info(`Transferred ${amount} USDC ${toPerp ? "spot→perp" : "perp→spot"}.`);
@@ -710,7 +725,7 @@ export async function buildServer() {
 
   app.get("/api/positions", async () => {
     try {
-      return await hyperliquid.getPositions();
+      return await activeHyperliquid().getPositions();
     } catch (err) {
       log.warn("positions unavailable:", err instanceof Error ? err.message : err);
       return [];
@@ -720,19 +735,21 @@ export async function buildServer() {
   // Exchange connection: address, balance and live positions, for the desk's
   // connection panel. Safe to call when disconnected (returns connected:false).
   app.get("/api/account", async () => {
+    const hl = activeHyperliquid();
     const base = {
-      connected: hyperliquid.live,
-      simulating: hyperliquid.simulating(),
+      connected: hl.live,
+      simulating: hl.simulating(),
       env: config.tradingEnv,
-      address: hyperliquid.publicAddress(),
-      signer: hyperliquid.signerAddress(),
+      network: hl.name,
+      address: hl.publicAddress(),
+      signer: hl.signerAddress(),
     };
     if (!base.address) return { ...base, positions: [] };
     try {
       const [summary, positions, spotUsdc] = await Promise.all([
-        hyperliquid.getAccountSummary(),
-        hyperliquid.getPositions(),
-        hyperliquid.getSpotUsdc().catch(() => null),
+        hl.getAccountSummary(),
+        hl.getPositions(),
+        hl.getSpotUsdc().catch(() => null),
       ]);
       return {
         ...base,
