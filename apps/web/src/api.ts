@@ -142,6 +142,7 @@ export const api = {
       dailyLossLimitUsd: number;
       maxOpenTrades: number;
       maxExposureUsd: number;
+      splitOpposingVenues: boolean;
       anthropicConfigured: boolean;
       anthropicKeySource: string;
       anthropicModel: string;
@@ -153,6 +154,7 @@ export const api = {
     dailyLossLimitUsd?: number;
     maxOpenTrades?: number;
     maxExposureUsd?: number;
+    splitOpposingVenues?: boolean;
     autoRefine?: boolean;
   }) =>
     req<{ shadowMode: boolean }>("/api/settings", {

@@ -194,6 +194,7 @@ export async function buildServer() {
       dailyLossLimitUsd: z.number().min(0).max(1e9).optional(),
       maxOpenTrades: z.number().int().min(0).max(1000).optional(),
       maxExposureUsd: z.number().min(0).max(1e9).optional(),
+      splitOpposingVenues: z.boolean().optional(),
       anthropicKey: z.string().max(500).optional(), // "" clears the desk-stored key
       anthropicModel: z.string().max(100).optional(),
       autoRefine: z.boolean().optional(),
@@ -213,6 +214,7 @@ export async function buildServer() {
     if (d.dailyLossLimitUsd !== undefined) settingsRepo.setRiskLimit("dailyLossLimitUsd", d.dailyLossLimitUsd);
     if (d.maxOpenTrades !== undefined) settingsRepo.setRiskLimit("maxOpenTrades", d.maxOpenTrades);
     if (d.maxExposureUsd !== undefined) settingsRepo.setRiskLimit("maxExposureUsd", d.maxExposureUsd);
+    if (d.splitOpposingVenues !== undefined) settingsRepo.setSplitOpposingVenues(d.splitOpposingVenues);
     if (d.anthropicKey !== undefined) {
       settingsRepo.setAnthropicKey(d.anthropicKey.trim());
       log.info(`Anthropic key ${d.anthropicKey.trim() ? "updated via desk" : "cleared"}.`);

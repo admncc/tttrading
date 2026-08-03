@@ -47,6 +47,36 @@ export type Resolution =
   | { kind: "notFound"; tried: string[] }
   | { kind: "unavailable" };
 
+export type MultiResolution =
+  | { kind: "found"; venues: { ex: ExchangeConnector; asset: AssetInfo }[] }
+  | { kind: "notFound"; tried: string[] }
+  | { kind: "unavailable" };
+
+/**
+ * Like resolveForSymbol but returns EVERY enabled venue (priority order) that
+ * lists the symbol — for conflict-aware routing (pick a venue with no opposing
+ * position). Same primary-error safety: a throw from the primary is inconclusive.
+ */
+export async function resolveAllForSymbol(symbol: string): Promise<MultiResolution> {
+  const chain = enabledExchanges();
+  const venues: { ex: ExchangeConnector; asset: AssetInfo }[] = [];
+  let anyErrored = false;
+  for (let i = 0; i < chain.length; i++) {
+    const ex = chain[i]!;
+    try {
+      const asset = await ex.getAsset(symbol);
+      if (asset) venues.push({ ex, asset });
+    } catch (err) {
+      log.warn(`resolveAllForSymbol ${symbol} on ${ex.name}:`, err instanceof Error ? err.message : err);
+      if (i === 0 && venues.length === 0) return { kind: "unavailable" };
+      anyErrored = true;
+    }
+  }
+  if (venues.length > 0) return { kind: "found", venues };
+  if (anyErrored) return { kind: "unavailable" };
+  return { kind: "notFound", tried: chain.map((e) => e.name) };
+}
+
 /**
  * Pick the venue for a symbol: the first enabled exchange (primary first) that
  * lists it. Returns `notFound` only when every venue answered and none listed

@@ -112,6 +112,13 @@ export interface GlobalSettings {
   maxOpenTrades: number;
   /** Refuse new entries when open notional would exceed this. 0 = off. */
   maxExposureUsd: number;
+  /**
+   * When a new signal opposes a position already open for that symbol on the
+   * primary venue, route it to the next backup venue that lists the coin and has
+   * no opposing position (e.g. long on Hyperliquid, short on Aster) instead of
+   * netting them on one venue. When off, opposing signals just route normally.
+   */
+  splitOpposingVenues: boolean;
 }
 
 /** Traffic-light risk classification. */

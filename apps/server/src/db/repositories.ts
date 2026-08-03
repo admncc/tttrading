@@ -531,6 +531,14 @@ export const settings = {
   setRiskLimit(key: "dailyLossLimitUsd" | "maxOpenTrades" | "maxExposureUsd", value: number): void {
     kvSet(key, String(Number.isFinite(value) && value > 0 ? value : 0));
   },
+  /** Route an opposing signal to a backup venue instead of netting. Default on. */
+  getSplitOpposingVenues(): boolean {
+    const v = kvGet("splitOpposingVenues");
+    return v === undefined ? true : v === "true";
+  },
+  setSplitOpposingVenues(on: boolean): void {
+    kvSet("splitOpposingVenues", on ? "true" : "false");
+  },
   getGlobalSettings(): import("@tttrading/shared").GlobalSettings {
     return {
       shadowMode: this.getShadowMode(),
@@ -538,6 +546,7 @@ export const settings = {
       dailyLossLimitUsd: this.getRiskLimit("dailyLossLimitUsd"),
       maxOpenTrades: this.getRiskLimit("maxOpenTrades"),
       maxExposureUsd: this.getRiskLimit("maxExposureUsd"),
+      splitOpposingVenues: this.getSplitOpposingVenues(),
     };
   },
   /** Anthropic API key set via the desk (empty string => not set). */

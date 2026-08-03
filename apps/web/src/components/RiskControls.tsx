@@ -7,6 +7,7 @@ interface Settings {
   dailyLossLimitUsd: number;
   maxOpenTrades: number;
   maxExposureUsd: number;
+  splitOpposingVenues: boolean;
 }
 
 export function RiskControls() {
@@ -25,6 +26,7 @@ export function RiskControls() {
           dailyLossLimitUsd: d.dailyLossLimitUsd,
           maxOpenTrades: d.maxOpenTrades,
           maxExposureUsd: d.maxExposureUsd,
+          splitOpposingVenues: d.splitOpposingVenues,
         });
         setLoadErr(null);
       })
@@ -133,6 +135,16 @@ export function RiskControls() {
           />
         </div>
       </div>
+
+      <label className="muted" style={{ fontSize: 12, display: "inline-flex", gap: 8, marginTop: 6, alignItems: "center" }}>
+        <input
+          type="checkbox"
+          checked={s.splitOpposingVenues}
+          disabled={busy}
+          onChange={(e) => void save({ splitOpposingVenues: e.target.checked })}
+        />
+        Route opposing signals to a backup venue (long on primary, opposite short on Aster/MEXC) instead of netting
+      </label>
 
       {ready && (
         <div style={{ marginTop: 6 }}>

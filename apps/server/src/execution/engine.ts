@@ -8,7 +8,7 @@ import {
   settings as settingsRepo,
 } from "../db/repositories.js";
 import { hyperliquid } from "../hyperliquid/connector.js";
-import { byName, resolveForSymbol } from "../exchanges/registry.js";
+import { byName, resolveAllForSymbol, resolveForSymbol } from "../exchanges/registry.js";
 import type { ExchangeConnector } from "../exchanges/types.js";
 import { parseSignal } from "../signals/parser.js";
 import { classifyManagementAll, type ManagementAction } from "../signals/management.js";
@@ -700,17 +700,40 @@ async function execute(
   // (Aster, …) that lists it. Symbols on none are recorded FAILED (Crypto NOT
   // found); when metadata is momentarily unavailable we fall back to the primary
   // and let the order path surface any error. Uses public metadata (runs in test).
-  const resolved = await resolveForSymbol(parsed.symbol);
+  const resolved = await resolveAllForSymbol(parsed.symbol);
   let ex: ExchangeConnector = hyperliquid;
   if (resolved.kind === "found") {
-    ex = resolved.ex;
+    let venues = resolved.venues;
+    // Conflict policy: if a venue already holds an OPPOSING position for this
+    // symbol, prefer the next backup that lists it and has none — so a long on
+    // the primary and a later short go to different venues instead of netting.
+    if (settingsRepo.getSplitOpposingVenues()) {
+      const opposing = tradesRepo
+        .activeAndWorking()
+        .filter((t) => !t.shadow && t.symbol.toUpperCase() === parsed.symbol.toUpperCase() && t.side !== parsed.side);
+      if (opposing.length > 0) {
+        const busy = new Set(opposing.map((t) => byName(t.exchange).name));
+        const free = venues.filter((v) => !busy.has(v.ex.name));
+        if (free.length === 0) {
+          const reason = `conflict: an opposing ${parsed.symbol} position is already open on every venue that lists it (${venues
+            .map((v) => v.ex.name)
+            .join(", ")})`;
+          const failed = signalsRepo.update(signal.id, { status: "failed", error: reason })!;
+          event("exec", `SKIP ${parsed.side} ${parsed.symbol}: opposing position, no free venue`, { reason }, { level: "warn", groupId: group.id, signalId: signal.id });
+          broadcast({ type: "signal", signal: failed });
+          return failed;
+        }
+        venues = free;
+      }
+    }
+    ex = venues[0]!.ex;
   } else if (resolved.kind === "notFound") {
-    const venues = resolved.tried.join(", ") || "hyperliquid";
-    const reason = `Crypto NOT found: ${parsed.symbol} is not listed on ${venues} (${config.tradingEnv})`;
+    const tried = resolved.tried.join(", ") || "hyperliquid";
+    const reason = `Crypto NOT found: ${parsed.symbol} is not listed on ${tried} (${config.tradingEnv})`;
     const failed = signalsRepo.update(signal.id, { status: "failed", error: reason })!;
     event(
       "exec",
-      `SKIP ${parsed.symbol}: not listed on any venue (${venues})`,
+      `SKIP ${parsed.symbol}: not listed on any venue (${tried})`,
       { symbol: parsed.symbol, tried: resolved.tried },
       { level: "warn", groupId: group.id, signalId: signal.id },
     );
@@ -719,7 +742,7 @@ async function execute(
   } // "unavailable" → keep the primary and let the order path surface errors.
 
   if (ex.name !== "hyperliquid") {
-    event("exec", `Routing ${parsed.symbol} to ${ex.name} (not on Hyperliquid)`, { exchange: ex.name }, { groupId: group.id, signalId: signal.id });
+    event("exec", `Routing ${parsed.symbol} to ${ex.name}`, { exchange: ex.name }, { groupId: group.id, signalId: signal.id });
   }
 
   // Position size per the group's sizing mode (against the routed venue).
@@ -736,6 +759,28 @@ async function execute(
     });
     broadcast({ type: "signal", signal: ignored });
     return ignored;
+  }
+
+  // Pre-route collateral check: a real order on the routed venue needs enough
+  // free margin. Skip in sim (no real order) and when the balance can't be read
+  // (don't block on a transient error — let the order path surface it).
+  if (!ex.simulating()) {
+    try {
+      const summary = await ex.getAccountSummary();
+      if (summary) {
+        const needMargin = tradeSizeUsd / Math.max(1, group.settings.leverage);
+        if (summary.withdrawable < needMargin * 0.99) {
+          const reason = `insufficient collateral on ${ex.name}: need ~${needMargin.toFixed(2)} free, have ${summary.withdrawable.toFixed(2)}`;
+          const failed = signalsRepo.update(signal.id, { status: "failed", error: reason })!;
+          event("exec", `SKIP ${parsed.symbol}: ${reason}`, { need: needMargin, have: summary.withdrawable, venue: ex.name }, { level: "warn", groupId: group.id, signalId: signal.id });
+          alertError(`collateral ${parsed.symbol} (${group.name})`, reason);
+          broadcast({ type: "signal", signal: failed });
+          return failed;
+        }
+      }
+    } catch {
+      /* balance unreadable — don't block; the order path will surface any error */
+    }
   }
 
   // Limit mode (default): rest an order at the signal's entry and wait for a
