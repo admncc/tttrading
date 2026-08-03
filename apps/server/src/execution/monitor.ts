@@ -20,10 +20,18 @@ let timer: ReturnType<typeof setInterval> | undefined;
  * Stateless per tick and idempotent: closed trades are skipped next time, and
  * the break-even move is guarded by a flag on the trade.
  */
+/** Throttle the "venue can't sign but holds a real position" warning per venue. */
+const strandWarnedAt = new Map<string, number>();
+
 export async function reconcileOnce(): Promise<void> {
-  // Reconcile each live venue against its own trades (a trade only reconciles on
-  // the exchange it lives on). Simulated trades are handled by evaluateSimulated().
-  for (const ex of knownExchanges().filter((e) => e.live)) {
+  // Reconcile each venue against its own trades (a trade only reconciles on the
+  // exchange it lives on). Include a venue that is either live OR still holds a
+  // real (non-simulated) open/working trade — so a position isn't stranded if the
+  // venue's key is later cleared. Simulated trades go through evaluateSimulated().
+  const active = tradesRepo.activeAndWorking().filter((t) => !t.simulated);
+  for (const ex of knownExchanges()) {
+    const relevant = ex.live || active.some((t) => byName(t.exchange).name === ex.name);
+    if (!relevant) continue;
     try {
       await reconcileExchange(ex);
     } catch (err) {
@@ -39,6 +47,22 @@ async function reconcileExchange(ex: ExchangeConnector): Promise<void> {
   const working = tradesRepo.working().filter((t) => !t.simulated && onThis(t));
   // Nothing to reconcile if there are neither open positions NOR working orders.
   if (open.length === 0 && working.length === 0) return;
+
+  // The venue holds real trades but can no longer sign (key cleared / paper mode).
+  // We CANNOT read fills/positions — empty reads must NOT be mistaken for "flat"
+  // (that would wrongly close everything). Warn (throttled) and leave the trades
+  // untouched; reconciliation resumes automatically once the key is restored.
+  if (!ex.live) {
+    const last = strandWarnedAt.get(ex.name) ?? 0;
+    if (Date.now() - last > 300_000) {
+      strandWarnedAt.set(ex.name, Date.now());
+      log.warn(
+        `${ex.name}: ${open.length} open + ${working.length} working real trade(s) but the venue can't sign ` +
+          `(API key cleared or paper mode?). Not reconciling — restore the key to resume managing them.`,
+      );
+    }
+    return;
+  }
 
   const symbols = [...new Set([...open, ...working].map((t) => t.symbol))];
   let fills: FillLite[];

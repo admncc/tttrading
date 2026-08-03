@@ -47,7 +47,9 @@ export async function refreshPrices(): Promise<void> {
       if (!want || want.size === 0) continue;
       try {
         const mids = await ex.getAllMids();
-        for (const s of want) if (mids[s] !== undefined) prices[s] = mids[s]!;
+        // known() is primary-first, so set-if-absent lets the primary's mark win
+        // when the same coin happens to be held on two venues (display only).
+        for (const s of want) if (prices[s] === undefined && mids[s] !== undefined) prices[s] = mids[s]!;
       } catch (err) {
         log.warn(`price ticker (${ex.name}):`, err instanceof Error ? err.message : err);
       }
