@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import type { Trade } from "@tttrading/shared";
 import { api } from "../api.js";
 import { num, pnlClass, shortTime, usd } from "../format.js";
@@ -30,6 +30,10 @@ export function Trades({
 }) {
   const [filter, setFilter] = useState<Filter>("all");
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [manageId, setManageId] = useState<string | null>(null);
+  const [slInput, setSlInput] = useState("");
+  const [tpInput, setTpInput] = useState("");
+  const [bookInput, setBookInput] = useState("");
 
   const shown = trades.filter((t) =>
     filter === "shadow"
@@ -47,6 +51,47 @@ export function Trades({
     } finally {
       setBusyId(null);
     }
+  };
+
+  const toggleManage = (t: Trade) => {
+    if (manageId === t.id) {
+      setManageId(null);
+      return;
+    }
+    setManageId(t.id);
+    setSlInput(t.stopLoss ? String(t.stopLoss) : "");
+    setTpInput(t.takeProfits?.length ? t.takeProfits.join(", ") : "");
+    setBookInput("");
+  };
+
+  const run = async (id: string, fn: () => Promise<unknown>, label: string) => {
+    setBusyId(id);
+    try {
+      await fn();
+      onChange();
+    } catch (e) {
+      alert(`${label} failed: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const setStop = (t: Trade) => {
+    const p = Number(slInput);
+    if (!(p > 0)) return alert("Enter a valid stop price.");
+    void run(t.id, () => api.setTradeStop(t.id, p), "Set SL");
+  };
+  const setTps = (t: Trade) => {
+    const prices = tpInput
+      .split(/[,\s]+/)
+      .map((s) => Number(s))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    void run(t.id, () => api.setTradeTakeProfits(t.id, prices), "Set TPs");
+  };
+  const book = (t: Trade) => {
+    const pct = Number(bookInput);
+    if (!(pct > 0 && pct < 100)) return alert("Enter a percent between 0 and 100.");
+    void run(t.id, () => api.bookPartial(t.id, pct / 100), "Book");
   };
 
   return (
@@ -90,7 +135,8 @@ export function Trades({
             </thead>
             <tbody>
               {shown.map((t) => (
-                <tr key={t.id}>
+                <Fragment key={t.id}>
+                <tr>
                   <td className="muted">{shortTime(t.openedAt)}</td>
                   <td>{t.groupName}</td>
                   <td>
@@ -183,12 +229,66 @@ export function Trades({
                   </td>
                   <td>
                     {(t.status === "open" || t.status === "working") && !t.shadow && (
-                      <button disabled={busyId === t.id} onClick={() => close(t.id)}>
-                        {busyId === t.id ? "…" : t.status === "working" ? "Cancel" : "Close"}
-                      </button>
+                      <div className="btn-row">
+                        <button disabled={busyId === t.id} onClick={() => close(t.id)}>
+                          {busyId === t.id ? "…" : t.status === "working" ? "Cancel" : "Close"}
+                        </button>
+                        <button
+                          className={manageId === t.id ? "primary" : "ghost"}
+                          onClick={() => toggleManage(t)}
+                        >
+                          Manage
+                        </button>
+                      </div>
                     )}
                   </td>
                 </tr>
+                {manageId === t.id && (t.status === "open" || t.status === "working") && !t.shadow && (
+                  <tr>
+                    <td colSpan={15} style={{ background: "rgba(255,255,255,0.02)" }}>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 16, alignItems: "flex-end", padding: "4px 2px" }}>
+                        <label style={{ fontSize: 12 }}>
+                          <div className="muted" style={{ marginBottom: 2 }}>Stop-loss</div>
+                          <input
+                            value={slInput}
+                            onChange={(e) => setSlInput(e.target.value)}
+                            placeholder="price"
+                            style={{ width: 110 }}
+                          />{" "}
+                          <button disabled={busyId === t.id} onClick={() => setStop(t)}>Set SL</button>
+                        </label>
+                        <label style={{ fontSize: 12 }}>
+                          <div className="muted" style={{ marginBottom: 2 }}>Take-profits (comma-separated)</div>
+                          <input
+                            value={tpInput}
+                            onChange={(e) => setTpInput(e.target.value)}
+                            placeholder="e.g. 65000, 66000"
+                            style={{ width: 180 }}
+                          />{" "}
+                          <button disabled={busyId === t.id} onClick={() => setTps(t)}>Set TPs</button>
+                        </label>
+                        {t.status === "open" && (
+                          <label style={{ fontSize: 12 }}>
+                            <div className="muted" style={{ marginBottom: 2 }}>Book %</div>
+                            <input
+                              value={bookInput}
+                              onChange={(e) => setBookInput(e.target.value)}
+                              placeholder="e.g. 30"
+                              style={{ width: 80 }}
+                            />{" "}
+                            <button disabled={busyId === t.id} onClick={() => book(t)}>Book</button>
+                          </label>
+                        )}
+                        <span className="muted" style={{ fontSize: 11 }}>
+                          {t.status === "working"
+                            ? "Resting order — SL/TP are stored and applied on fill."
+                            : "Live: SL/TP are placed on the exchange."}
+                        </span>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               ))}
               {shown.length === 0 && (
                 <tr>

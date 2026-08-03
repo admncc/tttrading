@@ -34,12 +34,15 @@ import {
   mexcEnabled,
 } from "../exchanges/credentials.js";
 import {
+  bookTradePartial,
   cancelWorkingTrade,
   closeAllTrades,
   closeTrade,
   confirmSignal,
   placeTestOrder,
   rejectSignal,
+  setTradeStop,
+  setTradeTakeProfits,
   submitManual,
 } from "../execution/engine.js";
 import { reconcileOnce, evaluateSimulated } from "../execution/monitor.js";
@@ -527,6 +530,35 @@ export async function buildServer() {
     const trade = await closeTrade(req.params.id, parsed.data.exitPrice);
     if (!trade) return reply.code(404).send({ error: "not found" });
     return trade;
+  });
+
+  // Manually set/move the stop-loss on a trade.
+  app.post<{ Params: { id: string } }>("/api/trades/:id/stop", async (req, reply) => {
+    const parsed = z.object({ price: z.number().positive() }).safeParse(req.body ?? {});
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    const res = await setTradeStop(req.params.id, parsed.data.price);
+    if (!res.ok) return reply.code(400).send({ error: res.error });
+    return res.trade;
+  });
+
+  // Manually replace the take-profit levels on a trade.
+  app.post<{ Params: { id: string } }>("/api/trades/:id/take-profits", async (req, reply) => {
+    const parsed = z
+      .object({ prices: z.array(z.number().positive()).max(20) })
+      .safeParse(req.body ?? {});
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    const res = await setTradeTakeProfits(req.params.id, parsed.data.prices);
+    if (!res.ok) return reply.code(400).send({ error: res.error });
+    return res.trade;
+  });
+
+  // Manually book a fraction (0..1) of an open trade.
+  app.post<{ Params: { id: string } }>("/api/trades/:id/partial", async (req, reply) => {
+    const parsed = z.object({ fraction: z.number().gt(0).lt(1) }).safeParse(req.body ?? {});
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    const res = await bookTradePartial(req.params.id, parsed.data.fraction);
+    if (!res.ok) return reply.code(400).send({ error: res.error });
+    return res.trade;
   });
 
   /* ------------------------------- logs ------------------------------- */

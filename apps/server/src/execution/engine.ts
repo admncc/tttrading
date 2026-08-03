@@ -1094,6 +1094,95 @@ export async function cancelWorkingTrade(tradeId: string, reason: string): Promi
   }
 }
 
+/* ------------------------- manual desk management ---------------------- */
+
+/** Manually set/move a trade's stop-loss from the desk (open or resting). */
+export async function setTradeStop(
+  tradeId: string,
+  price: number,
+): Promise<{ ok: boolean; error?: string; trade?: Trade }> {
+  const trade = tradesRepo.get(tradeId);
+  if (!trade) return { ok: false, error: "not found" };
+  if (trade.shadow) return { ok: false, error: "shadow trade" };
+  if (trade.status !== "open" && trade.status !== "working") return { ok: false, error: "trade not open" };
+  if (!(price > 0)) return { ok: false, error: "price must be > 0" };
+  // Reject a stop on the wrong side of the market (long below, short above),
+  // measured against the live mid (fall back to entry) — mirrors the message path.
+  let ref = trade.entryPrice;
+  try {
+    const mid = await connectorFor(trade).getMidPrice(trade.symbol);
+    if (mid && mid > 0) ref = mid;
+  } catch {
+    /* use entry */
+  }
+  const ok = trade.side === "long" ? price < ref : price > ref;
+  if (!ok) return { ok: false, error: `stop ${price} is on the wrong side of ${ref} for a ${trade.side}` };
+  await moveStop(trade, price, false);
+  event("manage", `Desk set SL ${price} for ${trade.symbol}`, { price }, { groupId: trade.groupId });
+  return { ok: true, trade: tradesRepo.get(tradeId) };
+}
+
+/** Manually book a fraction (0..0.95) of an open trade from the desk. */
+export async function bookTradePartial(
+  tradeId: string,
+  fraction: number,
+): Promise<{ ok: boolean; error?: string; trade?: Trade }> {
+  const trade = tradesRepo.get(tradeId);
+  if (!trade) return { ok: false, error: "not found" };
+  if (trade.shadow) return { ok: false, error: "shadow trade" };
+  if (trade.status !== "open") return { ok: false, error: "trade not open" };
+  if (!(fraction > 0 && fraction < 1)) return { ok: false, error: "fraction must be between 0 and 1" };
+  await partialClose(trade, fraction);
+  event("manage", `Desk booked ${(fraction * 100).toFixed(0)}% of ${trade.symbol}`, { fraction }, { groupId: trade.groupId });
+  return { ok: true, trade: tradesRepo.get(tradeId) };
+}
+
+/** Manually replace a trade's take-profit levels from the desk. */
+export async function setTradeTakeProfits(
+  tradeId: string,
+  prices: number[],
+): Promise<{ ok: boolean; error?: string; trade?: Trade }> {
+  const trade = tradesRepo.get(tradeId);
+  if (!trade) return { ok: false, error: "not found" };
+  if (trade.shadow) return { ok: false, error: "shadow trade" };
+  if (trade.status !== "open" && trade.status !== "working") return { ok: false, error: "trade not open" };
+  // Keep only TPs on the profit side (long above entry, short below).
+  const tps = prices
+    .filter((p) => p > 0 && (trade.side === "long" ? p > trade.entryPrice : p < trade.entryPrice))
+    .sort((a, b) => (trade.side === "long" ? a - b : b - a));
+
+  const ex = connectorFor(trade);
+  // Real open position: replace the resting TP orders on the exchange.
+  if (trade.status === "open" && !trade.simulated && ex.live) {
+    const bracket = await ex.placeBracketOrders({
+      symbol: trade.symbol,
+      side: trade.side,
+      size: trade.size,
+      takeProfits: tps,
+      slippage: 0.01,
+      marginMode: groupsRepo.get(trade.groupId)?.settings.marginMode,
+      force: true,
+    });
+    if (tps.length > 0 && !bracket.protectedOnExchange) {
+      return { ok: false, error: `TP placement failed: ${bracket.error ?? "unknown"}` };
+    }
+    if (trade.tpOrderIds?.length) await ex.cancelOrders(trade.symbol, trade.tpOrderIds);
+    const updated = tradesRepo.update(tradeId, {
+      takeProfits: tps.length ? tps : undefined,
+      tpOrderIds: bracket.tpOrderIds.length ? bracket.tpOrderIds : undefined,
+      tpFilledCount: 0,
+    });
+    if (updated) broadcast({ type: "trade", trade: updated });
+    event("manage", `Desk set TPs [${tps.join(", ")}] for ${trade.symbol}`, { tps }, { groupId: trade.groupId });
+    return { ok: true, trade: updated };
+  }
+  // Simulated or resting order: just record the levels.
+  const updated = tradesRepo.update(tradeId, { takeProfits: tps.length ? tps : undefined, tpFilledCount: 0 });
+  if (updated) broadcast({ type: "trade", trade: updated });
+  event("manage", `Desk set TPs [${tps.join(", ")}] for ${trade.symbol}`, { tps }, { groupId: trade.groupId });
+  return { ok: true, trade: updated };
+}
+
 /**
  * Place a one-off test order straight from the desk (not tied to a channel).
  * Creates a tracked Trade so it shows up in the Trades area and can be closed

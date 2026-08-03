@@ -251,6 +251,12 @@ export const api = {
   trades: (limit = 500) => req<Trade[]>(`/api/trades?limit=${limit}`),
   closeTrade: (id: string, exitPrice?: number) =>
     req<Trade>(`/api/trades/${id}/close`, { method: "POST", body: JSON.stringify({ exitPrice }) }),
+  setTradeStop: (id: string, price: number) =>
+    req<Trade>(`/api/trades/${id}/stop`, { method: "POST", body: JSON.stringify({ price }) }),
+  setTradeTakeProfits: (id: string, prices: number[]) =>
+    req<Trade>(`/api/trades/${id}/take-profits`, { method: "POST", body: JSON.stringify({ prices }) }),
+  bookPartial: (id: string, fraction: number) =>
+    req<Trade>(`/api/trades/${id}/partial`, { method: "POST", body: JSON.stringify({ fraction }) }),
 
   stats: () => req<DashboardStats>("/api/stats"),
 
