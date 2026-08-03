@@ -38,8 +38,17 @@ function extractSymbol(text: string, side: TradeSide): string | undefined {
   const pair = text.match(/\b([A-Za-z]{2,6})[\/\-]?(USDT|USDC|USD|PERP)\b/i);
   if (pair) return pair[1]!.toUpperCase();
 
-  // Ticker directly after the direction word.
-  const dir = side === "long" ? "long|buy" : "short|sell";
+  const dir = side === "long" ? "long|buy|buying" : "short|sell|selling";
+
+  // Ticker immediately BEFORE the direction word ("Btc long", "ETH buy").
+  const beforeDir = new RegExp(`\\b([A-Za-z]{2,6})\\s+(?:${dir})\\b`, "i");
+  const b = text.match(beforeDir);
+  if (b) {
+    const sym = b[1]!.toUpperCase().replace(QUOTE_SUFFIX, "");
+    if (sym.length >= 2 && !STOPWORDS.has(sym)) return sym;
+  }
+
+  // Ticker directly after the direction word ("long BTC", "buy eth").
   const afterDir = new RegExp(`\\b(?:${dir})\\b[^A-Za-z]*([A-Za-z]{2,6})\\b`, "i");
   const m = text.match(afterDir);
   if (m) {
@@ -135,14 +144,18 @@ export function parseWithRegex(text: string): ParsedSignal | null {
   const entry = firstNumber(text, [
     // "Entry: CMP till 3361" / "buy up till 0.245" -> the limit after "till".
     /\btill\s*([0-9][0-9.,]*)/i,
-    /\b(?:entry|enter|entradas?|einstieg)\b[:\s@]*([0-9][0-9.,]*)/i,
+    // Allow small filler between the label and the number ("entry at $3361",
+    // "entry: 3361", "enter @ 3361"). Bare "Cmp"/"market" gives no number → market.
+    /\b(?:entry|enter|entradas?|einstieg)\b(?:\s*(?:at|@|:|=|around|near)?\s*\$?){0,2}\s*([0-9][0-9.,]*)/i,
     /@\s*([0-9][0-9.,]*)/,
     /\bprice\b[:\s]*([0-9][0-9.,]*)/i,
   ]);
 
   const stopLoss = firstNumber(text, [
-    /\b(?:sl|stop[\s-]?loss|stop)\b[:\s]*([0-9][0-9.,]*)/i,
-    /🛑[:\s]*([0-9][0-9.,]*)/,
+    // Tolerate filler words/symbols between the SL label and the value, e.g.
+    // "SL at $60500", "same SL at 60500", "stop loss to 60500", "sl: 60500".
+    /\b(?:sl|stop[\s-]?loss|stop|invalidation)\b[^0-9\n]{0,12}([0-9][0-9.,]*)/i,
+    /🛑[^0-9\n]{0,6}([0-9][0-9.,]*)/,
   ]);
 
   const takeProfits = extractTakeProfits(text);

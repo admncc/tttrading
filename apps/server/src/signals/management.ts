@@ -2,6 +2,7 @@ import { extractAnySymbol, parseNumber } from "./regex.js";
 
 export type ManagementKind =
   | "close" // closed / invalidated / stopped / cut / cancel a filled trade
+  | "cancel_limit" // remove/cancel a still-resting limit ENTRY order (not a position)
   | "sl_breakeven" // move stop to entry / "risk free"
   | "sl_move" // move stop to a specific price
   | "partial_close" // book X% / take partial
@@ -20,9 +21,17 @@ export interface ManagementAction {
   note: string;
 }
 
+// Remove/cancel a still-RESTING limit ENTRY order (not an open position).
+// Checked before close so "cancel/remove the limit entry" isn't read as a close.
+const RE_CANCEL_LIMIT =
+  /\b(?:cancel\w*|remov\w*|delet\w*|pull\w*|scrap\w*|kill\w*)\b[^.\n]{0,25}\b(?:limit|entry|pending|resting|order)s?\b/i;
 // "invalidated"/"stopped"/"closed"/"cut"/"off the table" => close a live trade.
-const RE_CLOSE =
-  /\b(invalidated|stopped\s*out|got\s*stopped|\bstopped\b|clos(?:e|ed|ing)\b|cancel(?:led|ed|ing)?\b|cut(?:ting)?\b|exit(?:ed|ing)?\b|off\s+the\s+table|left\s+without\s+us|took\s+profit\s+and\s+clos)/i;
+// Two variants: NONCANCEL excludes the bare cancel/remove words (which, next to
+// "limit/entry", mean cancel_limit); the cancel word alone (no limit context)
+// still means close a filled trade ("cancelled").
+const RE_CLOSE_NONCANCEL =
+  /\b(invalidated|stopped\s*out|got\s*stopped|\bstopped\b|clos(?:e|ed|ing)\b|cut(?:ting)?\b|exit(?:ed|ing)?\b|off\s+the\s+table|left\s+without\s+us|took\s+profit\s+and\s+clos)/i;
+const RE_CANCEL_WORD = /\bcancel(?:led|ed|ing)?\b/i;
 // "risk free" / "move SL to entry / breakeven".
 const RE_BE =
   /\b(break\s*even|risk[-\s]?free)\b|\bmov\w+\b[^.\n]{0,40}\b(?:sl|stop|invalidation)\b[^.\n]{0,25}\b(?:entry|break\s*even|be)\b/i;
@@ -37,46 +46,57 @@ const RE_TPHIT =
   /\b(?:tp\s*\d*\s*(?:hit|reached|done)|target\s*\d*\s*(?:reached|hit|smashed|done)|area\s*\d*\s*reached|\d+\s*rr\b|done\s+and\s+dusted)\b/i;
 
 /**
- * Classify a trade-management message. Returns kind "none" when the text is not
- * a management update. Only meant to run on messages that did NOT parse as a
- * fresh entry (the caller decides that).
+ * Classify ALL trade-management intents in a message. A single message may carry
+ * several ("remove the limit entry and move SL to 62000" → cancel_limit +
+ * sl_move). Returns [] when the text is not a management update. Only meant to
+ * run on messages that did NOT parse as a fresh entry (the caller decides that).
  */
-export function classifyManagement(text: string): ManagementAction {
+export function classifyManagementAll(text: string): ManagementAction[] {
+  const out: ManagementAction[] = [];
   const symbol = extractAnySymbol(text);
+  const seen = new Set<ManagementKind>();
+  const add = (a: ManagementAction) => {
+    if (seen.has(a.kind)) return;
+    seen.add(a.kind);
+    out.push(a);
+  };
 
-  if (RE_CLOSE.test(text)) {
-    return { kind: "close", symbol, note: "close/invalidated/stopped" };
-  }
+  const cancelLimit = RE_CANCEL_LIMIT.test(text);
+  if (cancelLimit) add({ kind: "cancel_limit", symbol, note: "cancel limit entry" });
+
+  // A real close word → close. A bare "cancelled" (no limit context) also closes;
+  // but if it's the limit-cancel phrasing, cancel_limit already covered it.
+  if (RE_CLOSE_NONCANCEL.test(text)) add({ kind: "close", symbol, note: "close/invalidated/stopped" });
+  else if (!cancelLimit && RE_CANCEL_WORD.test(text)) add({ kind: "close", symbol, note: "cancelled" });
 
   const pm = text.match(RE_PARTIAL_A) ?? text.match(RE_PARTIAL_B);
+  let partial = false;
   if (pm) {
     const pct = Number(pm[1]);
     if (Number.isFinite(pct) && pct > 0 && pct < 100) {
-      return {
-        kind: "partial_close",
-        symbol,
-        fraction: pct / 100,
-        alsoBreakeven: RE_BE.test(text),
-        note: `book ${pct}%`,
-      };
+      add({ kind: "partial_close", symbol, fraction: pct / 100, alsoBreakeven: RE_BE.test(text), note: `book ${pct}%` });
+      partial = true;
     }
   }
 
-  if (RE_BE.test(text)) {
-    return { kind: "sl_breakeven", symbol, note: "SL to break-even" };
-  }
+  // Break-even as its own intent only when a partial didn't already fold it in.
+  if (!partial && RE_BE.test(text)) add({ kind: "sl_breakeven", symbol, note: "SL to break-even" });
 
   const sm = text.match(RE_SLMOVE);
   if (sm) {
     const newStop = parseNumber(sm[2]!);
-    if (newStop !== undefined) {
-      return { kind: "sl_move", symbol, newStop, note: `move SL to ${newStop}` };
-    }
+    if (newStop !== undefined) add({ kind: "sl_move", symbol, newStop, note: `move SL to ${newStop}` });
   }
 
-  if (RE_TPHIT.test(text)) {
-    return { kind: "tp_hit", symbol, note: "TP reached" };
-  }
+  if (RE_TPHIT.test(text)) add({ kind: "tp_hit", symbol, note: "TP reached" });
 
-  return { kind: "none", symbol, note: "" };
+  return out;
+}
+
+/**
+ * Classify a single (primary) trade-management intent — the first of
+ * classifyManagementAll, or kind "none". Kept for callers that want one action.
+ */
+export function classifyManagement(text: string): ManagementAction {
+  return classifyManagementAll(text)[0] ?? { kind: "none", symbol: extractAnySymbol(text), note: "" };
 }

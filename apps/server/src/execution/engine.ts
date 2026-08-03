@@ -11,7 +11,7 @@ import { hyperliquid } from "../hyperliquid/connector.js";
 import { byName, resolveForSymbol } from "../exchanges/registry.js";
 import type { ExchangeConnector } from "../exchanges/types.js";
 import { parseSignal } from "../signals/parser.js";
-import { classifyManagement, type ManagementAction } from "../signals/management.js";
+import { classifyManagementAll, type ManagementAction } from "../signals/management.js";
 import { expandTakeProfits } from "../signals/takeprofit.js";
 import { assessRisk } from "../risk/score.js";
 import { alertBlocked, alertClosed, alertError, alertOpened, sendAlert } from "../alerts/notifier.js";
@@ -50,11 +50,11 @@ export async function handleIncoming(group: Group, rawText: string): Promise<Sig
   const parsed = await parseSignal(rawText, group.settings.instructions);
 
   if (!parsed || parsed.confidence < ACT_THRESHOLD) {
-    // Not a fresh entry — maybe it's a trade-management update (SL move, partial,
-    // close, invalidation) for an existing position.
-    const action = classifyManagement(rawText);
-    if (action.kind !== "none") {
-      const managed = await applyManagement(group, rawText, action);
+    // Not a fresh entry — maybe it's one or more trade-management updates (SL
+    // move, partial, close, cancel-limit) for existing positions/orders.
+    const actions = classifyManagementAll(rawText);
+    if (actions.length > 0) {
+      const managed = await applyManagement(group, rawText, actions);
       if (managed) return managed;
     }
     const signal = signalsRepo.create({
@@ -321,138 +321,133 @@ async function partialClose(tradeInput: Trade, rawFraction: number): Promise<voi
 }
 
 /**
- * Apply a trade-management message to the group's matching open position(s).
- * Records a "managed" signal for visibility. Returns null if it couldn't act
- * (so the caller falls through to the unparseable path).
+ * Resolve a management action's target symbol: the one the classifier tagged
+ * ($BTC/#BTC/BTC-USDT), else derived by matching the message against the coins
+ * the group actually HOLDS (case-insensitive) — so a bare "Btc moving nicely…
+ * move SL to 62000" binds to the open BTC position. Precise: only ever matches a
+ * symbol we truly have a position/order in, so unrelated chatter can't select one.
+ */
+function deriveSymbol(action: ManagementAction, held: string[], rawText: string): string | undefined {
+  return (
+    action.symbol?.toUpperCase() ??
+    held.find((c) => new RegExp(`\\b${c.replace(/[^A-Z0-9]/g, "")}\\b`, "i").test(rawText))
+  );
+}
+
+/**
+ * Apply one or more trade-management intents from a single message to the group's
+ * matching positions/orders. Records ONE "managed" signal summarizing all of
+ * them. Returns null only when the group is disabled (caller falls through).
  */
 async function applyManagement(
   group: Group,
   rawText: string,
-  action: ManagementAction,
+  actions: ManagementAction[],
 ): Promise<Signal | null> {
   // Don't let messages manage positions of a channel the operator disabled.
   if (!group.enabled) return null;
 
-  const openForGroup = tradesRepo.open().filter((t) => t.groupId === group.id && !t.shadow);
-  const groupWorking = tradesRepo.working().filter((t) => t.groupId === group.id && !t.shadow);
+  const results: string[] = [];
+  let acted = false;
 
-  // Resolve the target symbol. Prefer the one the classifier tagged ($BTC/#BTC/
-  // BTC-USDT); otherwise derive it by matching the message against the coins the
-  // group actually HOLDS (case-insensitive) — so a bare "Btc moving nicely… move
-  // SL to 62000" binds to the open BTC position. This is precise: it only ever
-  // matches a symbol we truly have a position/order in, so unrelated chatter
-  // can't select a target.
-  const held = [...new Set([...openForGroup, ...groupWorking].map((t) => t.symbol.toUpperCase()))];
-  const sym =
-    action.symbol?.toUpperCase() ??
-    held.find((c) => new RegExp(`\\b${c.replace(/[^A-Z0-9]/g, "")}\\b`, "i").test(rawText));
+  for (const action of actions) {
+    // Re-read state per action — an earlier action (e.g. cancel_limit) may have
+    // changed what's open/working.
+    const openForGroup = tradesRepo.open().filter((t) => t.groupId === group.id && !t.shadow);
+    const groupWorking = tradesRepo.working().filter((t) => t.groupId === group.id && !t.shadow);
+    const held = [...new Set([...openForGroup, ...groupWorking].map((t) => t.symbol.toUpperCase()))];
+    const sym = deriveSymbol(action, held, rawText);
 
-  // An SL move / break-even may also target a still-resting limit order (the
-  // default entry mode) — updating its planned stop so the bracket uses the new
-  // level on fill. Partial/close/tp only make sense on an already-open position.
-  const slKind = action.kind === "sl_move" || action.kind === "sl_breakeven";
-  const manageable = slKind ? [...openForGroup, ...groupWorking] : openForGroup;
-  // Only a full `close` (retraction / invalidation) REQUIRES an explicit symbol —
-  // stray chatter containing a close word must never flatten a live position.
-  // Everything else (SL move / break-even, partial book, TP progress) may fall
-  // back to the group's SINGLE managed position when no symbol is given: that's
-  // unambiguous and matches how traders post follow-ups ("move SL to 62000")
-  // right after opening one trade. An SL move is further guarded by the
-  // wrong-side check, so it can't be abused into an instant stop-out.
-  const requireExplicitSymbol = action.kind === "close";
-  const targets = sym
-    ? manageable.filter((t) => t.symbol.toUpperCase() === sym)
-    : !requireExplicitSymbol && manageable.length === 1
-      ? manageable
-      : [];
-
-  // A "close" (retraction / invalidation) should also cancel a still-resting
-  // limit order for that symbol, so an abandoned setup can't fill later.
-  let canceledWorking = 0;
-  if (action.kind === "close" && sym) {
-    const workingForSym = groupWorking.filter((t) => t.symbol.toUpperCase() === sym);
-    for (const w of workingForSym) {
-      await cancelWorkingTrade(w.id, `management: ${action.note}`);
-      canceledWorking++;
+    // Cancel a still-RESTING limit ENTRY order — never touches an open position.
+    if (action.kind === "cancel_limit") {
+      const targetsW = sym
+        ? groupWorking.filter((t) => t.symbol.toUpperCase() === sym)
+        : groupWorking.length === 1
+          ? groupWorking
+          : [];
+      if (targetsW.length === 0) {
+        results.push(`cancel limit — no ${sym ?? ""} working order`.replace(/\s+/g, " ").trim());
+        continue;
+      }
+      for (const w of targetsW) {
+        await cancelWorkingTrade(w.id, `management: ${action.note}`);
+        acted = true;
+      }
+      results.push(`canceled ${targetsW.length} working ${sym ?? ""} order(s)`.replace(/\s+/g, " ").trim());
+      continue;
     }
-  }
 
-  if (targets.length === 0) {
-    // Distinguish "nothing open" from "ambiguous" so the operator knows whether
-    // to name the symbol (the latter happens with 2+ open trades and no symbol).
-    const ambiguous = !sym && manageable.length > 1;
-    const reason =
-      canceledWorking > 0
-        ? `${action.note} — canceled ${canceledWorking} working ${sym} order(s)`
-        : ambiguous
-          ? `${action.note} — ${manageable.length} open positions (${manageable
-              .map((t) => t.symbol)
-              .join(", ")}); specify the symbol`
-          : `${action.note} — no open ${sym ?? ""} position`.trim();
-    const signal = signalsRepo.create({
-      groupId: group.id,
-      groupName: group.name,
-      rawText,
-      status: "managed",
-      error: reason,
-    });
-    event(
-      "manage",
-      canceledWorking > 0
-        ? `Canceled ${canceledWorking} working ${sym} order(s) (${action.note})`
-        : `Management (${action.note}) — no matching open position${sym ? ` for ${sym}` : ""}`,
-      { kind: action.kind, canceledWorking },
-      { groupId: group.id, signalId: signal.id },
-    );
-    broadcast({ type: "signal", signal });
-    return signal;
-  }
+    // SL move / break-even may also target a still-resting limit order (updating
+    // its planned stop). Partial/close/tp only apply to an already-open position.
+    const slKind = action.kind === "sl_move" || action.kind === "sl_breakeven";
+    const manageable = slKind ? [...openForGroup, ...groupWorking] : openForGroup;
+    // Only a full `close` REQUIRES an explicit/derived symbol — stray chatter must
+    // never flatten a position. Others may fall back to the single managed position.
+    const requireExplicitSymbol = action.kind === "close";
+    const targets = sym
+      ? manageable.filter((t) => t.symbol.toUpperCase() === sym)
+      : !requireExplicitSymbol && manageable.length === 1
+        ? manageable
+        : [];
 
-  for (const t of targets) {
-    if (action.kind === "close") {
-      await closeTrade(t.id);
-    } else if (action.kind === "sl_breakeven") {
-      await moveStop(t, t.entryPrice, true);
-    } else if (action.kind === "sl_move" && action.newStop !== undefined) {
-      // Only accept a stop on the PROTECTIVE side of the market — a long's stop
-      // must sit below price, a short's above — else reject (a message like
-      // "SL to 999999" would otherwise force an instant stop-out).
-      let price = t.entryPrice;
-      try {
-        const mid = await connectorFor(t).getMidPrice(t.symbol);
-        if (mid && mid > 0) price = mid;
-      } catch {
-        /* use entry as the reference */
-      }
-      const ok = t.side === "long" ? action.newStop < price : action.newStop > price;
-      if (ok) {
-        await moveStop(t, action.newStop, false);
-      } else {
-        event(
-          "manage",
-          `Rejected SL move for ${t.symbol}: ${action.newStop} is on the wrong side of ${price}`,
-          { newStop: action.newStop, price, side: t.side },
-          { level: "warn", groupId: group.id },
-        );
-      }
-    } else if (action.kind === "partial_close") {
-      await partialClose(t, action.fraction ?? 0);
-      if (action.alsoBreakeven) {
-        const fresh = tradesRepo.get(t.id);
-        if (fresh) await moveStop(fresh, fresh.entryPrice, true);
-      }
-    } else if (action.kind === "tp_hit") {
-      // Only advance the TP counter for SIMULATED trades — for live trades,
-      // reconciliation from real fills is the sole authority (a stray "TP hit"
-      // message must not fabricate banked profit). Clamp to the TP count.
-      if (t.simulated) {
-        const cap = t.takeProfits?.length ?? 0;
-        const next = Math.min((t.tpFilledCount ?? 0) + 1, cap || (t.tpFilledCount ?? 0) + 1);
-        tradesRepo.update(t.id, { tpFilledCount: next });
+    // A `close` should also cancel a still-resting limit for that symbol.
+    if (action.kind === "close" && sym) {
+      for (const w of groupWorking.filter((t) => t.symbol.toUpperCase() === sym)) {
+        await cancelWorkingTrade(w.id, `management: ${action.note}`);
+        acted = true;
       }
     }
-    const u = tradesRepo.get(t.id);
-    if (u) broadcast({ type: "trade", trade: u });
+
+    if (targets.length === 0) {
+      const ambiguous = !sym && manageable.length > 1;
+      results.push(
+        ambiguous
+          ? `${action.note} — ${manageable.length} open (${manageable.map((t) => t.symbol).join(", ")}); name the symbol`
+          : `${action.note} — no open ${sym ?? ""} position`.replace(/\s+/g, " ").trim(),
+      );
+      continue;
+    }
+
+    for (const t of targets) {
+      if (action.kind === "close") {
+        await closeTrade(t.id);
+      } else if (action.kind === "sl_breakeven") {
+        await moveStop(t, t.entryPrice, true);
+      } else if (action.kind === "sl_move" && action.newStop !== undefined) {
+        // Accept a stop only on the PROTECTIVE side of the market (long below,
+        // short above) — else reject, so "SL to 999999" can't force a stop-out.
+        let price = t.entryPrice;
+        try {
+          const mid = await connectorFor(t).getMidPrice(t.symbol);
+          if (mid && mid > 0) price = mid;
+        } catch {
+          /* use entry as the reference */
+        }
+        const ok = t.side === "long" ? action.newStop < price : action.newStop > price;
+        if (ok) await moveStop(t, action.newStop, false);
+        else {
+          event("manage", `Rejected SL move for ${t.symbol}: ${action.newStop} wrong side of ${price}`, { newStop: action.newStop, price, side: t.side }, { level: "warn", groupId: group.id });
+          results.push(`SL ${action.newStop} rejected (wrong side) for ${t.symbol}`);
+          continue;
+        }
+      } else if (action.kind === "partial_close") {
+        await partialClose(t, action.fraction ?? 0);
+        if (action.alsoBreakeven) {
+          const fresh = tradesRepo.get(t.id);
+          if (fresh) await moveStop(fresh, fresh.entryPrice, true);
+        }
+      } else if (action.kind === "tp_hit") {
+        if (t.simulated) {
+          const cap = t.takeProfits?.length ?? 0;
+          const next = Math.min((t.tpFilledCount ?? 0) + 1, cap || (t.tpFilledCount ?? 0) + 1);
+          tradesRepo.update(t.id, { tpFilledCount: next });
+        }
+      }
+      acted = true;
+      const u = tradesRepo.get(t.id);
+      if (u) broadcast({ type: "trade", trade: u });
+    }
+    results.push(`${action.note} → ${targets.map((t) => t.symbol).join(", ")}`);
   }
 
   const signal = signalsRepo.create({
@@ -460,16 +455,16 @@ async function applyManagement(
     groupName: group.name,
     rawText,
     status: "managed",
-    error: `${action.note} → ${targets.map((t) => t.symbol).join(", ")}`,
+    error: results.join(" | "),
   });
   event(
     "manage",
-    `Applied "${action.note}" to ${targets.length} ${targets[0]!.symbol} position(s)`,
-    { kind: action.kind, newStop: action.newStop, fraction: action.fraction },
+    `Managed (${actions.map((a) => a.kind).join(", ")}): ${results.join(" | ")}`,
+    { kinds: actions.map((a) => a.kind), acted },
     { groupId: group.id, signalId: signal.id },
   );
   broadcast({ type: "signal", signal });
-  pushStats();
+  if (acted) pushStats();
   return signal;
 }
 
