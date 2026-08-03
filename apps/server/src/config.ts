@@ -128,6 +128,8 @@ export const config = {
     autoRefineDays: num(process.env.AUTO_REFINE_DAYS, 7),
     /** Min stored messages a channel needs before it is auto-refined. */
     autoRefineMinMessages: num(process.env.AUTO_REFINE_MIN_MESSAGES, 25),
+    /** Read attached chart images with the LLM's vision (needs a key). */
+    vision: bool(process.env.ANTHROPIC_VISION, true),
   },
 
   auth: {

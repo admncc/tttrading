@@ -6,8 +6,36 @@ import { config, telegramReady } from "../config.js";
 import { log, event as logEvent } from "../logger.js";
 import { groups as groupsRepo, settings as settingsRepo } from "../db/repositories.js";
 import { handleIncoming } from "../execution/engine.js";
+import { llmReady, type SignalImage } from "../signals/llm.js";
 
 let client: TelegramClient | null = null;
+
+/** True if the message carries a photo (cheap sync check, no download). */
+function hasPhoto(msg: Api.Message | undefined): boolean {
+  if (!msg) return false;
+  const m = msg as unknown as { photo?: unknown; media?: { className?: string } };
+  return !!m.photo || m.media?.className === "MessageMediaPhoto";
+}
+
+/**
+ * Download a message's chart photo for vision parsing. Gated on the LLM being
+ * configured and vision enabled; skips oversized images to bound cost/latency.
+ */
+async function extractImage(msg: Api.Message | undefined): Promise<SignalImage | undefined> {
+  if (!msg || !client || !config.anthropic.vision || !llmReady() || !hasPhoto(msg)) return undefined;
+  try {
+    const buf = await client.downloadMedia(msg, {});
+    if (!buf || !Buffer.isBuffer(buf)) return undefined;
+    if (buf.length > 4_000_000) {
+      log.warn("Chart image too large for vision — skipping.");
+      return undefined;
+    }
+    return { dataBase64: buf.toString("base64"), mediaType: "image/jpeg" };
+  } catch (err) {
+    log.warn("Chart image download failed:", err instanceof Error ? err.message : err);
+    return undefined;
+  }
+}
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 
 /* ------------------------------- health -------------------------------- */
@@ -143,8 +171,9 @@ async function matchGroup(event: NewMessageEvent): Promise<Group | undefined> {
 }
 
 async function onMessage(event: NewMessageEvent): Promise<void> {
-  const text = event.message?.text;
-  if (!text) return;
+  const text = event.message?.text ?? "";
+  const photo = hasPhoto(event.message);
+  if (!text && !photo) return; // nothing actionable
   const group = await matchGroup(event);
   if (!group) return; // message from a channel we don't track
   const msgId = event.message?.id;
@@ -153,7 +182,8 @@ async function onMessage(event: NewMessageEvent): Promise<void> {
     return; // already processed (e.g. poller beat us to it)
   }
   try {
-    await handleIncoming(group, text);
+    const image = photo ? await extractImage(event.message) : undefined;
+    await handleIncoming(group, text, image);
     gh(group.id).lastMessageAt = new Date().toISOString();
   } catch (err) {
     // Keep the claim (at-most-once): handleIncoming may already have placed a
@@ -245,7 +275,7 @@ async function pollCycle(tg: TelegramClient): Promise<void> {
 
       // Page back from newest until we reach already-seen messages (covers gaps
       // larger than POLL_LIMIT), bounded by MAX_CATCHUP to cap cost.
-      const fresh: { id: number; text: string }[] = [];
+      const fresh: { id: number; text: string; msg: Api.Message }[] = [];
       let offsetId = 0;
       let hitSeen = false;
       while (fresh.length < MAX_CATCHUP && !hitSeen) {
@@ -260,10 +290,12 @@ async function pollCycle(tg: TelegramClient): Promise<void> {
         for (const m of batch) {
           const id = (m as { id?: number }).id;
           if (typeof id !== "number") continue;
-          const text = (m as { message?: string }).message;
+          const text = (m as { message?: string }).message ?? "";
+          const photo = hasPhoto(m);
           if (settingsRepo.claimTelegramMessage(g.id, id)) {
             anyNew = true;
-            if (text) fresh.push({ id, text });
+            // Recover messages that carry text OR a chart image (vision path).
+            if (text || photo) fresh.push({ id, text, msg: m });
           } else {
             hitSeen = true; // reached the already-processed region
           }
@@ -282,7 +314,8 @@ async function pollCycle(tg: TelegramClient): Promise<void> {
           logEvent("message", `Catch-up: recovered missed message from ${g.name}`, { msgId: f.id }, {
             groupId: g.id,
           });
-          await handleIncoming(g, f.text);
+          const image = await extractImage(f.msg);
+          await handleIncoming(g, f.text, image);
           const h = gh(g.id);
           h.lastMessageAt = new Date().toISOString();
           h.recoveredCount++;

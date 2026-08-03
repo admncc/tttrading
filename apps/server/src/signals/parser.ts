@@ -1,6 +1,6 @@
 import type { ParsedSignal } from "@tttrading/shared";
 import { parseWithRegex } from "./regex.js";
-import { parseWithLlm, llmReady } from "./llm.js";
+import { parseWithLlm, llmReady, type SignalImage } from "./llm.js";
 import { settings } from "../db/repositories.js";
 import { event } from "../logger.js";
 
@@ -33,11 +33,15 @@ function crossCheck(rx: ParsedSignal | null, llm: ParsedSignal | null): void {
 export async function parseSignal(
   text: string,
   instructions?: string,
+  image?: SignalImage,
 ): Promise<ParsedSignal | null> {
   const rx = parseWithRegex(text);
 
-  if (settings.getParseMode() === "llm" && llmReady()) {
-    const llm = await parseWithLlm(text, instructions);
+  // LLM path: when the mode is "llm" OR a chart image is attached (only the LLM
+  // can read the drawn levels), parse with the LLM and keep the rules as a
+  // guardrail. Regex alone can't use the image.
+  if ((settings.getParseMode() === "llm" || image) && llmReady()) {
+    const llm = await parseWithLlm(text, instructions, image);
     crossCheck(rx, llm);
     if (llm && llm.confidence >= LLM_MIN) return llm;
     // LLM declined — fall back to a strong (trusted) regex hit as a guardrail.

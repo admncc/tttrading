@@ -10,6 +10,7 @@ import {
 import { activeHyperliquid, byName, resolveAllForSymbol, resolveForSymbol } from "../exchanges/registry.js";
 import type { ExchangeConnector } from "../exchanges/types.js";
 import { parseSignal } from "../signals/parser.js";
+import type { SignalImage } from "../signals/llm.js";
 import { classifyManagementAll, type ManagementAction } from "../signals/management.js";
 import { expandTakeProfits } from "../signals/takeprofit.js";
 import { assessRisk } from "../risk/score.js";
@@ -38,15 +39,16 @@ function symbolAllowed(group: Group, symbol: string): boolean {
  * Entry point for a raw message from a group. Parses it, applies group rules,
  * and either executes immediately (auto) or queues it for confirmation.
  */
-export async function handleIncoming(group: Group, rawText: string): Promise<Signal> {
+export async function handleIncoming(group: Group, rawText: string, image?: SignalImage): Promise<Signal> {
   const preview = rawText.replace(/\s+/g, " ").trim().slice(0, 160);
-  event("message", `Incoming from ${group.name}`, {
+  event("message", `Incoming from ${group.name}${image ? " (with chart image)" : ""}`, {
     channel: group.telegramChannel,
     length: rawText.length,
+    hasImage: !!image,
     preview,
   }, { groupId: group.id });
 
-  const parsed = await parseSignal(rawText, group.settings.instructions);
+  const parsed = await parseSignal(rawText, group.settings.instructions, image);
 
   if (!parsed || parsed.confidence < ACT_THRESHOLD) {
     // Not a fresh entry — maybe it's one or more trade-management updates (SL
