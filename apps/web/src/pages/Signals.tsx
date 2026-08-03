@@ -10,7 +10,15 @@ function ParsedCell({ signal }: { signal: Signal }) {
   return (
     <span>
       <span className={`tag ${p.side}`}>{p.side.toUpperCase()}</span> {p.symbol}
-      {p.entry !== undefined && <span className="muted"> @ {num(p.entry)}</span>}
+      {p.entries && p.entries.length > 1 ? (
+        <span className="muted">
+          {" "}
+          @ {p.entries.map((e) => (e.mode === "market" ? "market" : num(e.price ?? 0))).join(" + ")}{" "}
+          <span className="tag working">scale-in ×{p.entries.length}</span>
+        </span>
+      ) : (
+        p.entry !== undefined && <span className="muted"> @ {num(p.entry)}</span>
+      )}
       {p.stopLoss !== undefined && <span className="muted"> · SL {num(p.stopLoss)}</span>}
       {p.takeProfits && p.takeProfits.length > 0 && (
         <span className="muted"> · TP {p.takeProfits.map((t) => num(t)).join("/")}</span>

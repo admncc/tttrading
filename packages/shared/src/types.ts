@@ -154,6 +154,14 @@ export interface ParsedSignal {
   symbol: string; // e.g. "BTC"
   side: TradeSide;
   entry?: number; // limit entry, undefined => market
+  /**
+   * Scale-in entries: when a signal lists several entry zones to ADD into
+   * (e.g. "First entry (cmp) … Second limit entry …"), each leg becomes its
+   * OWN full-size order sharing the same stop-loss + take-profits. Present only
+   * when there are ≥2 legs; single-entry signals use `entry`. `mode` "market"
+   * = enter now at the current price (cmp), "limit" = rest at `price`.
+   */
+  entries?: { price?: number; mode: "market" | "limit" }[];
   stopLoss?: number;
   takeProfits?: number[];
   leverageHint?: number; // leverage suggested in the message, if any

@@ -674,8 +674,6 @@ async function execute(
   parsed: ParsedSignal,
   risk?: RiskRating,
 ): Promise<Signal> {
-  const { leverage, marginMode, maxSlippage } = group.settings;
-
   // Symbol cooldown: skip a same-symbol+side entry too soon after the last one.
   const cd = group.settings.symbolCooldownMinutes ?? 0;
   if (cd > 0) {
@@ -751,6 +749,39 @@ async function execute(
     event("exec", `Routing ${parsed.symbol} to ${ex.name}`, { exchange: ex.name }, { groupId: group.id, signalId: signal.id });
   }
 
+  // Scale-in: a signal with several entry zones becomes one FULL-size order per
+  // leg, all sharing this signal, stop-loss and take-profits. A single entry
+  // takes the normal path.
+  if (parsed.entries && parsed.entries.length > 1) {
+    return executeScaleIn(signal, group, parsed, risk, ex, parsed.entries);
+  }
+  return placeEntry(signal, group, parsed, risk, ex);
+}
+
+/** Leg context when placing one entry of a multi-entry scale-in. */
+interface LegCtx {
+  index: number;
+  total: number;
+  mode: "market" | "limit";
+}
+
+/**
+ * Place a single entry (a whole single-entry signal, or one leg of a scale-in)
+ * and record the resulting trade: sizing, risk gate, collateral check, then the
+ * limit or market path. `leg` is set only for scale-in legs — it forces that
+ * leg's entry mode and relaxes the working-order dedup so intentional legs at
+ * different prices aren't rejected as duplicates.
+ */
+async function placeEntry(
+  signal: Signal,
+  group: Group,
+  parsed: ParsedSignal,
+  risk: RiskRating | undefined,
+  ex: ExchangeConnector,
+  leg?: LegCtx,
+): Promise<Signal> {
+  const { leverage, marginMode, maxSlippage } = group.settings;
+
   // Position size per the group's sizing mode (against the routed venue).
   const tradeSizeUsd = await effectiveNotional(group, parsed, ex);
 
@@ -792,8 +823,9 @@ async function execute(
   // Limit mode (default): rest an order at the signal's entry and wait for a
   // fill — it becomes a position only when filled. Needs an entry price;
   // otherwise fall through to market.
-  if ((group.settings.entryMode ?? "limit") === "limit" && parsed.entry !== undefined) {
-    return executeLimit(signal, group, parsed, risk, tradeSizeUsd, ex);
+  const mode = leg?.mode ?? (group.settings.entryMode ?? "limit");
+  if (mode === "limit" && parsed.entry !== undefined) {
+    return executeLimit(signal, group, parsed, risk, tradeSizeUsd, ex, leg);
   }
 
   // Market mode: don't chase an entry the market already ran past.
@@ -862,6 +894,79 @@ async function execute(
     orderId: result.orderId,
     simulated: result.simulated,
   });
+}
+
+/**
+ * Scale-in: place one FULL-size order per entry leg, sequentially, on the same
+ * venue. Each leg is a market order (cmp) or a resting limit at its price, and
+ * every leg shares this signal's stop-loss + take-profits. Legs are placed in
+ * order so the per-leg risk gate (max open trades / max exposure) sees the
+ * capital already reserved by earlier legs — that is the guard that stops a
+ * scale-in from blowing the exposure budget: once it's hit, the remaining legs
+ * are skipped, not forced. The signal's final status reflects what actually got
+ * placed.
+ */
+async function executeScaleIn(
+  signal: Signal,
+  group: Group,
+  parsed: ParsedSignal,
+  risk: RiskRating | undefined,
+  ex: ExchangeConnector,
+  legs: NonNullable<ParsedSignal["entries"]>,
+): Promise<Signal> {
+  event(
+    "exec",
+    `Scale-in: ${legs.length} entries for ${parsed.side} ${parsed.symbol}`,
+    { legs: legs.map((l) => ({ price: l.price, mode: l.mode })) },
+    { groupId: group.id, signalId: signal.id },
+  );
+
+  const legErrors: string[] = [];
+  for (let i = 0; i < legs.length; i++) {
+    const leg = legs[i]!;
+    const mode: "market" | "limit" = leg.mode === "market" ? "market" : "limit";
+    // A market/cmp leg enters now (no entry price → no missed-entry guard); a
+    // limit leg rests at its price. Drop the scale-in list on the per-leg copy.
+    const legParsed: ParsedSignal = {
+      ...parsed,
+      entries: undefined,
+      entry: mode === "market" ? undefined : leg.price,
+    };
+    if (mode === "limit" && legParsed.entry === undefined) {
+      legErrors.push(`leg ${i + 1}: limit entry without a price`);
+      continue;
+    }
+    try {
+      await placeEntry(signal, group, legParsed, risk, ex, { index: i, total: legs.length, mode });
+    } catch (err) {
+      legErrors.push(`leg ${i + 1}: ${err instanceof Error ? err.message : String(err)}`);
+      log.error(`scale-in leg ${i + 1} for ${parsed.symbol} failed:`, err instanceof Error ? err.message : err);
+    }
+  }
+
+  // Final status from the trades actually created for this signal (each leg
+  // persists its own trade regardless of how the others fared).
+  const placed = tradesRepo.forSignal(signal.id).filter((t) => !t.shadow);
+  if (placed.length > 0) {
+    const note = legErrors.length
+      ? `scale-in: ${placed.length}/${legs.length} legs placed — ${legErrors.join("; ")}`
+      : undefined;
+    const updated = signalsRepo.update(signal.id, { status: "executed", tradeId: placed[0]!.id, error: note })!;
+    event(
+      "exec",
+      `Scale-in placed ${placed.length}/${legs.length} legs for ${parsed.side} ${parsed.symbol}`,
+      { placed: placed.length, total: legs.length, errors: legErrors },
+      { groupId: group.id, signalId: signal.id, level: legErrors.length ? "warn" : "info" },
+    );
+    broadcast({ type: "signal", signal: updated });
+    return updated;
+  }
+
+  const reason = legErrors.join("; ") || "scale-in: no legs placed";
+  const failed = signalsRepo.update(signal.id, { status: "failed", error: reason })!;
+  event("exec", `Scale-in FAILED for ${parsed.symbol}: ${reason}`, { errors: legErrors }, { level: "error", groupId: group.id, signalId: signal.id });
+  broadcast({ type: "signal", signal: failed });
+  return failed;
 }
 
 /**
@@ -957,6 +1062,7 @@ async function executeLimit(
   risk: RiskRating | undefined,
   notionalUsd: number,
   ex: ExchangeConnector,
+  leg?: LegCtx,
 ): Promise<Signal> {
   const entry = parsed.entry!;
 
@@ -980,10 +1086,13 @@ async function executeLimit(
     /* no price feed — proceed */
   }
 
-  // Dedup: don't stack a second resting order for the same symbol+side.
-  const dup = tradesRepo
-    .working()
-    .find((t) => t.groupId === group.id && t.symbol === parsed.symbol && t.side === parsed.side && !t.shadow);
+  // Dedup: don't stack a second resting order for the same symbol+side — UNLESS
+  // this is an intentional scale-in leg (multiple legs at different prices).
+  const dup = leg
+    ? undefined
+    : tradesRepo
+        .working()
+        .find((t) => t.groupId === group.id && t.symbol === parsed.symbol && t.side === parsed.side && !t.shadow);
   if (dup) {
     const reason = `duplicate: a working ${parsed.side} ${parsed.symbol} order already rests`;
     const ignored = signalsRepo.update(signal.id, { status: "ignored", error: reason })!;

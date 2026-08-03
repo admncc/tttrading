@@ -128,6 +128,29 @@ function extractTakeProfits(text: string): number[] {
 }
 
 /**
+ * Detect a scale-in: several entry zones the trader wants to ADD into, e.g.
+ * "First Entry zone: ($63842)(cmp)  Second limit Entry zone: ($64747)".
+ * Each match's trailing window is inspected for a cmp/market marker → that leg
+ * is a market entry. Returns the legs only when ≥2 distinct prices are found;
+ * otherwise undefined (a single entry is handled by the normal `entry` field).
+ */
+function extractEntries(text: string): { price?: number; mode: "market" | "limit" }[] | undefined {
+  const re =
+    /\b(?:1st|2nd|3rd|4th|first|second|third|fourth)?\s*(?:limit\s+)?entr(?:y|ies)\b(?:\s*zone)?[^0-9\n]{0,20}([0-9][0-9.,]*)([^\n]{0,14})/gi;
+  const legs: { price?: number; mode: "market" | "limit" }[] = [];
+  const seen = new Set<number>();
+  for (const m of text.matchAll(re)) {
+    const price = toNumber(m[1]!);
+    if (price === undefined || seen.has(price)) continue;
+    seen.add(price);
+    const window = m[2] ?? "";
+    const isMarket = /\bcmp\b|\bmarket\b|\bcurrent\b/i.test(window);
+    legs.push({ price, mode: isMarket ? "market" : "limit" });
+  }
+  return legs.length >= 2 ? legs : undefined;
+}
+
+/**
  * Best-effort structured extraction from common signal formats. Returns a
  * ParsedSignal (with a confidence score) or null when direction/symbol can't
  * be found.
@@ -177,9 +200,12 @@ export function parseWithRegex(text: string): ParsedSignal | null {
     /\b([0-9]{1,3})\s*x\b/i,
   ]);
 
+  // Scale-in: several entry zones to add into (each becomes its own order).
+  const entries = extractEntries(text);
+
   // Confidence grows with the number of well-formed fields.
   let confidence = 0.6;
-  if (entry !== undefined) confidence += 0.15;
+  if (entry !== undefined || entries) confidence += 0.15;
   if (stopLoss !== undefined) confidence += 0.15;
   if (takeProfits.length > 0) confidence += 0.1;
   confidence = Math.min(confidence, 1);
@@ -188,6 +214,7 @@ export function parseWithRegex(text: string): ParsedSignal | null {
     symbol,
     side,
     entry,
+    entries,
     stopLoss,
     takeProfits: takeProfits.length ? takeProfits : undefined,
     leverageHint,

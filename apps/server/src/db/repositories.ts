@@ -333,6 +333,13 @@ export const trades = {
       .all(groupId) as TradeRow[];
     return rows.map(toTrade);
   },
+  /** All trades created from one signal (e.g. the legs of a scale-in), oldest first. */
+  forSignal(signalId: string): Trade[] {
+    const rows = db
+      .prepare("SELECT * FROM trades WHERE signal_id = ? ORDER BY opened_at ASC")
+      .all(signalId) as TradeRow[];
+    return rows.map(toTrade);
+  },
   get(id: string): Trade | undefined {
     const row = db.prepare("SELECT * FROM trades WHERE id = ?").get(id) as TradeRow | undefined;
     return row ? toTrade(row) : undefined;

@@ -41,7 +41,21 @@ const EXTRACT_TOOL: Anthropic.Tool = {
       },
       symbol: { type: "string", description: "Base asset ticker, e.g. BTC, ETH, SOL." },
       side: { type: "string", enum: ["long", "short"] },
-      entry: { type: "number", description: "Entry price. Omit for market entry." },
+      entry: { type: "number", description: "Primary entry price. Omit for a market/cmp entry." },
+      entries: {
+        type: "array",
+        description:
+          "Only when the message gives MULTIPLE entry zones to SCALE/ADD into " +
+          "(e.g. 'First entry (cmp) … Second limit entry …', 'add at', 'scale in at'). " +
+          "One object per entry, in order. A single-entry signal must leave this empty.",
+        items: {
+          type: "object",
+          properties: {
+            price: { type: "number", description: "This leg's entry price. Omit if it is a market/cmp entry." },
+            market: { type: "boolean", description: "True if this leg enters now at the current price (cmp/market)." },
+          },
+        },
+      },
       stop_loss: { type: "number" },
       take_profits: { type: "array", items: { type: "number" } },
       leverage: { type: "number", description: "Suggested leverage, if stated." },
@@ -63,6 +77,10 @@ export interface SignalImage {
 const SYSTEM = `You extract structured crypto perpetual trading signals from noisy Telegram messages
 in any language. Normalize the ticker to its base symbol (drop USDT/USDC/PERP suffixes).
 If the message is chat, news, or not actionable, set is_signal=false.
+If the message lists SEVERAL entry zones to scale/add into (e.g. a first entry at
+CMP plus a second/limit entry higher or lower), record EACH one in "entries" (in
+order, with its price and whether it is a market/cmp leg); still fill "entry" with
+the primary/first entry for compatibility. For a single entry, leave "entries" empty.
 If a chart image is attached, read the drawn levels/boxes: the entry zone, the
 take-profit target(s) and the stop-loss are often marked on it. An entry drawn at
 or near the current price means a market entry (omit "entry"). Use the image
@@ -78,6 +96,7 @@ interface ExtractInput {
   symbol?: string;
   side?: TradeSide;
   entry?: number;
+  entries?: { price?: number; market?: boolean }[];
   stop_loss?: number;
   take_profits?: number[];
   leverage?: number;
@@ -138,10 +157,25 @@ export async function parseWithLlm(
       ? input.take_profits.filter((n): n is number => typeof n === "number" && Number.isFinite(n))
       : [];
 
+    // Scale-in legs: keep only when ≥2 usable legs (a market leg needs no price,
+    // a limit leg must have one). A single leg falls back to the plain `entry`.
+    let entries: ParsedSignal["entries"];
+    if (Array.isArray(input.entries)) {
+      const legs = input.entries
+        .map((e) => {
+          const price = num(e?.price);
+          const market = e?.market === true || price === undefined;
+          return { price: market ? undefined : price, mode: market ? "market" : "limit" } as const;
+        })
+        .filter((l) => l.mode === "market" || l.price !== undefined);
+      if (legs.length >= 2) entries = legs;
+    }
+
     return {
       symbol: input.symbol.trim().toUpperCase(),
       side: input.side,
       entry: num(input.entry),
+      entries,
       stopLoss: num(input.stop_loss),
       takeProfits: tps.length ? tps : undefined,
       leverageHint: num(input.leverage),
