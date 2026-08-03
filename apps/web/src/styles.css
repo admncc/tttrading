@@ -3,13 +3,17 @@
   --panel: #131722;
   --panel-2: #1a1f2e;
   --border: #232838;
+  --border-strong: #2e3547;
   --text: #d7dbe6;
   --muted: #8b93a7;
   --accent: #3b82f6;
+  --accent-soft: rgba(59, 130, 246, 0.14);
   --pos: #22c55e;
   --neg: #ef4444;
   --warn: #f59e0b;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 4px 16px rgba(0, 0, 0, 0.18);
   font-family: "Inter", system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  color-scheme: dark;
 }
 
 * {
@@ -21,6 +25,32 @@ body {
   background: var(--bg);
   color: var(--text);
   font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Tabular figures everywhere numbers matter, so columns line up. */
+td,
+.kpi .value,
+.value,
+input {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Dark, unobtrusive scrollbars. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 8px;
+  border: 2px solid var(--bg);
 }
 
 .app {
@@ -31,15 +61,17 @@ body {
 /* sidebar */
 .sidebar {
   width: 220px;
+  flex-shrink: 0;
   background: var(--panel);
   border-right: 1px solid var(--border);
   padding: 20px 14px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   position: sticky;
   top: 0;
   height: 100vh;
+  overflow-y: auto;
 }
 .brand {
   font-weight: 700;
@@ -51,20 +83,31 @@ body {
   color: var(--accent);
 }
 .nav-item {
-  padding: 10px 12px;
+  padding: 9px 12px;
   border-radius: 8px;
   cursor: pointer;
   color: var(--muted);
   border: 1px solid transparent;
+  position: relative;
+  transition: background 0.12s ease, color 0.12s ease;
 }
 .nav-item:hover {
   background: var(--panel-2);
   color: var(--text);
 }
 .nav-item.active {
-  background: var(--panel-2);
-  color: var(--text);
-  border-color: var(--border);
+  background: var(--accent-soft);
+  color: #fff;
+}
+.nav-item.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--accent);
 }
 .env-badge {
   margin-top: auto;
@@ -83,26 +126,34 @@ body {
 }
 .dot.live {
   background: var(--pos);
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.15);
 }
 .dot.sim {
   background: var(--warn);
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.15);
 }
 
 /* main */
 .main {
   flex: 1;
+  min-width: 0;
   padding: 24px 28px;
   overflow-x: hidden;
 }
 h1 {
   font-size: 20px;
   margin: 0 0 20px;
+  letter-spacing: -0.01em;
 }
 h2 {
   font-size: 15px;
   margin: 0 0 12px;
   color: var(--muted);
   font-weight: 600;
+}
+h3 {
+  font-size: 14px;
+  margin: 0 0 8px;
 }
 
 /* kpi cards */
@@ -117,6 +168,11 @@ h2 {
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 16px;
+  box-shadow: var(--shadow);
+  transition: border-color 0.12s ease;
+}
+.kpi:hover {
+  border-color: var(--border-strong);
 }
 .kpi .label {
   color: var(--muted);
@@ -128,6 +184,7 @@ h2 {
   font-size: 24px;
   font-weight: 700;
   margin-top: 6px;
+  letter-spacing: -0.02em;
 }
 
 .panel {
@@ -136,6 +193,7 @@ h2 {
   border-radius: 12px;
   padding: 18px;
   margin-bottom: 20px;
+  box-shadow: var(--shadow);
 }
 
 /* tables */
@@ -156,12 +214,23 @@ th {
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.4px;
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  z-index: 1;
+}
+tbody tr {
+  transition: background 0.1s ease;
 }
 tbody tr:hover {
   background: var(--panel-2);
 }
+tbody tr:last-child td {
+  border-bottom: none;
+}
 .table-scroll {
   overflow-x: auto;
+  border-radius: 10px;
 }
 
 .pos {
@@ -170,6 +239,9 @@ tbody tr:hover {
 .neg {
   color: var(--neg);
 }
+.warn {
+  color: var(--warn);
+}
 .muted {
   color: var(--muted);
 }
@@ -177,10 +249,12 @@ tbody tr:hover {
 .tag {
   display: inline-block;
   padding: 2px 8px;
-  border-radius: 6px;
+  border-radius: 999px;
   font-size: 12px;
+  line-height: 1.6;
   border: 1px solid var(--border);
   background: var(--panel-2);
+  white-space: nowrap;
 }
 .tag.long {
   color: var(--pos);
@@ -193,13 +267,20 @@ tbody tr:hover {
 .tag.pending {
   color: var(--warn);
 }
-.tag.executed {
+.tag.executed,
+.tag.open,
+.tag.successful {
   color: var(--pos);
+  border-color: rgba(34, 197, 94, 0.3);
+}
+.tag.closed {
+  color: var(--muted);
 }
 .tag.rejected,
 .tag.failed,
 .tag.unparseable {
   color: var(--neg);
+  border-color: rgba(239, 68, 68, 0.25);
 }
 .tag.managed {
   color: var(--accent);
@@ -209,7 +290,9 @@ tbody tr:hover {
   color: var(--warn);
   border-color: rgba(245, 158, 11, 0.35);
 }
-.tag.canceled {
+.tag.canceled,
+.tag.ignored,
+.tag.backfill {
   color: var(--muted);
 }
 .tag.blocked {
@@ -225,17 +308,29 @@ button {
   background: var(--panel-2);
   color: var(--text);
   padding: 8px 14px;
+  transition: border-color 0.12s ease, background 0.12s ease, transform 0.05s ease;
 }
 button:hover {
   border-color: var(--accent);
+}
+button:active {
+  transform: translateY(1px);
 }
 button.primary {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
 }
+button.primary:hover {
+  background: #2f6fe0;
+}
 button.danger {
   color: var(--neg);
+  border-color: rgba(239, 68, 68, 0.4);
+}
+button.danger:hover {
+  border-color: var(--neg);
+  background: rgba(239, 68, 68, 0.1);
 }
 button.ghost {
   background: transparent;
@@ -247,6 +342,7 @@ button:disabled {
 .btn-row {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 input,
@@ -259,6 +355,26 @@ textarea {
   border-radius: 8px;
   padding: 8px 10px;
   width: 100%;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+input:hover,
+select:hover,
+textarea:hover {
+  border-color: var(--border-strong);
+}
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+/* Visible keyboard focus for buttons/nav (accessibility). */
+button:focus-visible,
+.nav-item:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 label {
   display: block;
@@ -278,7 +394,9 @@ label {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
   margin-bottom: 14px;
+  flex-wrap: wrap;
 }
 
 .empty {
@@ -304,5 +422,36 @@ label {
 @media (max-width: 900px) {
   .grid-2 {
     grid-template-columns: 1fr;
+  }
+}
+
+/* Responsive: collapse the sidebar into a top bar on narrow screens. */
+@media (max-width: 820px) {
+  .app {
+    flex-direction: column;
+  }
+  .sidebar {
+    width: 100%;
+    height: auto;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 12px;
+  }
+  .brand {
+    padding: 4px 8px;
+  }
+  .nav-item.active::before {
+    display: none;
+  }
+  .env-badge {
+    margin: 0 0 0 auto;
+  }
+  .main {
+    padding: 16px 14px;
   }
 }
