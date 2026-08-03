@@ -25,8 +25,10 @@ export function hlReady(): boolean {
 
 /* --------------------------------- Aster ------------------------------- */
 export function asterEnabled(): boolean {
+  // An explicit desk toggle wins (so it can be turned OFF even with a key set);
+  // only auto-enable from env/key presence when the desk hasn't set it.
   const v = settings.getExchangeFlag("aster.enabled");
-  return v === undefined ? config.aster.enabled : v || !!asterApiKey();
+  return v === undefined ? config.aster.enabled || !!asterApiKey() : v;
 }
 export function asterApiKey(): string {
   return settings.getExchangeValue("aster.apiKey") || config.aster.apiKey;
@@ -43,8 +45,9 @@ export function asterReady(): boolean {
 
 /* --------------------------------- MEXC -------------------------------- */
 export function mexcEnabled(): boolean {
+  // Explicit desk toggle wins; only auto-enable from env/key when unset.
   const v = settings.getExchangeFlag("mexc.enabled");
-  return v === undefined ? config.mexc.enabled : v || !!mexcApiKey();
+  return v === undefined ? config.mexc.enabled || !!mexcApiKey() : v;
 }
 export function mexcApiKey(): string {
   return settings.getExchangeValue("mexc.apiKey") || config.mexc.apiKey;
