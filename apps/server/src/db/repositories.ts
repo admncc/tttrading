@@ -534,6 +534,16 @@ export const settings = {
   setRiskLimit(key: "dailyLossLimitUsd" | "maxOpenTrades" | "maxExposureUsd", value: number): void {
     kvSet(key, String(Number.isFinite(value) && value > 0 ? value : 0));
   },
+  /**
+   * Message-processing priority: "regex" (fast rules first, LLM fallback — the
+   * default) or "llm" (LLM first, with the rules as a cross-check/guardrail).
+   */
+  getParseMode(): "regex" | "llm" {
+    return kvGet("parseMode") === "llm" ? "llm" : "regex";
+  },
+  setParseMode(mode: "regex" | "llm"): void {
+    kvSet("parseMode", mode === "llm" ? "llm" : "regex");
+  },
   /** Route an opposing signal to a backup venue instead of netting. Default on. */
   getSplitOpposingVenues(): boolean {
     const v = kvGet("splitOpposingVenues");

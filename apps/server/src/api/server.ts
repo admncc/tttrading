@@ -228,6 +228,7 @@ export async function buildServer() {
     anthropicKeySource: settingsRepo.getAnthropicKey() ? "desk" : config.anthropic.apiKey ? "env" : "none",
     anthropicModel: settingsRepo.getAnthropicModel() || config.anthropic.model,
     autoRefine: settingsRepo.getAutoRefine(config.anthropic.autoRefine),
+    parseMode: settingsRepo.getParseMode(),
   });
   app.get("/api/settings", async () => settingsPayload());
 
@@ -243,6 +244,7 @@ export async function buildServer() {
       anthropicKey: z.string().max(500).optional(), // "" clears the desk-stored key
       anthropicModel: z.string().max(100).optional(),
       autoRefine: z.boolean().optional(),
+      parseMode: z.enum(["regex", "llm"]).optional(),
     });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
@@ -260,6 +262,7 @@ export async function buildServer() {
     if (d.maxOpenTrades !== undefined) settingsRepo.setRiskLimit("maxOpenTrades", d.maxOpenTrades);
     if (d.maxExposureUsd !== undefined) settingsRepo.setRiskLimit("maxExposureUsd", d.maxExposureUsd);
     if (d.splitOpposingVenues !== undefined) settingsRepo.setSplitOpposingVenues(d.splitOpposingVenues);
+    if (d.parseMode !== undefined) settingsRepo.setParseMode(d.parseMode);
     if (d.anthropicKey !== undefined) {
       settingsRepo.setAnthropicKey(d.anthropicKey.trim());
       log.info(`Anthropic key ${d.anthropicKey.trim() ? "updated via desk" : "cleared"}.`);

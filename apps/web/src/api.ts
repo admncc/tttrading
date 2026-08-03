@@ -153,6 +153,7 @@ export const api = {
       anthropicKeySource: string;
       anthropicModel: string;
       autoRefine: boolean;
+      parseMode: "regex" | "llm";
     }>("/api/settings"),
   updateSettings: (patch: {
     shadowMode?: boolean;
@@ -162,6 +163,7 @@ export const api = {
     maxExposureUsd?: number;
     splitOpposingVenues?: boolean;
     autoRefine?: boolean;
+    parseMode?: "regex" | "llm";
   }) =>
     req<{ shadowMode: boolean }>("/api/settings", {
       method: "PUT",

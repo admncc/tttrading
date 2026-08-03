@@ -129,6 +129,9 @@ export function Settings() {
   const [err, setErr] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  // Message-processing priority (LLM vs regex rules).
+  const [parseMode, setParseMode] = useState<"regex" | "llm">("regex");
+  const [parseBusy, setParseBusy] = useState(false);
 
   // HL (mainnet + testnet as separate venues)
   const [hlMain, setHlMain] = useState<HlEdit>({ key: "", clear: false, addr: "", enabled: false });
@@ -167,6 +170,21 @@ export function Settings() {
       .catch((e) => setErr(e instanceof Error ? e.message : String(e)));
   };
   useEffect(load, []);
+  useEffect(() => {
+    api.getSettings().then((s) => setParseMode(s.parseMode)).catch(() => {});
+  }, []);
+
+  const saveParseMode = async (mode: "regex" | "llm") => {
+    setParseBusy(true);
+    try {
+      await api.updateSettings({ parseMode: mode });
+      setParseMode(mode);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setParseBusy(false);
+    }
+  };
 
   const save = async () => {
     setSaving(true);
@@ -233,6 +251,35 @@ export function Settings() {
         <button className="ghost" onClick={load}>
           Refresh
         </button>
+      </div>
+
+      <h2 style={{ marginBottom: 4 }}>Message processing</h2>
+      <div className="panel">
+        <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>
+          How incoming messages are parsed into signals. The other engine is always used
+          as a cross-check — disagreements are logged under Logs → message.
+        </div>
+        <div className="btn-row">
+          <button
+            className={parseMode === "regex" ? "primary" : "ghost"}
+            disabled={parseBusy}
+            onClick={() => void saveParseMode("regex")}
+          >
+            Rules first (regex)
+          </button>
+          <button
+            className={parseMode === "llm" ? "primary" : "ghost"}
+            disabled={parseBusy}
+            onClick={() => void saveParseMode("llm")}
+          >
+            LLM first
+          </button>
+        </div>
+        <div className="muted" style={{ fontSize: 11, marginTop: 8 }}>
+          {parseMode === "llm"
+            ? "LLM parses first (needs an Anthropic key); a strong rules hit is the guardrail if the LLM declines."
+            : "Fast deterministic rules first; the LLM fills in when rules are unsure or a channel has custom instructions."}
+        </div>
       </div>
 
       <h2 style={{ marginBottom: 4 }}>Exchanges</h2>
