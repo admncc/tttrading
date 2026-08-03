@@ -142,6 +142,15 @@ function computeAdvanced(list: Trade[]): AdvancedStats {
     .map((t) => (new Date(t.closedAt!).getTime() - new Date(t.openedAt).getTime()) / 3_600_000)
     .filter((h) => Number.isFinite(h) && h >= 0);
   const totalFees = closed.reduce((s, t) => s + (t.fees ?? 0), 0);
+  // Adverse entry slippage vs the signal's price, in basis points: for a long,
+  // paying MORE than asked is adverse (+); for a short, filling LOWER is adverse.
+  const slips = closed
+    .map((t) => {
+      if (t.signalEntry === undefined || !(t.signalEntry > 0)) return undefined;
+      const diff = t.side === "long" ? t.entryPrice - t.signalEntry : t.signalEntry - t.entryPrice;
+      return (diff / t.signalEntry) * 10_000;
+    })
+    .filter((s): s is number => s !== undefined && Number.isFinite(s));
   // Realized reward:risk = PnL ÷ (initial risk from entry→SL), for trades that
   // had a stop-loss and a positive size.
   const rrs = closed
@@ -167,6 +176,8 @@ function computeAdvanced(list: Trade[]): AdvancedStats {
       ? Number((holdHours.reduce((s, h) => s + h, 0) / holdHours.length).toFixed(1))
       : 0,
     totalFees: Number(totalFees.toFixed(2)),
+    avgSlippageBps: slips.length ? Number((slips.reduce((s, v) => s + v, 0) / slips.length).toFixed(1)) : 0,
+    slippageSampleSize: slips.length,
   };
 }
 

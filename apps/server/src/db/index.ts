@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS trades (
   notional_usd REAL NOT NULL,
   size REAL NOT NULL,
   entry_price REAL NOT NULL,
+  signal_entry REAL,
   exit_price REAL,
   stop_loss REAL,
   take_profits TEXT,             -- JSON number[]
@@ -114,6 +115,7 @@ function migrate(database: Database.Database): void {
       banked_pnl: "REAL",
       banked_fees: "REAL",
       exchange: "TEXT",
+      signal_entry: "REAL",
     },
     signals: {
       risk: "TEXT",

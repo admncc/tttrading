@@ -912,6 +912,7 @@ async function recordFilledEntry(
     notionalUsd,
     size: fill.filledSize,
     entryPrice: fill.filledPrice,
+    signalEntry: parsed.entry,
     stopLoss,
     takeProfits: takeProfits.length ? takeProfits : undefined,
     exchangeOrderId: fill.orderId,
@@ -1104,7 +1105,7 @@ export async function promoteWorkingToOpen(
     });
     if (updated) {
       event("exec", `Limit filled → opened ${t.side} ${t.symbol} @ ${updated.entryPrice}`, { tradeId, protected: bracket.protectedOnExchange }, { groupId: t.groupId });
-      alertOpened(updated);
+      alertOpened(updated, true);
       broadcast({ type: "trade", trade: updated });
       pushStats();
     }

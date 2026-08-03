@@ -8,7 +8,13 @@ import type { WsEvent } from "@tttrading/shared";
 import { config, authEnabled } from "../config.js";
 import { checkUpdates, runUpdate } from "../system/update.js";
 import { bearer, checkPassword, signToken, verifyToken } from "../auth.js";
-import { log } from "../logger.js";
+import { log, event } from "../logger.js";
+import type { FastifyRequest } from "fastify";
+
+/** Record a desk action to the audit trail (category "audit"), with requester IP. */
+function audit(req: FastifyRequest, message: string, meta?: Record<string, unknown>): void {
+  event("audit", message, { ...meta, ip: req.ip }, { level: "warn" });
+}
 import {
   groups as groupsRepo,
   logs as logsRepo,
@@ -220,6 +226,7 @@ export async function buildServer() {
       log.info(`Anthropic key ${d.anthropicKey.trim() ? "updated via desk" : "cleared"}.`);
     }
     if (d.anthropicModel !== undefined) settingsRepo.setAnthropicModel(d.anthropicModel.trim());
+    audit(req, "settings updated", { fields: Object.keys(d) });
     broadcast({ type: "settings", settings: settingsRepo.getGlobalSettings() });
     return settingsPayload();
   });
@@ -335,14 +342,16 @@ export async function buildServer() {
       if (d.mexc.apiSecret !== undefined) settingsRepo.setExchangeValue("mexc.apiSecret", d.mexc.apiSecret.trim());
       if (d.mexc.baseUrl !== undefined) settingsRepo.setExchangeValue("mexc.baseUrl", d.mexc.baseUrl.trim());
     }
+    audit(req, "exchange settings updated", { venues: Object.keys(d) });
     return exchangesPayload();
   });
 
   // Kill-switch: close all open positions AND pause new entries.
-  app.post("/api/kill", async (_req, reply) => {
+  app.post("/api/kill", async (req, reply) => {
     if (!authEnabled) return reply.code(403).send({ error: "Set DESK_PASSWORD to enable the kill-switch." });
     settingsRepo.setTradingPaused(true);
     const res = await closeAllTrades();
+    audit(req, "KILL-SWITCH activated", res);
     broadcast({ type: "settings", settings: settingsRepo.getGlobalSettings() });
     log.warn(`KILL-SWITCH activated — trading paused, closed ${res.closed} trades.`);
     return { ok: true, ...res };
@@ -527,10 +536,12 @@ export async function buildServer() {
     const existing = tradesRepo.get(req.params.id);
     if (existing?.status === "working") {
       await cancelWorkingTrade(req.params.id, "canceled from desk");
+      audit(req, `canceled working ${existing.symbol}`, { id: req.params.id });
       return tradesRepo.get(req.params.id) ?? existing;
     }
     const trade = await closeTrade(req.params.id, parsed.data.exitPrice);
     if (!trade) return reply.code(404).send({ error: "not found" });
+    audit(req, `closed ${trade.symbol}`, { id: req.params.id, pnl: trade.realizedPnl });
     return trade;
   });
 
@@ -540,6 +551,7 @@ export async function buildServer() {
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     const res = await setTradeStop(req.params.id, parsed.data.price);
     if (!res.ok) return reply.code(400).send({ error: res.error });
+    audit(req, `set SL ${parsed.data.price} on ${res.trade?.symbol ?? req.params.id}`, { id: req.params.id });
     return res.trade;
   });
 
@@ -551,6 +563,7 @@ export async function buildServer() {
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     const res = await setTradeTakeProfits(req.params.id, parsed.data.prices);
     if (!res.ok) return reply.code(400).send({ error: res.error });
+    audit(req, `set TPs [${parsed.data.prices.join(", ")}] on ${res.trade?.symbol ?? req.params.id}`, { id: req.params.id });
     return res.trade;
   });
 
@@ -560,6 +573,7 @@ export async function buildServer() {
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     const res = await bookTradePartial(req.params.id, parsed.data.fraction);
     if (!res.ok) return reply.code(400).send({ error: res.error });
+    audit(req, `booked ${(parsed.data.fraction * 100).toFixed(0)}% of ${res.trade?.symbol ?? req.params.id}`, { id: req.params.id });
     return res.trade;
   });
 
@@ -619,6 +633,7 @@ export async function buildServer() {
       }
       const res = await hyperliquid.transferUsd(amount, toPerp);
       if (!res.ok) return reply.code(400).send({ error: res.error });
+      audit(req, `transferred ${amount} USDC ${toPerp ? "spot→perp" : "perp→spot"}`, { amount, toPerp });
       log.info(`Transferred ${amount} USDC ${toPerp ? "spot→perp" : "perp→spot"}.`);
       return { ok: true };
     },
@@ -643,6 +658,7 @@ export async function buildServer() {
       }
       const res = await placeTestOrder({ symbol, side, notionalUsd, leverage });
       if (!res.ok) return reply.code(400).send({ error: res.error });
+      audit(req, `test order ${side} ${symbol} ${notionalUsd} USDC ${leverage}x`, { symbol, side, notionalUsd, leverage });
       return res.trade;
     },
   );

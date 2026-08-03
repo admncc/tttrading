@@ -83,6 +83,7 @@ interface TradeRow {
   notional_usd: number;
   size: number;
   entry_price: number;
+  signal_entry: number | null;
   exit_price: number | null;
   stop_loss: number | null;
   take_profits: string | null;
@@ -119,6 +120,7 @@ function toTrade(r: TradeRow): Trade {
     notionalUsd: r.notional_usd,
     size: r.size,
     entryPrice: r.entry_price,
+    signalEntry: r.signal_entry ?? undefined,
     exitPrice: r.exit_price ?? undefined,
     stopLoss: r.stop_loss ?? undefined,
     takeProfits: r.take_profits ? (JSON.parse(r.take_profits) as number[]) : undefined,
@@ -340,11 +342,11 @@ export const trades = {
     const openedAt = input.openedAt ?? now();
     db.prepare(
       `INSERT INTO trades (id, signal_id, group_id, group_name, symbol, side, status, env, exchange,
-        leverage, notional_usd, size, entry_price, exit_price, stop_loss, take_profits,
+        leverage, notional_usd, size, entry_price, signal_entry, exit_price, stop_loss, take_profits,
         realized_pnl, fees, banked_pnl, banked_fees, exchange_order_id, sl_order_id, tp_order_ids, bracket_protected,
         tp_filled_count, sl_moved_to_breakeven, risk, shadow, simulated, error, opened_at, closed_at)
        VALUES (@id, @signal_id, @group_id, @group_name, @symbol, @side, @status, @env, @exchange,
-        @leverage, @notional_usd, @size, @entry_price, @exit_price, @stop_loss, @take_profits,
+        @leverage, @notional_usd, @size, @entry_price, @signal_entry, @exit_price, @stop_loss, @take_profits,
         @realized_pnl, @fees, @banked_pnl, @banked_fees, @exchange_order_id, @sl_order_id, @tp_order_ids, @bracket_protected,
         @tp_filled_count, @sl_moved_to_breakeven, @risk, @shadow, @simulated, @error, @opened_at, @closed_at)`,
     ).run({
@@ -361,6 +363,7 @@ export const trades = {
       notional_usd: input.notionalUsd,
       size: input.size,
       entry_price: input.entryPrice,
+      signal_entry: input.signalEntry ?? null,
       exit_price: input.exitPrice ?? null,
       stop_loss: input.stopLoss ?? null,
       take_profits: input.takeProfits ? JSON.stringify(input.takeProfits) : null,

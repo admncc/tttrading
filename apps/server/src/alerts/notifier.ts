@@ -29,21 +29,38 @@ export async function sendAlert(text: string): Promise<void> {
 
 const pnl = (n?: number) => (n === undefined ? "?" : `${n >= 0 ? "+" : ""}${n.toFixed(2)} USDC`);
 
-export function alertOpened(trade: Trade): void {
+const venueTag = (t: Trade) => (t.exchange && t.exchange !== "hyperliquid" ? ` · ${t.exchange}` : "");
+
+export function alertOpened(trade: Trade, filledFromLimit = false): void {
   if (!config.alerts.onFill) return;
+  const head = filledFromLimit ? "🎯 <b>Limit filled</b>" : "🟢 <b>Opened</b>";
   void sendAlert(
-    `🟢 <b>Opened</b> ${trade.side.toUpperCase()} ${esc(trade.symbol)} ` +
+    `${head} ${trade.side.toUpperCase()} ${esc(trade.symbol)} ` +
       `${trade.leverage}x · ${trade.notionalUsd} USDC @ ${trade.entryPrice}\n` +
-      `<i>${esc(trade.groupName)}</i>`,
+      `<i>${esc(trade.groupName)}${venueTag(trade)}</i>`,
   );
+}
+
+/** Infer why a trade closed from its exit vs SL/TP, for a clearer alert header. */
+function closeReason(t: Trade): string {
+  const exit = t.exitPrice;
+  if (exit !== undefined) {
+    if (t.stopLoss !== undefined && (t.side === "long" ? exit <= t.stopLoss * 1.0005 : exit >= t.stopLoss * 0.9995)) {
+      return t.slMovedToBreakeven ? "🟡 <b>Stopped (break-even)</b>" : "🛑 <b>Stopped out</b>";
+    }
+    const tps = t.takeProfits ?? [];
+    if (tps.length && (t.side === "long" ? exit >= tps[0]! : exit <= tps[0]!)) {
+      return "🎯 <b>Take-profit</b>";
+    }
+  }
+  return (t.realizedPnl ?? 0) >= 0 ? "✅ <b>Closed</b>" : "🔻 <b>Closed</b>";
 }
 
 export function alertClosed(trade: Trade): void {
   if (!config.alerts.onFill) return;
-  const emoji = (trade.realizedPnl ?? 0) >= 0 ? "✅" : "🔻";
   void sendAlert(
-    `${emoji} <b>Closed</b> ${trade.side.toUpperCase()} ${esc(trade.symbol)} — ${pnl(trade.realizedPnl)}\n` +
-      `<i>${esc(trade.groupName)}</i>`,
+    `${closeReason(trade)} ${trade.side.toUpperCase()} ${esc(trade.symbol)} — ${pnl(trade.realizedPnl)}\n` +
+      `<i>${esc(trade.groupName)}${venueTag(trade)}</i>`,
   );
 }
 

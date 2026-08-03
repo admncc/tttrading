@@ -52,6 +52,7 @@ function BucketTable({ title, rows }: { title: string; rows: AnalyticsBucket[] }
               <th>Avg loss</th>
               <th>Max DD</th>
               <th>Avg hold</th>
+              <th>Slippage</th>
             </tr>
           </thead>
           <tbody>
@@ -74,11 +75,17 @@ function BucketTable({ title, rows }: { title: string; rows: AnalyticsBucket[] }
                     ? `${(b.stats.avgHoldHours / 24).toFixed(1)}d`
                     : `${b.stats.avgHoldHours}h`}
                 </td>
+                <td
+                  className={b.stats.slippageSampleSize ? (b.stats.avgSlippageBps > 0 ? "neg" : "pos") : "muted"}
+                  title={`${b.stats.slippageSampleSize} trades with a signal entry (positive = adverse)`}
+                >
+                  {b.stats.slippageSampleSize ? `${b.stats.avgSlippageBps} bps` : "—"}
+                </td>
               </tr>
             ))}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={11} className="empty">
+                <td colSpan={12} className="empty">
                   No closed trades in range.
                 </td>
               </tr>
@@ -195,6 +202,11 @@ export function Analytics() {
             <Kpi label="Avg Loss" value={usd(o!.avgLoss)} cls="neg" />
             <Kpi label="Max Drawdown" value={usd(o!.maxDrawdown)} cls="neg" />
             <Kpi label="Avg Hold" value={o!.avgHoldHours >= 24 ? `${(o!.avgHoldHours / 24).toFixed(1)}d` : `${o!.avgHoldHours}h`} />
+            <Kpi
+              label="Avg Slippage"
+              value={o!.slippageSampleSize ? `${o!.avgSlippageBps} bps` : "—"}
+              cls={o!.slippageSampleSize ? (o!.avgSlippageBps > 0 ? "neg" : "pos") : undefined}
+            />
             <Kpi label="Best / Worst" value={`${usd(o!.bestTrade)} / ${usd(o!.worstTrade)}`} />
             <Kpi label="Total Fees" value={usd(o!.totalFees)} cls="neg" />
           </div>

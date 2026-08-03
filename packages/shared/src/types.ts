@@ -201,6 +201,8 @@ export interface Trade {
   /** Position size in asset units. */
   size: number;
   entryPrice: number;
+  /** The entry price the signal asked for (planned) — for slippage analysis. */
+  signalEntry?: number;
   exitPrice?: number;
   stopLoss?: number;
   takeProfits?: number[];
@@ -310,6 +312,10 @@ export interface AdvancedStats extends PerformanceStats {
   avgHoldHours: number;
   /** Total fees paid across closed trades. */
   totalFees: number;
+  /** Average adverse entry slippage vs the signal's price, in basis points. */
+  avgSlippageBps: number;
+  /** Closed trades that had a signal entry price (basis for avgSlippageBps). */
+  slippageSampleSize: number;
 }
 
 /** One analytics row: performance for a group, symbol, or side. */

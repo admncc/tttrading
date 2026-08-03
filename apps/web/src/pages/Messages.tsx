@@ -19,11 +19,22 @@ export function Messages({
   onChange: () => void;
 }) {
   const [groupId, setGroupId] = useState<string>("all");
+  const [sort, setSort] = useState<"time" | "group">("time");
   const [days, setDays] = useState(30);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<string | null>(null);
 
-  const shown = signals.filter((s) => (groupId === "all" ? true : s.groupId === groupId));
+  const shown = signals
+    .filter((s) => (groupId === "all" ? true : s.groupId === groupId))
+    .slice()
+    .sort((a, b) => {
+      if (sort === "group") {
+        const g = a.groupName.localeCompare(b.groupName);
+        if (g !== 0) return g;
+      }
+      // Within a group (or overall for "time"), newest first.
+      return (b.receivedAt ?? "").localeCompare(a.receivedAt ?? "");
+    });
 
   const runBackfill = async () => {
     setBusy(true);
@@ -48,18 +59,20 @@ export function Messages({
     <div>
       <div className="row-between">
         <h1 style={{ margin: 0 }}>Messages</h1>
-        <select
-          value={groupId}
-          onChange={(e) => setGroupId(e.target.value)}
-          style={{ width: 220 }}
-        >
-          <option value="all">All channels</option>
-          {groups.map((g) => (
-            <option key={g.id} value={g.id}>
-              {g.name} ({g.telegramChannel})
-            </option>
-          ))}
-        </select>
+        <div className="btn-row" style={{ alignItems: "center" }}>
+          <select value={sort} onChange={(e) => setSort(e.target.value as "time" | "group")}>
+            <option value="time">Sort: newest</option>
+            <option value="group">Sort: by channel</option>
+          </select>
+          <select value={groupId} onChange={(e) => setGroupId(e.target.value)} style={{ width: 220 }}>
+            <option value="all">All channels</option>
+            {groups.map((g) => (
+              <option key={g.id} value={g.id}>
+                {g.name} ({g.telegramChannel})
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
 
       <div className="panel" style={{ display: "flex", alignItems: "center", gap: 12 }}>

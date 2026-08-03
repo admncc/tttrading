@@ -9,7 +9,7 @@ const LEVEL_COLOR: Record<string, string> = {
   error: "var(--neg)",
 };
 
-const CATEGORIES = ["all", "message", "exec", "monitor", "system"];
+const CATEGORIES = ["all", "message", "exec", "manage", "monitor", "audit", "system"];
 
 export function Logs({ logs, onReload }: { logs: LogEntry[]; onReload: () => void }) {
   const [category, setCategory] = useState("all");
