@@ -141,15 +141,27 @@ export function parseWithRegex(text: string): ParsedSignal | null {
   const symbol = extractSymbol(text, side);
   if (!symbol) return null;
 
-  const entry = firstNumber(text, [
-    // "Entry: CMP till 3361" / "buy up till 0.245" -> the limit after "till".
-    /\btill\s*([0-9][0-9.,]*)/i,
-    // Allow small filler between the label and the number ("entry at $3361",
-    // "entry: 3361", "enter @ 3361"). Bare "Cmp"/"market" gives no number → market.
-    /\b(?:entry|enter|entradas?|einstieg)\b(?:\s*(?:at|@|:|=|around|near)?\s*\$?){0,2}\s*([0-9][0-9.,]*)/i,
-    /@\s*([0-9][0-9.,]*)/,
-    /\bprice\b[:\s]*([0-9][0-9.,]*)/i,
-  ]);
+  // "CMP" / "at market" / "current price" means enter at the CURRENT price now —
+  // a market entry. A "CMP till X" is a buy/sell ZONE whose X is only the far
+  // (DCA) bound, NOT the entry; so treat the whole thing as market and ignore X,
+  // rather than resting a limit at X or failing "entry missed".
+  const marketEntry =
+    /\bcmp\b/i.test(text) ||
+    /\bcurrent\s*price\b/i.test(text) ||
+    /\bmarket\s*(?:price|order|buy|entry)\b/i.test(text) ||
+    /\b(?:at|@)\s*(?:market|mkt)\b/i.test(text);
+
+  let entry = marketEntry
+    ? undefined
+    : firstNumber(text, [
+        // "buy up till 0.245" -> the limit after "till".
+        /\btill\s*([0-9][0-9.,]*)/i,
+        // Allow small filler between the label and the number ("entry at $3361",
+        // "entry: 3361", "enter @ 3361").
+        /\b(?:entry|enter|entradas?|einstieg)\b(?:\s*(?:at|@|:|=|around|near)?\s*\$?){0,2}\s*([0-9][0-9.,]*)/i,
+        /@\s*([0-9][0-9.,]*)/,
+        /\bprice\b[:\s]*([0-9][0-9.,]*)/i,
+      ]);
 
   const stopLoss = firstNumber(text, [
     // Tolerate filler words/symbols between the SL label and the value, e.g.
