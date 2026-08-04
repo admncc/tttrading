@@ -86,10 +86,12 @@ export const config = {
      * paper (market data + simulated fills), exactly like the HL connector.
      */
     enabled:
-      bool(process.env.ASTER_ENABLED, false) || !!(process.env.ASTER_API_KEY || "").trim(),
-    apiKey: (process.env.ASTER_API_KEY || "").trim(),
-    apiSecret: (process.env.ASTER_API_SECRET || "").trim(),
-    /** USDⓈ-M futures REST host. Override for testnet. */
+      bool(process.env.ASTER_ENABLED, false) || !!(process.env.ASTER_PRIVATE_KEY || "").trim(),
+    /** V3 EIP-712 auth: master address, API-wallet address, API-wallet key. */
+    user: (process.env.ASTER_USER || "").trim(),
+    signer: (process.env.ASTER_SIGNER || "").trim(),
+    privateKey: (process.env.ASTER_PRIVATE_KEY || "").trim(),
+    /** USDⓈ-M V3 futures REST host. Testnet: https://fapi.asterdex-testnet.com */
     baseUrl: (process.env.ASTER_BASE_URL || "https://fapi.asterdex.com").replace(/\/+$/, ""),
     /** Fallback max leverage when exchangeInfo doesn't report one per symbol. */
     defaultMaxLeverage: num(process.env.ASTER_MAX_LEVERAGE, 20),
@@ -190,9 +192,9 @@ export function hyperliquidReady(): boolean {
   return !config.isPaper && (!!config.hyperliquid.testnet.privateKey || !!config.hyperliquid.mainnet.privateKey);
 }
 
-/** Aster can sign & send real orders (key + secret present, not paper mode). */
+/** Aster can sign & send real orders (V3 API wallet present, not paper mode). */
 export function asterReady(): boolean {
-  return !config.isPaper && !!config.aster.apiKey && !!config.aster.apiSecret;
+  return !config.isPaper && !!config.aster.privateKey && !!config.aster.signer;
 }
 
 export function telegramReady(): boolean {

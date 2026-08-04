@@ -59,8 +59,9 @@ import { sendReport } from "../alerts/report.js";
 import { hyperliquid, hyperliquidTestnet } from "../hyperliquid/connector.js";
 import { all as allExchanges, activeHyperliquid, byName as exchangeByName } from "../exchanges/registry.js";
 import {
-  asterApiKey,
-  asterApiSecret,
+  asterUser,
+  asterSigner,
+  asterPrivateKey,
   asterBaseUrl,
   asterEnabled,
   hlAccountAddress,
@@ -305,11 +306,13 @@ export async function buildServer() {
       name: "aster" as const,
       enabled: asterEnabled(),
       live: exchangeByName("aster").live,
-      apiKeyConfigured: !!asterApiKey(),
-      apiSecretConfigured: !!asterApiSecret(),
-      keySource: settingsRepo.hasExchangeValue("aster.apiKey")
+      // Addresses are non-secret and shown; the private key is write-only.
+      user: asterUser() || null,
+      signer: asterSigner() || null,
+      privateKeyConfigured: !!asterPrivateKey(),
+      keySource: settingsRepo.hasExchangeValue("aster.privateKey")
         ? "desk"
-        : config.aster.apiKey
+        : config.aster.privateKey
           ? "env"
           : "none",
       baseUrl: asterBaseUrl(),
@@ -352,8 +355,9 @@ export async function buildServer() {
       aster: z
         .object({
           enabled: z.boolean().optional(),
-          apiKey: z.string().max(200).optional(),
-          apiSecret: z.string().max(200).optional(),
+          user: z.string().max(120).optional(),
+          signer: z.string().max(120).optional(),
+          privateKey: z.string().max(200).optional(), // "" clears the desk-stored key
           baseUrl: url.optional(),
         })
         .optional(),
@@ -391,11 +395,12 @@ export async function buildServer() {
     applyHl("testnet", hyperliquidTestnet, d.hyperliquidTestnet);
     if (d.aster) {
       if (d.aster.enabled !== undefined) settingsRepo.setExchangeFlag("aster.enabled", d.aster.enabled);
-      if (d.aster.apiKey !== undefined) {
-        settingsRepo.setExchangeValue("aster.apiKey", d.aster.apiKey.trim());
-        log.info(`Aster API key ${d.aster.apiKey.trim() ? "updated via desk" : "cleared"}.`);
+      if (d.aster.user !== undefined) settingsRepo.setExchangeValue("aster.user", d.aster.user.trim());
+      if (d.aster.signer !== undefined) settingsRepo.setExchangeValue("aster.signer", d.aster.signer.trim());
+      if (d.aster.privateKey !== undefined) {
+        settingsRepo.setExchangeValue("aster.privateKey", d.aster.privateKey.trim());
+        log.info(`Aster API-wallet key ${d.aster.privateKey.trim() ? "updated via desk" : "cleared"}.`);
       }
-      if (d.aster.apiSecret !== undefined) settingsRepo.setExchangeValue("aster.apiSecret", d.aster.apiSecret.trim());
       if (d.aster.baseUrl !== undefined) settingsRepo.setExchangeValue("aster.baseUrl", d.aster.baseUrl.trim());
     }
     if (d.mexc) {

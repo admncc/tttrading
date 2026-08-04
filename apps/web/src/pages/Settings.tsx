@@ -137,12 +137,12 @@ export function Settings() {
   // HL (mainnet + testnet as separate venues)
   const [hlMain, setHlMain] = useState<HlEdit>({ key: "", clear: false, addr: "", enabled: false });
   const [hlTest, setHlTest] = useState<HlEdit>({ key: "", clear: false, addr: "", enabled: false });
-  // Aster
+  // Aster (V3: master address + API-wallet address + API-wallet private key)
   const [asterEnabled, setAsterEnabled] = useState(false);
-  const [asterKey, setAsterKey] = useState("");
-  const [asterKeyClear, setAsterKeyClear] = useState(false);
-  const [asterSecret, setAsterSecret] = useState("");
-  const [asterSecretClear, setAsterSecretClear] = useState(false);
+  const [asterUser, setAsterUser] = useState("");
+  const [asterSigner, setAsterSigner] = useState("");
+  const [asterPk, setAsterPk] = useState("");
+  const [asterPkClear, setAsterPkClear] = useState(false);
   const [asterBase, setAsterBase] = useState("");
   // Routing priority (ordered venue names)
   const [priority, setPriority] = useState<string[]>([]);
@@ -163,6 +163,8 @@ export function Settings() {
         setHlMain({ key: "", clear: false, addr: c.hyperliquid.accountAddress ?? "", enabled: c.hyperliquid.enabled });
         setHlTest({ key: "", clear: false, addr: c.hyperliquidTestnet.accountAddress ?? "", enabled: c.hyperliquidTestnet.enabled });
         setAsterEnabled(c.aster.enabled);
+        setAsterUser(c.aster.user ?? "");
+        setAsterSigner(c.aster.signer ?? "");
         setAsterBase(c.aster.baseUrl);
         setMexcEnabled(c.mexc.enabled);
         setMexcBase(c.mexc.baseUrl);
@@ -203,8 +205,9 @@ export function Settings() {
       aster: {
         enabled: asterEnabled,
         baseUrl: asterBase,
-        ...(asterKeyClear ? { apiKey: "" } : asterKey ? { apiKey: asterKey } : {}),
-        ...(asterSecretClear ? { apiSecret: "" } : asterSecret ? { apiSecret: asterSecret } : {}),
+        user: asterUser,
+        signer: asterSigner,
+        ...(asterPkClear ? { privateKey: "" } : asterPk ? { privateKey: asterPk } : {}),
       },
       mexc: {
         enabled: mexcEnabled,
@@ -219,10 +222,10 @@ export function Settings() {
       // Reset the secret inputs (values are write-only; never echoed back).
       setHlMain({ key: "", clear: false, addr: c.hyperliquid.accountAddress ?? "", enabled: c.hyperliquid.enabled });
       setHlTest({ key: "", clear: false, addr: c.hyperliquidTestnet.accountAddress ?? "", enabled: c.hyperliquidTestnet.enabled });
-      setAsterKey("");
-      setAsterKeyClear(false);
-      setAsterSecret("");
-      setAsterSecretClear(false);
+      setAsterUser(c.aster.user ?? "");
+      setAsterSigner(c.aster.signer ?? "");
+      setAsterPk("");
+      setAsterPkClear(false);
       setMexcKey("");
       setMexcKeyClear(false);
       setMexcSecret("");
@@ -464,30 +467,35 @@ export function Settings() {
                 enabled (route coins not on Hyperliquid)
               </label>
             </div>
+            <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
+              Aster V3 uses an <strong>API wallet</strong> (EIP-712 signing), not a key+secret. Create
+              one in Aster → API, then paste the master address, the API-wallet address, and the
+              API-wallet private key.
+            </div>
+            <label style={{ display: "block", marginBottom: 8 }}>
+              <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>Master account address (user, 0x…)</div>
+              <input value={asterUser} onChange={(e) => setAsterUser(e.target.value)} placeholder="0x…" style={{ width: "100%" }} />
+            </label>
+            <label style={{ display: "block", marginBottom: 8 }}>
+              <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>API wallet address (signer, 0x…)</div>
+              <input value={asterSigner} onChange={(e) => setAsterSigner(e.target.value)} placeholder="0x…" style={{ width: "100%" }} />
+            </label>
             <SecretField
-              label="API key"
-              configured={cfg.aster.apiKeyConfigured}
-              value={asterKey}
-              onChange={setAsterKey}
-              clear={asterKeyClear}
-              onClear={setAsterKeyClear}
-            />
-            <SecretField
-              label="API secret"
-              configured={cfg.aster.apiSecretConfigured}
-              value={asterSecret}
-              onChange={setAsterSecret}
-              clear={asterSecretClear}
-              onClear={setAsterSecretClear}
+              label="API wallet private key"
+              configured={cfg.aster.privateKeyConfigured}
+              value={asterPk}
+              onChange={setAsterPk}
+              clear={asterPkClear}
+              onClear={setAsterPkClear}
             />
             <label style={{ display: "block" }}>
               <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>
-                REST base URL (use the testnet host to validate first)
+                REST base URL (testnet: https://fapi.asterdex-testnet.com)
               </div>
               <input value={asterBase} onChange={(e) => setAsterBase(e.target.value)} placeholder="https://fapi.asterdex.com" style={{ width: "100%" }} />
             </label>
             <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
-              Without a key+secret, Aster runs in market-data/simulation mode (routes & tracks, no real orders).
+              Without the API-wallet private key, Aster runs in market-data/simulation mode (routes &amp; tracks, no real orders).
             </div>
           </div>
 

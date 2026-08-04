@@ -58,23 +58,31 @@ export function hlEnabled(net: HlNetwork): boolean {
 }
 
 /* --------------------------------- Aster ------------------------------- */
+// Aster V3 uses EIP-712 signer auth: a master-account address (user), the API
+// wallet address (signer), and the API wallet PRIVATE KEY (the only secret).
 export function asterEnabled(): boolean {
   // An explicit desk toggle wins (so it can be turned OFF even with a key set);
   // only auto-enable from env/key presence when the desk hasn't set it.
   const v = settings.getExchangeFlag("aster.enabled");
-  return v === undefined ? config.aster.enabled || !!asterApiKey() : v;
+  return v === undefined ? config.aster.enabled || !!asterPrivateKey() : v;
 }
-export function asterApiKey(): string {
-  return settings.getExchangeValue("aster.apiKey") || config.aster.apiKey;
+/** Master account wallet address (0x…). Non-secret. */
+export function asterUser(): string {
+  return settings.getExchangeValue("aster.user") || config.aster.user;
 }
-export function asterApiSecret(): string {
-  return settings.getExchangeValue("aster.apiSecret") || config.aster.apiSecret;
+/** API wallet (agent) address (0x…). Non-secret. */
+export function asterSigner(): string {
+  return settings.getExchangeValue("aster.signer") || config.aster.signer;
+}
+/** API wallet private key — the signing secret (write-only). */
+export function asterPrivateKey(): string {
+  return settings.getExchangeValue("aster.privateKey") || config.aster.privateKey;
 }
 export function asterBaseUrl(): string {
   return (settings.getExchangeValue("aster.baseUrl") || config.aster.baseUrl).replace(/\/+$/, "");
 }
 export function asterReady(): boolean {
-  return !config.isPaper && !!asterApiKey() && !!asterApiSecret();
+  return !config.isPaper && !!asterPrivateKey() && !!asterSigner();
 }
 
 /* --------------------------------- MEXC -------------------------------- */

@@ -1,8 +1,8 @@
-import crypto from "node:crypto";
+import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts";
 import type { ExchangeName } from "@tttrading/shared";
 import { config } from "../config.js";
 import { settings } from "../db/repositories.js";
-import { asterApiKey, asterApiSecret, asterBaseUrl, asterEnabled, asterReady } from "./credentials.js";
+import { asterUser, asterSigner, asterPrivateKey, asterBaseUrl, asterEnabled, asterReady } from "./credentials.js";
 import { log } from "../logger.js";
 import type {
   AccountSummary,
@@ -41,16 +41,21 @@ interface ExchangeInfoSymbol {
 }
 
 /**
- * Aster (asterdex.com) USDⓈ-M futures connector. Aster exposes a
- * Binance-compatible REST API (`/fapi/*`, HMAC-SHA256 signing, `X-MBX-APIKEY`
- * header), so this speaks that dialect. It reads public market data without
- * keys and only signs/sends orders when a key+secret are configured and the
- * global test switch is off — mirroring the Hyperliquid connector's safety.
+ * Aster (asterdex.com) USDⓈ-M futures connector, V3 API. Endpoints are all
+ * under `/fapi/v3/*`. Public market data needs no auth; SIGNED requests use
+ * Aster's V3 EIP-712 scheme (no API-key header): business params + nonce + user
+ * + signer are urlencoded and signed with the API-wallet private key, and the
+ * signature is appended. Only signs/sends orders when the API wallet is
+ * configured and the global test switch is off — mirroring the HL connector.
  */
 export class AsterConnector implements ExchangeConnector {
   readonly name: ExchangeName = "aster";
   private assets = new Map<string, AsterAsset>();
   private assetsLoadedAt = 0;
+  private signerAccount?: PrivateKeyAccount;
+  private signerKey = "";
+  private lastNonceMs = 0;
+  private nonceCounter = 0;
 
   constructor() {
     if (asterEnabled()) {
@@ -82,33 +87,93 @@ export class AsterConnector implements ExchangeConnector {
     const qs = query
       ? "?" + new URLSearchParams(Object.entries(query).map(([k, v]) => [k, String(v)])).toString()
       : "";
-    const key = asterApiKey();
     const res = await fetch(`${this.base}${path}${qs}`, {
-      headers: key ? { "X-MBX-APIKEY": key } : undefined,
+      headers: { "User-Agent": "ttdesk/1.0" },
     });
     return this.parse<T>(res);
   }
 
+  /** EIP-712 domain for V3 signing (chainId differs by network). */
+  private domain() {
+    const testnet = this.base.includes("testnet");
+    return {
+      name: "AsterSignTransaction",
+      version: "1",
+      chainId: testnet ? 714 : 1666,
+      verifyingContract: "0x0000000000000000000000000000000000000000" as `0x${string}`,
+    } as const;
+  }
+
+  /** (Re)build the signing account when the desk-configured private key changes. */
+  private ensureSigner(): PrivateKeyAccount | undefined {
+    const pk = asterPrivateKey();
+    if (!pk) {
+      this.signerAccount = undefined;
+      this.signerKey = "";
+      return undefined;
+    }
+    if (this.signerAccount && this.signerKey === pk) return this.signerAccount;
+    try {
+      const norm = (pk.startsWith("0x") ? pk : `0x${pk}`) as `0x${string}`;
+      this.signerAccount = privateKeyToAccount(norm);
+      this.signerKey = pk;
+    } catch (err) {
+      log.error("Aster: invalid API-wallet private key:", err instanceof Error ? err.message : err);
+      this.signerAccount = undefined;
+      this.signerKey = "";
+    }
+    return this.signerAccount;
+  }
+
+  /** Strictly-increasing microsecond nonce (unique per process, ±10s of server). */
+  private nextNonce(): string {
+    const ms = Date.now();
+    if (ms === this.lastNonceMs) this.nonceCounter++;
+    else {
+      this.lastNonceMs = ms;
+      this.nonceCounter = 0;
+    }
+    return String(ms * 1000 + this.nonceCounter);
+  }
+
+  /**
+   * V3 SIGNED request — EIP-712 signature auth (no API-key header). Business
+   * params + nonce + user + signer are urlencoded in insertion order, signed
+   * with the API-wallet private key, and the 0x signature is appended (never
+   * itself signed). GET → query string; POST/DELETE → form-urlencoded body.
+   */
   private async signed<T>(
     method: "GET" | "POST" | "DELETE",
     path: string,
     params: Record<string, string | number | boolean> = {},
   ): Promise<T> {
-    const key = asterApiKey();
-    const secret = asterApiSecret();
-    if (!key || !secret) {
-      throw new Error("Aster API key/secret not configured");
+    const account = this.ensureSigner();
+    const signerAddr = asterSigner();
+    if (!account || !signerAddr) {
+      throw new Error("Aster API wallet not configured (need signer address + private key)");
     }
-    const sp = new URLSearchParams();
-    for (const [k, v] of Object.entries(params)) sp.append(k, String(v));
-    sp.append("timestamp", String(Date.now()));
-    sp.append("recvWindow", "5000");
-    const signature = crypto.createHmac("sha256", secret).update(sp.toString()).digest("hex");
-    sp.append("signature", signature);
-    const res = await fetch(`${this.base}${path}?${sp.toString()}`, {
-      method,
-      headers: { "X-MBX-APIKEY": key },
+    const body: Record<string, string> = {};
+    for (const [k, v] of Object.entries(params)) body[k] = String(v);
+    body.nonce = this.nextNonce();
+    const user = asterUser();
+    if (user) body.user = user;
+    body.signer = signerAddr;
+    const msg = new URLSearchParams(body).toString();
+    const signature = await account.signTypedData({
+      domain: this.domain(),
+      types: { Message: [{ name: "msg", type: "string" }] },
+      primaryType: "Message",
+      message: { msg },
     });
+    const signedBody = new URLSearchParams({ ...body, signature }).toString();
+    const headers: Record<string, string> = {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "User-Agent": "ttdesk/1.0",
+    };
+    const res =
+      method === "GET"
+        ? await fetch(`${this.base}${path}?${signedBody}`, { method, headers })
+        : await fetch(`${this.base}${path}`, { method, headers, body: signedBody });
     return this.parse<T>(res);
   }
 
@@ -141,7 +206,7 @@ export class AsterConnector implements ExchangeConnector {
     if (!force && this.assets.size > 0 && Date.now() - this.assetsLoadedAt < 300_000) {
       return this.assets;
     }
-    const info = await this.pub<{ symbols: ExchangeInfoSymbol[] }>("/fapi/v1/exchangeInfo");
+    const info = await this.pub<{ symbols: ExchangeInfoSymbol[] }>("/fapi/v3/exchangeInfo");
     const next = new Map<string, AsterAsset>();
     for (const s of info.symbols ?? []) {
       if (s.quoteAsset !== "USDT") continue;
@@ -193,7 +258,7 @@ export class AsterConnector implements ExchangeConnector {
     // Prefer the true mid (best bid/ask) — it drives sizing and the slippage
     // gates, so last-trade skew on a thin book shouldn't leak in.
     try {
-      const b = await this.pub<{ bidPrice: string; askPrice: string }>("/fapi/v1/ticker/bookTicker", {
+      const b = await this.pub<{ bidPrice: string; askPrice: string }>("/fapi/v3/ticker/bookTicker", {
         symbol: asset.asterSymbol,
       });
       const bid = Number(b.bidPrice);
@@ -202,7 +267,7 @@ export class AsterConnector implements ExchangeConnector {
     } catch {
       /* fall back to last price */
     }
-    const t = await this.pub<{ price: string }>("/fapi/v1/ticker/price", {
+    const t = await this.pub<{ price: string }>("/fapi/v3/ticker/price", {
       symbol: asset.asterSymbol,
     });
     const n = Number(t.price);
@@ -214,7 +279,7 @@ export class AsterConnector implements ExchangeConnector {
     // Reverse map venue-symbol -> bare coin so we can key the result by coin.
     const bySymbol = new Map<string, string>();
     for (const a of this.assets.values()) bySymbol.set(a.asterSymbol, a.name);
-    const arr = await this.pub<{ symbol: string; price: string }[]>("/fapi/v1/ticker/price");
+    const arr = await this.pub<{ symbol: string; price: string }[]>("/fapi/v3/ticker/price");
     const out: Record<string, number> = {};
     for (const row of Array.isArray(arr) ? arr : []) {
       const coin = bySymbol.get(row.symbol);
@@ -232,7 +297,7 @@ export class AsterConnector implements ExchangeConnector {
     for (const a of this.assets.values()) bySymbol.set(a.asterSymbol, a.name);
     const rows = await this.signed<
       { symbol: string; positionAmt: string; entryPrice: string; unRealizedProfit: string; leverage: string }[]
-    >("GET", "/fapi/v2/positionRisk");
+    >("GET", "/fapi/v3/positionRisk");
     return (Array.isArray(rows) ? rows : [])
       .map((p) => ({
         symbol: bySymbol.get(p.symbol) ?? p.symbol,
@@ -251,7 +316,7 @@ export class AsterConnector implements ExchangeConnector {
       totalWalletBalance?: string;
       availableBalance?: string;
       totalPositionInitialMargin?: string;
-    }>("GET", "/fapi/v2/account");
+    }>("GET", "/fapi/v3/accountWithJoinMargin");
     return {
       address: "aster",
       accountValue: Number(a.totalMarginBalance ?? a.totalWalletBalance ?? 0),
@@ -281,7 +346,7 @@ export class AsterConnector implements ExchangeConnector {
             commission: string;
             time: number;
           }[]
-        >("GET", "/fapi/v1/userTrades", { symbol: asset.asterSymbol, limit: 100 });
+        >("GET", "/fapi/v3/userTrades", { symbol: asset.asterSymbol, limit: 100 });
         for (const r of Array.isArray(rows) ? rows : []) {
           out.push({
             oid: String(r.orderId),
@@ -303,7 +368,7 @@ export class AsterConnector implements ExchangeConnector {
 
   async getOpenOrderIds(): Promise<Set<string>> {
     if (!this.live) return new Set();
-    const rows = await this.signed<{ orderId: number }[]>("GET", "/fapi/v1/openOrders");
+    const rows = await this.signed<{ orderId: number }[]>("GET", "/fapi/v3/openOrders");
     return new Set((Array.isArray(rows) ? rows : []).map((o) => String(o.orderId)));
   }
 
@@ -312,12 +377,12 @@ export class AsterConnector implements ExchangeConnector {
   private async setLeverage(asset: AsterAsset, leverage: number, marginMode: "cross" | "isolated") {
     const capped = Math.max(1, Math.floor(Math.min(leverage, asset.maxLeverage)));
     try {
-      await this.signed("POST", "/fapi/v1/leverage", { symbol: asset.asterSymbol, leverage: capped });
+      await this.signed("POST", "/fapi/v3/leverage", { symbol: asset.asterSymbol, leverage: capped });
     } catch (err) {
       log.warn(`Aster setLeverage ${asset.name}:`, err instanceof Error ? err.message : err);
     }
     try {
-      await this.signed("POST", "/fapi/v1/marginType", {
+      await this.signed("POST", "/fapi/v3/marginType", {
         symbol: asset.asterSymbol,
         marginType: marginMode === "cross" ? "CROSSED" : "ISOLATED",
       });
@@ -378,7 +443,7 @@ export class AsterConnector implements ExchangeConnector {
       if (req.reduceOnly) params.reduceOnly = "true";
       const res = await this.signed<{ orderId: number; avgPrice?: string; executedQty?: string; status?: string }>(
         "POST",
-        "/fapi/v1/order",
+        "/fapi/v3/order",
         params,
       );
       const avg = Number(res.avgPrice);
@@ -419,7 +484,7 @@ export class AsterConnector implements ExchangeConnector {
         status?: string;
         avgPrice?: string;
         executedQty?: string;
-      }>("POST", "/fapi/v1/order", {
+      }>("POST", "/fapi/v3/order", {
         symbol: asset.asterSymbol,
         side: req.side === "long" ? "BUY" : "SELL",
         type: "LIMIT",
@@ -474,7 +539,7 @@ export class AsterConnector implements ExchangeConnector {
 
     if (stopLoss !== undefined) {
       try {
-        const res = await this.signed<{ orderId: number }>("POST", "/fapi/v1/order", {
+        const res = await this.signed<{ orderId: number }>("POST", "/fapi/v3/order", {
           symbol: asset.asterSymbol,
           side: closeSide,
           type: "STOP_MARKET",
@@ -498,7 +563,7 @@ export class AsterConnector implements ExchangeConnector {
         remaining = Math.max(0, remaining - chunk);
         if (chunk <= 0) continue;
         try {
-          const res = await this.signed<{ orderId: number }>("POST", "/fapi/v1/order", {
+          const res = await this.signed<{ orderId: number }>("POST", "/fapi/v3/order", {
             symbol: asset.asterSymbol,
             side: closeSide,
             type: "TAKE_PROFIT_MARKET",
@@ -524,7 +589,7 @@ export class AsterConnector implements ExchangeConnector {
     if (!asset) return;
     for (const oid of orderIds) {
       try {
-        await this.signed("DELETE", "/fapi/v1/order", { symbol: asset.asterSymbol, orderId: oid });
+        await this.signed("DELETE", "/fapi/v3/order", { symbol: asset.asterSymbol, orderId: oid });
       } catch (err) {
         // -2011 "Unknown order" (already filled/canceled) is expected & harmless.
         const msg = err instanceof Error ? err.message : String(err);

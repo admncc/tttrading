@@ -49,8 +49,9 @@ export interface ExchangesConfig {
     name: "aster";
     enabled: boolean;
     live: boolean;
-    apiKeyConfigured: boolean;
-    apiSecretConfigured: boolean;
+    user: string | null;
+    signer: string | null;
+    privateKeyConfigured: boolean;
     keySource: string;
     baseUrl: string;
   };
@@ -70,7 +71,7 @@ export interface ExchangesPatch {
   priority?: string[];
   hyperliquid?: { enabled?: boolean; privateKey?: string; accountAddress?: string };
   hyperliquidTestnet?: { enabled?: boolean; privateKey?: string; accountAddress?: string };
-  aster?: { enabled?: boolean; apiKey?: string; apiSecret?: string; baseUrl?: string };
+  aster?: { enabled?: boolean; user?: string; signer?: string; privateKey?: string; baseUrl?: string };
   mexc?: { enabled?: boolean; apiKey?: string; apiSecret?: string; baseUrl?: string };
 }
 
