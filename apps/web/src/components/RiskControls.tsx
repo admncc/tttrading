@@ -7,6 +7,7 @@ interface Settings {
   dailyLossLimitUsd: number;
   maxOpenTrades: number;
   maxExposureUsd: number;
+  liveMaxOrderUsd: number;
   splitOpposingVenues: boolean;
 }
 
@@ -26,6 +27,7 @@ export function RiskControls() {
           dailyLossLimitUsd: d.dailyLossLimitUsd,
           maxOpenTrades: d.maxOpenTrades,
           maxExposureUsd: d.maxExposureUsd,
+          liveMaxOrderUsd: d.liveMaxOrderUsd,
           splitOpposingVenues: d.splitOpposingVenues,
         });
         setLoadErr(null);
@@ -134,6 +136,23 @@ export function RiskControls() {
             onBlur={(e) => void save({ maxExposureUsd: Number(e.target.value) })}
           />
         </div>
+        <div className="field">
+          <label title="Caps the size of any REAL order (HL mainnet, Aster, MEXC). Testnet/paper are exempt.">
+            Live order cap (USDC) {s.liveMaxOrderUsd > 0 && <span className="tag pending">on</span>}
+          </label>
+          <input
+            type="number"
+            min={0}
+            defaultValue={s.liveMaxOrderUsd}
+            onBlur={(e) => void save({ liveMaxOrderUsd: Number(e.target.value) })}
+          />
+        </div>
+      </div>
+      <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+        <strong>Live order cap</strong> clamps the notional of any <em>real</em> order (HL mainnet,
+        Aster, MEXC) down to this value — testnet/paper/shadow orders are unaffected. Set a small
+        number (e.g. 50) to validate mainnet, then raise or zero it. It only ever lowers a group's
+        size, never raises it.
       </div>
 
       <label className="muted" style={{ fontSize: 12, display: "inline-flex", gap: 8, marginTop: 6, alignItems: "center" }}>

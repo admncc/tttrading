@@ -783,7 +783,21 @@ async function placeEntry(
   const { leverage, marginMode, maxSlippage } = group.settings;
 
   // Position size per the group's sizing mode (against the routed venue).
-  const tradeSizeUsd = await effectiveNotional(group, parsed, ex);
+  let tradeSizeUsd = await effectiveNotional(group, parsed, ex);
+
+  // Live-order safety cap: clamp the notional of any REAL (non-simulated) order
+  // to the global ceiling. Testnet/paper/shadow orders simulate and are exempt.
+  // Lets you validate mainnet (or Aster/MEXC) with tiny size before scaling up.
+  const liveCap = settingsRepo.getGlobalSettings().liveMaxOrderUsd;
+  if (liveCap > 0 && !ex.simulating() && tradeSizeUsd > liveCap) {
+    event(
+      "exec",
+      `Capping real order ${parsed.symbol} on ${ex.name}: ${tradeSizeUsd.toFixed(0)} → ${liveCap} (live-order limit)`,
+      { requested: tradeSizeUsd, cap: liveCap, venue: ex.name },
+      { level: "warn", groupId: group.id, signalId: signal.id },
+    );
+    tradeSizeUsd = liveCap;
+  }
 
   // Global risk gate (kill-switch / limits) — applies to every new entry.
   const block = preTradeGate(tradeSizeUsd);

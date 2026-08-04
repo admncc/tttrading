@@ -113,6 +113,13 @@ export interface GlobalSettings {
   /** Refuse new entries when open notional would exceed this. 0 = off. */
   maxExposureUsd: number;
   /**
+   * Safety cap on the notional of any REAL (non-simulated) order — HL mainnet,
+   * Aster, MEXC. An order sized above this is clamped down to it; simulated
+   * (testnet/paper/shadow) orders are unaffected. Ideal for validating mainnet
+   * with tiny size before scaling up. 0 = off (no cap).
+   */
+  liveMaxOrderUsd: number;
+  /**
    * When a new signal opposes a position already open for that symbol on the
    * primary venue, route it to the next backup venue that lists the coin and has
    * no opposing position (e.g. long on Hyperliquid, short on Aster) instead of

@@ -534,11 +534,14 @@ export const settings = {
   setTradingPaused(on: boolean): void {
     kvSet("tradingPaused", on ? "true" : "false");
   },
-  getRiskLimit(key: "dailyLossLimitUsd" | "maxOpenTrades" | "maxExposureUsd"): number {
+  getRiskLimit(key: "dailyLossLimitUsd" | "maxOpenTrades" | "maxExposureUsd" | "liveMaxOrderUsd"): number {
     const v = Number(kvGet(key));
     return Number.isFinite(v) && v > 0 ? v : 0;
   },
-  setRiskLimit(key: "dailyLossLimitUsd" | "maxOpenTrades" | "maxExposureUsd", value: number): void {
+  setRiskLimit(
+    key: "dailyLossLimitUsd" | "maxOpenTrades" | "maxExposureUsd" | "liveMaxOrderUsd",
+    value: number,
+  ): void {
     kvSet(key, String(Number.isFinite(value) && value > 0 ? value : 0));
   },
   /**
@@ -566,6 +569,7 @@ export const settings = {
       dailyLossLimitUsd: this.getRiskLimit("dailyLossLimitUsd"),
       maxOpenTrades: this.getRiskLimit("maxOpenTrades"),
       maxExposureUsd: this.getRiskLimit("maxExposureUsd"),
+      liveMaxOrderUsd: this.getRiskLimit("liveMaxOrderUsd"),
       splitOpposingVenues: this.getSplitOpposingVenues(),
     };
   },

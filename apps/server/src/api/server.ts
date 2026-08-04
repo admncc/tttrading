@@ -240,6 +240,7 @@ export async function buildServer() {
       dailyLossLimitUsd: z.number().min(0).max(1e9).optional(),
       maxOpenTrades: z.number().int().min(0).max(1000).optional(),
       maxExposureUsd: z.number().min(0).max(1e9).optional(),
+      liveMaxOrderUsd: z.number().min(0).max(1e9).optional(),
       splitOpposingVenues: z.boolean().optional(),
       anthropicKey: z.string().max(500).optional(), // "" clears the desk-stored key
       anthropicModel: z.string().max(100).optional(),
@@ -261,6 +262,7 @@ export async function buildServer() {
     if (d.dailyLossLimitUsd !== undefined) settingsRepo.setRiskLimit("dailyLossLimitUsd", d.dailyLossLimitUsd);
     if (d.maxOpenTrades !== undefined) settingsRepo.setRiskLimit("maxOpenTrades", d.maxOpenTrades);
     if (d.maxExposureUsd !== undefined) settingsRepo.setRiskLimit("maxExposureUsd", d.maxExposureUsd);
+    if (d.liveMaxOrderUsd !== undefined) settingsRepo.setRiskLimit("liveMaxOrderUsd", d.liveMaxOrderUsd);
     if (d.splitOpposingVenues !== undefined) settingsRepo.setSplitOpposingVenues(d.splitOpposingVenues);
     if (d.parseMode !== undefined) settingsRepo.setParseMode(d.parseMode);
     if (d.anthropicKey !== undefined) {

@@ -148,6 +148,7 @@ export const api = {
       dailyLossLimitUsd: number;
       maxOpenTrades: number;
       maxExposureUsd: number;
+      liveMaxOrderUsd: number;
       splitOpposingVenues: boolean;
       anthropicConfigured: boolean;
       anthropicKeySource: string;
@@ -161,6 +162,7 @@ export const api = {
     dailyLossLimitUsd?: number;
     maxOpenTrades?: number;
     maxExposureUsd?: number;
+    liveMaxOrderUsd?: number;
     splitOpposingVenues?: boolean;
     autoRefine?: boolean;
     parseMode?: "regex" | "llm";
