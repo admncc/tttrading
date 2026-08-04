@@ -128,6 +128,7 @@ export function Settings() {
   const [cfg, setCfg] = useState<ExchangesConfig | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [switching, setSwitching] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   // Message-processing priority (LLM vs regex rules).
   const [parseMode, setParseMode] = useState<"regex" | "llm">("regex");
@@ -234,6 +235,50 @@ export function Settings() {
     }
   };
 
+  // Which Hyperliquid network is currently active (enabled + highest priority).
+  const activeHlNetwork = (c: ExchangesConfig): "mainnet" | "testnet" => {
+    const rank = (name: string) => {
+      const i = c.priority.indexOf(name);
+      return i < 0 ? 99 : i;
+    };
+    const mainOn = c.hyperliquid.enabled;
+    const testOn = c.hyperliquidTestnet.enabled;
+    if (mainOn && !testOn) return "mainnet";
+    if (testOn && !mainOn) return "testnet";
+    if (mainOn && testOn) return rank("hyperliquid") <= rank("hyperliquid-testnet") ? "mainnet" : "testnet";
+    return "testnet";
+  };
+
+  const switchNet = async (network: "mainnet" | "testnet") => {
+    if (network === "mainnet") {
+      const ok = window.confirm(
+        "Switch Hyperliquid to MAINNET?\n\nNew signals will trade with REAL funds. " +
+          "Existing testnet positions stay on testnet and keep running there.\n\n" +
+          "Make sure the mainnet key is set and the account is funded first.",
+      );
+      if (!ok) return;
+    }
+    setSwitching(true);
+    setMsg(null);
+    setErr(null);
+    try {
+      const c = await api.setHlNetwork(network);
+      setCfg(c);
+      setPriority(c.priority);
+      setHlMain({ key: "", clear: false, addr: c.hyperliquid.accountAddress ?? "", enabled: c.hyperliquid.enabled });
+      setHlTest({ key: "", clear: false, addr: c.hyperliquidTestnet.accountAddress ?? "", enabled: c.hyperliquidTestnet.enabled });
+      const liveNow = network === "mainnet" ? c.hyperliquid.live : c.hyperliquidTestnet.live;
+      setMsg(
+        `Hyperliquid switched to ${network.toUpperCase()}.` +
+          (liveNow ? "" : " ⚠️ No key configured — orders on this network will be simulated until you add one."),
+      );
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSwitching(false);
+    }
+  };
+
   const movePriority = (i: number, dir: -1 | 1) => {
     setPriority((p) => {
       const next = [...p];
@@ -295,6 +340,64 @@ export function Settings() {
         <div className="empty">Loading…</div>
       ) : (
         <>
+          {/* Active Hyperliquid network — one-click mainnet ⇄ testnet switch */}
+          {(() => {
+            const active = activeHlNetwork(cfg);
+            const isMain = active === "mainnet";
+            const activeVenue = isMain ? cfg.hyperliquid : cfg.hyperliquidTestnet;
+            return (
+              <div
+                className="panel"
+                style={{ borderColor: isMain ? "#ef4444" : "var(--border)" }}
+              >
+                <div className="row-between">
+                  <h3 style={{ margin: 0 }}>Hyperliquid network</h3>
+                  <span
+                    className="tag"
+                    style={{
+                      background: isMain ? "#ef4444" : "#334155",
+                      color: "#fff",
+                      fontWeight: 600,
+                    }}
+                  >
+                    {isMain ? "MAINNET · real funds" : "TESTNET · test funds"}
+                  </span>
+                </div>
+                <div className="muted" style={{ fontSize: 12, margin: "8px 0 12px" }}>
+                  One click switches which network new signals trade on — no restart needed.
+                  Open positions stay on the network they were opened on.
+                </div>
+                <div className="btn-row">
+                  <button
+                    className={active === "testnet" ? "primary" : "ghost"}
+                    disabled={switching || active === "testnet"}
+                    onClick={() => switchNet("testnet")}
+                  >
+                    Testnet
+                  </button>
+                  <button
+                    className={active === "mainnet" ? "primary" : "ghost"}
+                    disabled={switching || active === "mainnet"}
+                    onClick={() => switchNet("mainnet")}
+                  >
+                    {switching ? "Switching…" : "Mainnet"}
+                  </button>
+                </div>
+                {!activeVenue.live && (
+                  <div className="muted" style={{ fontSize: 12, marginTop: 10, color: "#f59e0b" }}>
+                    ⚠️ No {active} key configured — orders on this network are <strong>simulated</strong>.
+                    Add the key below to trade for real.
+                  </div>
+                )}
+                {isMain && activeVenue.live && (
+                  <div className="muted" style={{ fontSize: 12, marginTop: 10, color: "#ef4444" }}>
+                    ● Live on mainnet — new signals place real orders. Keep the kill-switch handy.
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
           {/* Routing priority */}
           <div className="panel">
             <h3 style={{ margin: "0 0 8px" }}>Routing priority</h3>

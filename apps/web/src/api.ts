@@ -203,6 +203,11 @@ export const api = {
   exchanges: () => req<ExchangesConfig>("/api/exchanges"),
   saveExchanges: (patch: ExchangesPatch) =>
     req<ExchangesConfig>("/api/exchanges", { method: "PUT", body: JSON.stringify(patch) }),
+  setHlNetwork: (network: "mainnet" | "testnet") =>
+    req<ExchangesConfig>("/api/exchanges/hl-network", {
+      method: "POST",
+      body: JSON.stringify({ network }),
+    }),
 
   telegramHealth: () => req<TelegramHealth>("/api/telegram/health"),
   account: () => req<AccountInfo>("/api/account"),

@@ -405,6 +405,43 @@ export async function buildServer() {
     return exchangesPayload();
   });
 
+  // One-click switch of the ACTIVE Hyperliquid network (mainnet ⇄ testnet).
+  // Enables the chosen network's venue, disables the other, and reorders the
+  // routing priority so the chosen HL venue leads. No restart needed — the
+  // connectors rebuild their signer. NOTE: switching to mainnet only sends REAL
+  // orders once a mainnet key is configured; without one the venue simulates.
+  app.post("/api/exchanges/hl-network", async (req, reply) => {
+    if (!authEnabled) return reply.code(403).send({ error: "Set DESK_PASSWORD to switch networks." });
+    const schema = z.object({ network: z.enum(["mainnet", "testnet"]) });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    const { network } = parsed.data;
+    const targetName = network === "mainnet" ? "hyperliquid" : "hyperliquid-testnet";
+    const otherName = network === "mainnet" ? "hyperliquid-testnet" : "hyperliquid";
+
+    settingsRepo.setExchangeFlag("hl.mainnet.enabled", network === "mainnet");
+    settingsRepo.setExchangeFlag("hl.testnet.enabled", network === "testnet");
+
+    // Put the chosen HL venue first, the other HL venue right after it (kept for
+    // when they switch back), then the remaining venues in their existing order.
+    const current = settingsRepo.getExchangePriority();
+    const rest = current.filter((n) => n !== "hyperliquid" && n !== "hyperliquid-testnet");
+    settingsRepo.setExchangePriority([targetName, otherName, ...rest] as typeof current);
+
+    hyperliquid.reloadCredentials();
+    hyperliquidTestnet.reloadCredentials();
+
+    const liveNow = network === "mainnet" ? hyperliquid.live : hyperliquidTestnet.live;
+    audit(req, "hyperliquid network switched", { network, live: liveNow });
+    event(
+      "exec",
+      `Hyperliquid switched to ${network.toUpperCase()}${liveNow ? "" : " (no key — orders will be simulated)"}`,
+      { network, live: liveNow },
+      { level: network === "mainnet" ? "warn" : "info" },
+    );
+    return exchangesPayload();
+  });
+
   // Kill-switch: close all open positions AND pause new entries.
   app.post("/api/kill", async (req, reply) => {
     if (!authEnabled) return reply.code(403).send({ error: "Set DESK_PASSWORD to enable the kill-switch." });
