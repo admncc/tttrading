@@ -135,6 +135,7 @@ export const api = {
     req<{
       ok: boolean;
       env: string;
+      activeNetwork: string;
       live: boolean;
       shadowMode: boolean;
       tradingPaused: boolean;

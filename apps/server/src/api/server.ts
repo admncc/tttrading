@@ -198,6 +198,10 @@ export async function buildServer() {
   app.get("/api/health", async () => ({
     ok: true,
     env: config.tradingEnv,
+    // The HL network signals actually route to right now (set via the desk
+    // switch), independent of the process-level TRADING_ENV. This is what the
+    // desk badge should reflect — "am I trading real mainnet funds?".
+    activeNetwork: activeHyperliquid().name === "hyperliquid" ? "mainnet" : "testnet",
     live: activeHyperliquid().live,
     shadowMode: settingsRepo.getShadowMode(),
     tradingPaused: settingsRepo.getTradingPaused(),

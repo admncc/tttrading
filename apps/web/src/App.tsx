@@ -28,6 +28,7 @@ export function App() {
   const [tab, setTab] = useState<Tab>("overview");
   const [health, setHealth] = useState<{
     env: string;
+    activeNetwork?: string;
     live: boolean;
     shadowMode: boolean;
     tradingPaused?: boolean;
@@ -82,7 +83,7 @@ export function App() {
       api.trades().catch(() => []),
       api.prices().catch(() => ({})),
     ]);
-    if (h) setHealth({ env: h.env, live: h.live, shadowMode: h.shadowMode, tradingPaused: h.tradingPaused });
+    if (h) setHealth({ env: h.env, activeNetwork: h.activeNetwork, live: h.live, shadowMode: h.shadowMode, tradingPaused: h.tradingPaused });
     if (s) setStats(s);
     setGroups(g);
     setSignals(sig);
@@ -96,7 +97,7 @@ export function App() {
     void (async () => {
       const h = await api.health().catch(() => null);
       if (h) {
-        setHealth({ env: h.env, live: h.live, shadowMode: h.shadowMode, tradingPaused: h.tradingPaused });
+        setHealth({ env: h.env, activeNetwork: h.activeNetwork, live: h.live, shadowMode: h.shadowMode, tradingPaused: h.tradingPaused });
         setUpdateEnabled(h.updateEnabled);
       }
       if (h && !h.authRequired) {
@@ -216,10 +217,17 @@ export function App() {
             {t.label}
           </div>
         ))}
-        <div className="env-badge">
+        <div
+          className="env-badge"
+          title={
+            health && health.activeNetwork && health.activeNetwork !== health.env
+              ? `Process TRADING_ENV=${health.env}; signals route to Hyperliquid ${health.activeNetwork} (set via the network switch).`
+              : undefined
+          }
+        >
           <span className={`dot ${health && !health.shadowMode && health.live ? "live" : "sim"}`} />
           {health
-            ? `${health.env}${health.shadowMode ? " · TEST" : health.live ? " · LIVE" : " · simulated"}`
+            ? `${health.activeNetwork ?? health.env}${health.shadowMode ? " · TEST" : health.live ? " · LIVE" : " · simulated"}`
             : "connecting…"}
         </div>
         {health && (
