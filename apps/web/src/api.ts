@@ -142,6 +142,7 @@ export const api = {
       tradingPaused: boolean;
       authRequired: boolean;
       updateEnabled: boolean;
+      exchanges: { name: string; live: boolean }[];
     }>("/api/health"),
   getSettings: () =>
     req<{
@@ -226,10 +227,16 @@ export const api = {
     const qs = p.toString();
     return req<AnalyticsResponse>(`/api/analytics${qs ? `?${qs}` : ""}`);
   },
-  testOrder: (symbol: string, side: "long" | "short", notionalUsd: number, leverage: number) =>
+  testOrder: (
+    symbol: string,
+    side: "long" | "short",
+    notionalUsd: number,
+    leverage: number,
+    exchange?: string,
+  ) =>
     req<Trade>("/api/test-order", {
       method: "POST",
-      body: JSON.stringify({ symbol, side, notionalUsd, leverage }),
+      body: JSON.stringify({ symbol, side, notionalUsd, leverage, ...(exchange ? { exchange } : {}) }),
     }),
   transferUsd: (amount: number, toPerp: boolean) =>
     req<{ ok: boolean }>("/api/account/transfer", {

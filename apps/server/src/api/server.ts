@@ -748,7 +748,7 @@ export async function buildServer() {
   );
 
   // Place a one-off test order from the desk (respects the global test switch).
-  app.post<{ Body: { symbol?: string; side?: string; notionalUsd?: number; leverage?: number } }>(
+  app.post<{ Body: { symbol?: string; side?: string; notionalUsd?: number; leverage?: number; exchange?: string } }>(
     "/api/test-order",
     async (req, reply) => {
       if (!authEnabled) return reply.code(403).send({ error: "Set DESK_PASSWORD to enable test orders." });
@@ -757,6 +757,11 @@ export async function buildServer() {
       const side = b.side === "short" ? "short" : "long";
       const notionalUsd = Number(b.notionalUsd);
       const leverage = Number(b.leverage);
+      const VENUES = ["hyperliquid", "hyperliquid-testnet", "aster", "mexc"] as const;
+      const exchange = VENUES.includes(b.exchange as (typeof VENUES)[number])
+        ? (b.exchange as (typeof VENUES)[number])
+        : undefined;
+      if (b.exchange && !exchange) return reply.code(400).send({ error: `unknown exchange ${b.exchange}` });
       if (!symbol) return reply.code(400).send({ error: "symbol required" });
       if (!Number.isFinite(notionalUsd) || notionalUsd <= 0 || notionalUsd > 10_000_000) {
         return reply.code(400).send({ error: "notionalUsd must be > 0 and <= 10,000,000" });
@@ -764,9 +769,9 @@ export async function buildServer() {
       if (!Number.isFinite(leverage) || leverage < 1 || leverage > 100) {
         return reply.code(400).send({ error: "leverage must be between 1 and 100" });
       }
-      const res = await placeTestOrder({ symbol, side, notionalUsd, leverage });
+      const res = await placeTestOrder({ symbol, side, notionalUsd, leverage, exchange });
       if (!res.ok) return reply.code(400).send({ error: res.error });
-      audit(req, `test order ${side} ${symbol} ${notionalUsd} USDC ${leverage}x`, { symbol, side, notionalUsd, leverage });
+      audit(req, `test order ${side} ${symbol} ${notionalUsd} USDC ${leverage}x on ${exchange ?? "active-hl"}`, { symbol, side, notionalUsd, leverage, exchange });
       return res.trade;
     },
   );

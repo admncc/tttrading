@@ -1,4 +1,4 @@
-import type { Group, ParsedSignal, RiskRating, Signal, Trade, TradeSide } from "@tttrading/shared";
+import type { ExchangeName, Group, ParsedSignal, RiskRating, Signal, Trade, TradeSide } from "@tttrading/shared";
 import { config } from "../config.js";
 import { log, event } from "../logger.js";
 import {
@@ -7,7 +7,7 @@ import {
   trades as tradesRepo,
   settings as settingsRepo,
 } from "../db/repositories.js";
-import { activeHyperliquid, byName, resolveAllForSymbol, resolveForSymbol } from "../exchanges/registry.js";
+import { activeHyperliquid, byName, known, resolveAllForSymbol, resolveForSymbol } from "../exchanges/registry.js";
 import type { ExchangeConnector } from "../exchanges/types.js";
 import { parseSignal } from "../signals/parser.js";
 import type { SignalImage } from "../signals/llm.js";
@@ -1369,6 +1369,7 @@ export async function placeTestOrder(params: {
   side: TradeSide;
   notionalUsd: number;
   leverage: number;
+  exchange?: ExchangeName;
 }): Promise<{ ok: boolean; error?: string; trade?: Trade }> {
   const symbol = params.symbol.trim().toUpperCase();
   const { side, notionalUsd, leverage } = params;
@@ -1376,22 +1377,35 @@ export async function placeTestOrder(params: {
   if (!(notionalUsd > 0)) return { ok: false, error: "size must be > 0" };
   if (!(leverage >= 1)) return { ok: false, error: "leverage must be >= 1" };
 
+  // Target venue: an explicitly chosen one (must be a known connector), else the
+  // active Hyperliquid. The live-order cap and kill-switch still apply below.
+  let ex = activeHyperliquid() as ExchangeConnector;
+  if (params.exchange) {
+    const chosen = known().find((e) => e.name === params.exchange);
+    if (!chosen) return { ok: false, error: `unknown exchange ${params.exchange}` };
+    ex = chosen;
+  }
+
   // A test order is still a new entry — respect the kill-switch and risk limits.
   const block = preTradeGate(notionalUsd);
   if (block) return { ok: false, error: block };
 
-  const hl = activeHyperliquid();
   try {
-    const asset = await hl.getAsset(symbol);
-    if (!asset) return { ok: false, error: `Crypto NOT found: ${symbol} is not listed on ${hl.name}` };
+    const asset = await ex.getAsset(symbol);
+    if (!asset) return { ok: false, error: `Crypto NOT found: ${symbol} is not listed on ${ex.name}` };
   } catch {
     /* metadata unavailable — let the order path surface any error */
   }
 
-  const result = await hl.placeMarketOrder({
+  // Clamp real (non-simulated) test orders to the global live-order cap too.
+  let sizeUsd = notionalUsd;
+  const liveCap = settingsRepo.getGlobalSettings().liveMaxOrderUsd;
+  if (liveCap > 0 && !ex.simulating() && sizeUsd > liveCap) sizeUsd = liveCap;
+
+  const result = await ex.placeMarketOrder({
     symbol,
     side,
-    notionalUsd,
+    notionalUsd: sizeUsd,
     leverage,
     marginMode: "cross",
     maxSlippage: 0.01,
@@ -1413,9 +1427,9 @@ export async function placeTestOrder(params: {
     side,
     status: "open",
     env: config.tradingEnv,
-    exchange: hl.name,
+    exchange: ex.name,
     leverage,
-    notionalUsd,
+    notionalUsd: sizeUsd,
     size: result.size,
     entryPrice: result.filledPrice,
     exchangeOrderId: result.orderId,
@@ -1425,8 +1439,8 @@ export async function placeTestOrder(params: {
   });
   event(
     "exec",
-    `Test order ${side} ${symbol} (${result.simulated ? "sim" : "live"}) @ ${result.filledPrice}`,
-    { tradeId: trade.id, size: trade.size, notionalUsd, leverage },
+    `Test order ${side} ${symbol} on ${ex.name} (${result.simulated ? "sim" : "live"}) @ ${result.filledPrice}`,
+    { tradeId: trade.id, size: trade.size, notionalUsd: sizeUsd, leverage, exchange: ex.name },
     {},
   );
   alertOpened(trade);
