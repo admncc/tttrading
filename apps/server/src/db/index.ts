@@ -86,6 +86,14 @@ CREATE TABLE IF NOT EXISTS logs (
 );
 CREATE INDEX IF NOT EXISTS idx_logs_ts ON logs(ts);
 CREATE INDEX IF NOT EXISTS idx_logs_category ON logs(category);
+
+-- Chart images attached to incoming messages, keyed by their signal record.
+CREATE TABLE IF NOT EXISTS message_images (
+  signal_id TEXT PRIMARY KEY,
+  media_type TEXT NOT NULL,
+  data BLOB NOT NULL,
+  created_at TEXT NOT NULL
+);
 `;
 
 function open(): Database.Database {

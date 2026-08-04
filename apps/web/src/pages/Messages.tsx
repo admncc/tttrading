@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { Group, Signal } from "@tttrading/shared";
-import { api } from "../api.js";
+import { api, messageImageUrl } from "../api.js";
 import { shortTime } from "../format.js";
 import { RiskDot } from "../components/Risk.js";
 
@@ -117,7 +117,30 @@ export function Messages({
                   </span>
                 )}
               </div>
-              <div style={{ whiteSpace: "pre-wrap", fontSize: 13 }}>{s.rawText}</div>
+              {s.rawText && (
+                <div style={{ whiteSpace: "pre-wrap", fontSize: 13 }}>{s.rawText}</div>
+              )}
+              {s.hasImage && (
+                <a
+                  href={messageImageUrl(s.id)}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="Open the attached chart"
+                  style={{ display: "inline-block", marginTop: 6 }}
+                >
+                  <img
+                    src={messageImageUrl(s.id)}
+                    alt="chart"
+                    loading="lazy"
+                    style={{
+                      maxWidth: 320,
+                      maxHeight: 220,
+                      borderRadius: 8,
+                      border: "1px solid var(--border)",
+                    }}
+                  />
+                </a>
+              )}
             </div>
           ))
         )}

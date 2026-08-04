@@ -468,6 +468,32 @@ function toLog(r: LogRow): LogEntry {
 const LOG_CAP = 5000;
 let logInserts = 0;
 
+/** Chart images attached to incoming messages (keyed by the signal record). */
+export const messageImages = {
+  save(signalId: string, mediaType: string, data: Buffer): void {
+    db.prepare(
+      `INSERT INTO message_images (signal_id, media_type, data, created_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(signal_id) DO UPDATE SET media_type = excluded.media_type, data = excluded.data`,
+    ).run(signalId, mediaType, data, now());
+  },
+  get(signalId: string): { mediaType: string; data: Buffer } | undefined {
+    const row = db
+      .prepare("SELECT media_type, data FROM message_images WHERE signal_id = ?")
+      .get(signalId) as { media_type: string; data: Buffer } | undefined;
+    return row ? { mediaType: row.media_type, data: row.data } : undefined;
+  },
+  /** Which of the given signal ids have a stored image (for list badges). */
+  withImages(signalIds: string[]): Set<string> {
+    if (signalIds.length === 0) return new Set();
+    const qs = signalIds.map(() => "?").join(",");
+    const rows = db
+      .prepare(`SELECT signal_id FROM message_images WHERE signal_id IN (${qs})`)
+      .all(...signalIds) as { signal_id: string }[];
+    return new Set(rows.map((r) => r.signal_id));
+  },
+};
+
 export const logs = {
   create(entry: LogEntry): void {
     db.prepare(

@@ -187,6 +187,8 @@ export interface Signal {
   risk?: RiskRating;
   error?: string;
   tradeId?: string;
+  /** A chart image was attached to the message (served at /api/messages/:id/image). */
+  hasImage?: boolean;
   receivedAt: string;
   updatedAt: string;
 }

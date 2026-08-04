@@ -4,7 +4,7 @@ import { NewMessage, type NewMessageEvent } from "telegram/events/index.js";
 import type { Group } from "@tttrading/shared";
 import { config, telegramReady } from "../config.js";
 import { log, event as logEvent } from "../logger.js";
-import { groups as groupsRepo, settings as settingsRepo } from "../db/repositories.js";
+import { groups as groupsRepo, settings as settingsRepo, messageImages as messageImagesRepo } from "../db/repositories.js";
 import { handleIncoming } from "../execution/engine.js";
 import { llmReady, type SignalImage } from "../signals/llm.js";
 
@@ -18,22 +18,38 @@ function hasPhoto(msg: Api.Message | undefined): boolean {
 }
 
 /**
- * Download a message's chart photo for vision parsing. Gated on the LLM being
- * configured and vision enabled; skips oversized images to bound cost/latency.
+ * Download a message's chart photo. Downloaded for BOTH storage (shown in the
+ * Messages tab) and LLM vision; the vision gate is applied separately at the
+ * call site. Skips oversized images to bound cost/storage.
  */
 async function extractImage(msg: Api.Message | undefined): Promise<SignalImage | undefined> {
-  if (!msg || !client || !config.anthropic.vision || !llmReady() || !hasPhoto(msg)) return undefined;
+  if (!msg || !client || !hasPhoto(msg)) return undefined;
   try {
     const buf = await client.downloadMedia(msg, {});
     if (!buf || !Buffer.isBuffer(buf)) return undefined;
     if (buf.length > 4_000_000) {
-      log.warn("Chart image too large for vision — skipping.");
+      log.warn("Chart image too large — skipping.");
       return undefined;
     }
     return { dataBase64: buf.toString("base64"), mediaType: "image/jpeg" };
   } catch (err) {
     log.warn("Chart image download failed:", err instanceof Error ? err.message : err);
     return undefined;
+  }
+}
+
+/** The image to hand the LLM for vision (only when vision is enabled + a key). */
+function visionImage(image: SignalImage | undefined): SignalImage | undefined {
+  return image && config.anthropic.vision && llmReady() ? image : undefined;
+}
+
+/** Persist a downloaded chart image against its signal record (for Messages). */
+function storeImage(signalId: string | undefined, image: SignalImage | undefined): void {
+  if (!signalId || !image) return;
+  try {
+    messageImagesRepo.save(signalId, image.mediaType, Buffer.from(image.dataBase64, "base64"));
+  } catch (err) {
+    log.warn("Failed to store chart image:", err instanceof Error ? err.message : err);
   }
 }
 let pollTimer: ReturnType<typeof setInterval> | undefined;
@@ -183,7 +199,8 @@ async function onMessage(event: NewMessageEvent): Promise<void> {
   }
   try {
     const image = photo ? await extractImage(event.message) : undefined;
-    await handleIncoming(group, text, image);
+    const sig = await handleIncoming(group, text, visionImage(image));
+    storeImage(sig?.id, image);
     gh(group.id).lastMessageAt = new Date().toISOString();
   } catch (err) {
     // Keep the claim (at-most-once): handleIncoming may already have placed a
@@ -315,7 +332,8 @@ async function pollCycle(tg: TelegramClient): Promise<void> {
             groupId: g.id,
           });
           const image = await extractImage(f.msg);
-          await handleIncoming(g, f.text, image);
+          const sig = await handleIncoming(g, f.text, visionImage(image));
+          storeImage(sig?.id, image);
           const h = gh(g.id);
           h.lastMessageAt = new Date().toISOString();
           h.recoveredCount++;

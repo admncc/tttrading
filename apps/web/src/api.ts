@@ -131,6 +131,11 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+/** URL of a message's attached chart image (token in the query — <img> can't set headers). */
+export function messageImageUrl(signalId: string): string {
+  return `/api/messages/${signalId}/image${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+}
+
 export const api = {
   health: () =>
     req<{

@@ -49,6 +49,7 @@ function isSafeExchangeUrl(s: string): boolean {
 import {
   groups as groupsRepo,
   logs as logsRepo,
+  messageImages as messageImagesRepo,
   settings as settingsRepo,
   signals as signalsRepo,
   trades as tradesRepo,
@@ -166,6 +167,10 @@ export async function buildServer() {
       return reply.code(403).send({ error: "Set DESK_PASSWORD to enable changes." });
     }
     if (!verifyToken(bearer(req.headers.authorization))) {
+      // Fallback: a token query param, for resources loaded via <img>/<a> tags
+      // that can't set an Authorization header (e.g. message chart images).
+      const q = (req.query as { token?: string } | undefined)?.token;
+      if (q && verifyToken(q)) return;
       return reply.code(401).send({ error: "unauthorized" });
     }
   });
@@ -604,10 +609,19 @@ export async function buildServer() {
   };
 
   app.get<{ Querystring: { limit?: string } }>("/api/signals", async (req) => {
-    return signalsRepo.list(clampLimit(req.query.limit, 200, 2000));
+    const list = signalsRepo.list(clampLimit(req.query.limit, 200, 2000));
+    const withImg = messageImagesRepo.withImages(list.map((s) => s.id));
+    return list.map((s) => (withImg.has(s.id) ? { ...s, hasImage: true } : s));
   });
 
   app.get("/api/signals/pending", async () => signalsRepo.pending());
+
+  // Serve a message's attached chart image (inline). Public read (no secrets).
+  app.get<{ Params: { id: string } }>("/api/messages/:id/image", async (req, reply) => {
+    const img = messageImagesRepo.get(req.params.id);
+    if (!img) return reply.code(404).send({ error: "no image" });
+    return reply.type(img.mediaType).header("Cache-Control", "private, max-age=86400").send(img.data);
+  });
 
   app.post<{ Params: { id: string } }>("/api/signals/:id/confirm", async (req, reply) => {
     const signal = await confirmSignal(req.params.id);
