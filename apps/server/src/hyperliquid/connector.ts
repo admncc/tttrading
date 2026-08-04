@@ -340,7 +340,13 @@ export class HyperliquidConnector implements ExchangeConnector {
     }
 
     try {
-      await this.setLeverage(asset, req.leverage, req.marginMode);
+      // Only set leverage/margin mode when OPENING. A reduce-only order closes or
+      // reduces an existing position — changing the leverage type on an open
+      // position is rejected by Hyperliquid ("Cannot switch leverage type with
+      // open position"), and there's nothing to configure for a close anyway.
+      if (!req.reduceOnly) {
+        await this.setLeverage(asset, req.leverage, req.marginMode);
+      }
       const result = (await this.exchange.order({
         orders: [
           {
