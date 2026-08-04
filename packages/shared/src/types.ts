@@ -193,8 +193,10 @@ export interface Signal {
   risk?: RiskRating;
   error?: string;
   tradeId?: string;
-  /** A chart image was attached to the message (served at /api/messages/:id/image). */
+  /** An attachment was on the message (served at /api/messages/:id/image). */
   hasImage?: boolean;
+  /** Kind of attachment, so the desk renders an image thumbnail vs a PDF link. */
+  attachmentType?: "image" | "pdf";
   receivedAt: string;
   updatedAt: string;
 }

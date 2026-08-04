@@ -120,7 +120,27 @@ export function Messages({
               {s.rawText && (
                 <div style={{ whiteSpace: "pre-wrap", fontSize: 13 }}>{s.rawText}</div>
               )}
-              {s.hasImage && (
+              {s.hasImage && s.attachmentType === "pdf" && (
+                <a
+                  href={messageImageUrl(s.id)}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="Open the attached PDF"
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 8,
+                    marginTop: 6,
+                    padding: "8px 12px",
+                    border: "1px solid var(--border)",
+                    borderRadius: 8,
+                    fontSize: 13,
+                  }}
+                >
+                  📄 <strong>PDF</strong> <span className="muted">— open attachment</span>
+                </a>
+              )}
+              {s.hasImage && s.attachmentType !== "pdf" && (
                 <a
                   href={messageImageUrl(s.id)}
                   target="_blank"

@@ -611,8 +611,11 @@ export async function buildServer() {
 
   app.get<{ Querystring: { limit?: string } }>("/api/signals", async (req) => {
     const list = signalsRepo.list(clampLimit(req.query.limit, 200, 2000));
-    const withImg = messageImagesRepo.withImages(list.map((s) => s.id));
-    return list.map((s) => (withImg.has(s.id) ? { ...s, hasImage: true } : s));
+    const kinds = messageImagesRepo.attachmentTypes(list.map((s) => s.id));
+    return list.map((s) => {
+      const k = kinds.get(s.id);
+      return k ? { ...s, hasImage: true, attachmentType: k } : s;
+    });
   });
 
   app.get("/api/signals/pending", async () => signalsRepo.pending());

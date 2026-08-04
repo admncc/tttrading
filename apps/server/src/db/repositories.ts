@@ -483,14 +483,16 @@ export const messageImages = {
       .get(signalId) as { media_type: string; data: Buffer } | undefined;
     return row ? { mediaType: row.media_type, data: row.data } : undefined;
   },
-  /** Which of the given signal ids have a stored image (for list badges). */
-  withImages(signalIds: string[]): Set<string> {
-    if (signalIds.length === 0) return new Set();
+  /** Map of signal id → attachment kind ("image"|"pdf") for the given ids. */
+  attachmentTypes(signalIds: string[]): Map<string, "image" | "pdf"> {
+    const out = new Map<string, "image" | "pdf">();
+    if (signalIds.length === 0) return out;
     const qs = signalIds.map(() => "?").join(",");
     const rows = db
-      .prepare(`SELECT signal_id FROM message_images WHERE signal_id IN (${qs})`)
-      .all(...signalIds) as { signal_id: string }[];
-    return new Set(rows.map((r) => r.signal_id));
+      .prepare(`SELECT signal_id, media_type FROM message_images WHERE signal_id IN (${qs})`)
+      .all(...signalIds) as { signal_id: string; media_type: string }[];
+    for (const r of rows) out.set(r.signal_id, r.media_type === "application/pdf" ? "pdf" : "image");
+    return out;
   },
 };
 

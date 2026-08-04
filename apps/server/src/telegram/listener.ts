@@ -17,23 +17,40 @@ function hasPhoto(msg: Api.Message | undefined): boolean {
   return !!m.photo || m.media?.className === "MessageMediaPhoto";
 }
 
+/** True if the message carries a PDF document attachment. */
+function hasPdf(msg: Api.Message | undefined): boolean {
+  if (!msg) return false;
+  const doc = (msg as unknown as { media?: { document?: { mimeType?: string; attributes?: { fileName?: string }[] } } })
+    .media?.document;
+  if (!doc) return false;
+  if ((doc.mimeType ?? "").toLowerCase() === "application/pdf") return true;
+  return (doc.attributes ?? []).some((a) => typeof a?.fileName === "string" && a.fileName.toLowerCase().endsWith(".pdf"));
+}
+
+/** True if the message has any attachment we handle (photo or PDF). */
+function hasAttachment(msg: Api.Message | undefined): boolean {
+  return hasPhoto(msg) || hasPdf(msg);
+}
+
 /**
  * Download a message's chart photo. Downloaded for BOTH storage (shown in the
  * Messages tab) and LLM vision; the vision gate is applied separately at the
  * call site. Skips oversized images to bound cost/storage.
  */
 async function extractImage(msg: Api.Message | undefined): Promise<SignalImage | undefined> {
-  if (!msg || !client || !hasPhoto(msg)) return undefined;
+  if (!msg || !client || !hasAttachment(msg)) return undefined;
+  const pdf = !hasPhoto(msg) && hasPdf(msg);
+  const cap = pdf ? 12_000_000 : 4_000_000; // PDFs run larger than chart snaps
   try {
     const buf = await client.downloadMedia(msg, {});
     if (!buf || !Buffer.isBuffer(buf)) return undefined;
-    if (buf.length > 4_000_000) {
-      log.warn("Chart image too large — skipping.");
+    if (buf.length > cap) {
+      log.warn(`Attachment too large (${buf.length} bytes) — skipping.`);
       return undefined;
     }
-    return { dataBase64: buf.toString("base64"), mediaType: "image/jpeg" };
+    return { dataBase64: buf.toString("base64"), mediaType: pdf ? "application/pdf" : "image/jpeg" };
   } catch (err) {
-    log.warn("Chart image download failed:", err instanceof Error ? err.message : err);
+    log.warn("Attachment download failed:", err instanceof Error ? err.message : err);
     return undefined;
   }
 }
@@ -188,8 +205,8 @@ async function matchGroup(event: NewMessageEvent): Promise<Group | undefined> {
 
 async function onMessage(event: NewMessageEvent): Promise<void> {
   const text = event.message?.text ?? "";
-  const photo = hasPhoto(event.message);
-  if (!text && !photo) return; // nothing actionable
+  const attach = hasAttachment(event.message);
+  if (!text && !attach) return; // nothing actionable
   const group = await matchGroup(event);
   if (!group) return; // message from a channel we don't track
   const msgId = event.message?.id;
@@ -198,7 +215,7 @@ async function onMessage(event: NewMessageEvent): Promise<void> {
     return; // already processed (e.g. poller beat us to it)
   }
   try {
-    const image = photo ? await extractImage(event.message) : undefined;
+    const image = attach ? await extractImage(event.message) : undefined;
     const sig = await handleIncoming(group, text, visionImage(image));
     storeImage(sig?.id, image);
     gh(group.id).lastMessageAt = new Date().toISOString();
@@ -308,11 +325,11 @@ async function pollCycle(tg: TelegramClient): Promise<void> {
           const id = (m as { id?: number }).id;
           if (typeof id !== "number") continue;
           const text = (m as { message?: string }).message ?? "";
-          const photo = hasPhoto(m);
+          const attach = hasAttachment(m);
           if (settingsRepo.claimTelegramMessage(g.id, id)) {
             anyNew = true;
-            // Recover messages that carry text OR a chart image (vision path).
-            if (text || photo) fresh.push({ id, text, msg: m });
+            // Recover messages that carry text OR an attachment (image / PDF).
+            if (text || attach) fresh.push({ id, text, msg: m });
           } else {
             hitSeen = true; // reached the already-processed region
           }

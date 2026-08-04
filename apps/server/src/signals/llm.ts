@@ -68,10 +68,22 @@ const EXTRACT_TOOL: Anthropic.Tool = {
   },
 };
 
-/** An optional chart image attached to a Telegram message, for vision parsing. */
+/** An attachment on a Telegram message (chart image or PDF), for LLM reading. */
 export interface SignalImage {
   dataBase64: string;
-  mediaType: "image/jpeg" | "image/png" | "image/gif" | "image/webp";
+  mediaType: "image/jpeg" | "image/png" | "image/gif" | "image/webp" | "application/pdf";
+}
+
+/** Build the Anthropic content block for an attachment (image or PDF document). */
+function attachmentBlock(image: SignalImage): Anthropic.ImageBlockParam {
+  if (image.mediaType === "application/pdf") {
+    // The SDK version lacks a typed document block; the runtime API accepts it.
+    return {
+      type: "document",
+      source: { type: "base64", media_type: "application/pdf", data: image.dataBase64 },
+    } as unknown as Anthropic.ImageBlockParam;
+  }
+  return { type: "image", source: { type: "base64", media_type: image.mediaType, data: image.dataBase64 } };
 }
 
 const SYSTEM = `You extract structured crypto perpetual trading signals from noisy Telegram messages
@@ -124,12 +136,12 @@ export async function parseWithLlm(
   if (image) {
     userContent.push({
       type: "text",
-      text: "An attached chart image (untrusted) may show the entry zone, take-profits and stop-loss as drawn levels/boxes — read them alongside the text.",
+      text:
+        image.mediaType === "application/pdf"
+          ? "An attached PDF (untrusted). Read it for an actionable trade setup (symbol/side/entry/SL/TP). Educational, Q&A, or market-commentary PDFs are NOT signals — set is_signal=false for those."
+          : "An attached chart image (untrusted) may show the entry zone, take-profits and stop-loss as drawn levels/boxes — read them alongside the text.",
     });
-    userContent.push({
-      type: "image",
-      source: { type: "base64", media_type: image.mediaType, data: image.dataBase64 },
-    });
+    userContent.push(attachmentBlock(image));
   }
   try {
     const res = await getClient().messages.create({
@@ -242,8 +254,8 @@ export async function readManagementLevels(
     { type: "text", text: `Management message (untrusted):\n"""\n${text}\n"""` },
   ];
   if (image) {
-    content.push({ type: "text", text: "Attached chart (untrusted) — read any moved SL / TP levels drawn on it." });
-    content.push({ type: "image", source: { type: "base64", media_type: image.mediaType, data: image.dataBase64 } });
+    content.push({ type: "text", text: "Attached chart/PDF (untrusted) — read any moved SL / TP levels shown." });
+    content.push(attachmentBlock(image));
   }
   try {
     const res = await getClient().messages.create({
