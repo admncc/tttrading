@@ -48,6 +48,10 @@ const RE_SLMOVE =
 // "book 50%", "take 20% profit", "50% out".
 const RE_PARTIAL_A = /\b(?:book(?:ing)?|tak(?:e|ing)|lock(?:ing)?\s*in|secur\w*)\b[^%\n]{0,25}?(\d{1,3})\s*%/i;
 const RE_PARTIAL_B = /\b(\d{1,3})\s*%\s*(?:out|off|pos|position|booked)\b/i;
+// Partial WITHOUT a percentage ("booked partial profits", "manual TP1", "took
+// some off", "lock in some profits", "trim here"). Books a default fraction.
+const RE_PARTIAL_WORD =
+  /\b(?:book(?:ed|ing)?|took|tak(?:e|ing|en)|lock(?:ed|ing)?\s*in|secur\w*|trim\w*|scal\w*\s*out)\b[^.\n]{0,30}\b(?:partials?|profits?|some|half|tp\s*\d+|position)\b/i;
 // "TP1 hit", "target reached", "area 1 reached", "4RR", "done and dusted".
 const RE_TPHIT =
   /\b(?:tp\s*\d*\s*(?:hit|reached|done)|target\s*\d*\s*(?:reached|hit|smashed|done)|area\s*\d*\s*reached|\d+\s*rr\b|done\s+and\s+dusted)\b/i;
@@ -84,6 +88,12 @@ export function classifyManagementAll(text: string): ManagementAction[] {
       add({ kind: "partial_close", symbol, fraction: pct / 100, alsoBreakeven: isBreakeven(text), note: `book ${pct}%` });
       partial = true;
     }
+  }
+  // No explicit %, but the trader clearly booked a partial in prose → book the
+  // group's default fraction (fraction left undefined; the engine fills it in).
+  if (!partial && RE_PARTIAL_WORD.test(text)) {
+    add({ kind: "partial_close", symbol, alsoBreakeven: isBreakeven(text), note: "book partial (default %)" });
+    partial = true;
   }
 
   // Break-even as its own intent only when a partial didn't already fold it in.

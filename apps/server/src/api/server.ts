@@ -102,6 +102,7 @@ const groupSettingsSchema = z.object({
   maxSlippage: z.number().min(0).max(0.2),
   autoSplitSingleTp: z.boolean(),
   tpLevels: z.number().int().min(1).max(10),
+  defaultPartialPct: z.number().min(1).max(99).optional(),
   breakevenAfterTp: z.number().int().min(0).max(10),
   blockRedTrades: z.boolean(),
   entryMode: z.enum(["limit", "market"]).optional(),

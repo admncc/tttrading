@@ -75,6 +75,12 @@ export interface GroupSettings {
   /** Number of TP levels to generate when auto-splitting a single target. */
   tpLevels: number;
   /**
+   * Fraction (percent) to book when a management message says "take partial /
+   * booked profits / manual TP1" WITHOUT a number. Default 50. Per channel,
+   * since providers scale out differently.
+   */
+  defaultPartialPct?: number;
+  /**
    * Move the stop-loss to break-even (the entry price) once this many
    * take-profit levels have filled. 0 disables it; 1 = after TP1, 2 = after
    * TP2, and so on. Per channel, since providers scale out differently.

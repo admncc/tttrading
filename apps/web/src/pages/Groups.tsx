@@ -117,6 +117,7 @@ const BLANK: GroupInput = {
     maxSlippage: 0.01,
     autoSplitSingleTp: true,
     tpLevels: 3,
+    defaultPartialPct: 50,
     breakevenAfterTp: 0,
     blockRedTrades: false,
     entryMode: "limit",

@@ -10,7 +10,7 @@ import {
 import { activeHyperliquid, byName, known, resolveAllForSymbol, resolveForSymbol } from "../exchanges/registry.js";
 import type { ExchangeConnector } from "../exchanges/types.js";
 import { parseSignal } from "../signals/parser.js";
-import type { SignalImage } from "../signals/llm.js";
+import { readManagementLevels, type SignalImage } from "../signals/llm.js";
 import { classifyManagementAll, type ManagementAction } from "../signals/management.js";
 import { expandTakeProfits } from "../signals/takeprofit.js";
 import { assessRisk } from "../risk/score.js";
@@ -53,7 +53,28 @@ export async function handleIncoming(group: Group, rawText: string, image?: Sign
   if (!parsed || parsed.confidence < ACT_THRESHOLD) {
     // Not a fresh entry — maybe it's one or more trade-management updates (SL
     // move, partial, close, cancel-limit) for existing positions/orders.
-    const actions = classifyManagementAll(rawText);
+    let actions = classifyManagementAll(rawText);
+    // With an attached chart (vision on), let the LLM read levels the text omits
+    // — e.g. a stop moved to a price only drawn on the chart — and merge them in.
+    if (image) {
+      try {
+        const mv = await readManagementLevels(rawText, group.settings.instructions, image);
+        if (mv?.isManagement && mv.confidence >= 0.5) {
+          const kinds = new Set(actions.map((a) => a.kind));
+          const extra: ManagementAction[] = [];
+          if (mv.closed && !kinds.has("close")) extra.push({ kind: "close", symbol: mv.symbol, note: "chart: closed" });
+          if (mv.newStop !== undefined && !kinds.has("sl_move"))
+            extra.push({ kind: "sl_move", symbol: mv.symbol, newStop: mv.newStop, note: `chart: SL to ${mv.newStop}` });
+          if (mv.breakeven && !kinds.has("sl_breakeven") && !kinds.has("partial_close"))
+            extra.push({ kind: "sl_breakeven", symbol: mv.symbol, note: "chart: SL to break-even" });
+          if (mv.partialPercent !== undefined && mv.partialPercent > 0 && mv.partialPercent < 100 && !kinds.has("partial_close"))
+            extra.push({ kind: "partial_close", symbol: mv.symbol, fraction: mv.partialPercent / 100, note: `chart: book ${mv.partialPercent}%` });
+          if (extra.length) actions = [...actions, ...extra];
+        }
+      } catch (err) {
+        log.warn("Management vision read failed:", err instanceof Error ? err.message : err);
+      }
+    }
     if (actions.length > 0) {
       const managed = await applyManagement(group, rawText, actions);
       if (managed) return managed;
@@ -437,7 +458,9 @@ async function applyManagement(
           continue;
         }
       } else if (action.kind === "partial_close") {
-        await partialClose(t, action.fraction ?? 0);
+        // Explicit % from the message, else the group's default partial fraction.
+        const frac = action.fraction ?? Math.min(0.95, Math.max(0.01, (group.settings.defaultPartialPct ?? 50) / 100));
+        await partialClose(t, frac);
         if (action.alsoBreakeven) {
           const fresh = tradesRepo.get(t.id);
           if (fresh) await moveStop(fresh, fresh.entryPrice, true);
