@@ -35,14 +35,22 @@ function isSafeExchangeUrl(s: string): boolean {
   if (h === "localhost" || h.endsWith(".local") || h.endsWith(".internal") || h.endsWith(".lan")) return false;
   if (h.includes(":") || h === "0.0.0.0") return false; // IPv6 literal / wildcard
   const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  // A host with NO letter that isn't a valid dotted-quad is a numeric IP
+  // encoding (decimal int like 2130706433, 0x-hex, or octal/short forms like
+  // 0177.0.0.1 / 127.1) — reject, since those bypass the dotted-quad range
+  // checks below and can resolve to loopback / the metadata endpoint.
+  if (!/[a-z]/i.test(h) && !m) return false;
   if (m) {
-    const a = Number(m[1]);
-    const b = Number(m[2]);
-    // Block private / loopback / link-local / multicast IPv4 literals.
+    const oct = [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4])];
+    if (oct.some((n) => n > 255)) return false; // not a valid dotted-quad
+    const a = oct[0]!;
+    const b = oct[1]!;
+    // Block private / loopback / link-local / CGNAT / multicast IPv4 literals.
     if (a === 0 || a === 10 || a === 127 || a >= 224) return false;
     if (a === 169 && b === 254) return false;
     if (a === 192 && b === 168) return false;
     if (a === 172 && b >= 16 && b <= 31) return false;
+    if (a === 100 && b >= 64 && b <= 127) return false;
   }
   return true;
 }
@@ -168,10 +176,13 @@ export async function buildServer() {
       return reply.code(403).send({ error: "Set DESK_PASSWORD to enable changes." });
     }
     if (!verifyToken(bearer(req.headers.authorization))) {
-      // Fallback: a token query param, for resources loaded via <img>/<a> tags
-      // that can't set an Authorization header (e.g. message chart images).
+      // Fallback: a token query param — but ONLY for the GET image route, which
+      // is loaded via an <img> tag that can't set an Authorization header.
+      // Restricting it keeps full-privilege tokens out of other request URLs
+      // (referer/proxy/access-log leakage).
+      const isImageGet = req.method === "GET" && /^\/api\/messages\/[^/]+\/image$/.test(path);
       const q = (req.query as { token?: string } | undefined)?.token;
-      if (q && verifyToken(q)) return;
+      if (isImageGet && q && verifyToken(q)) return;
       return reply.code(401).send({ error: "unauthorized" });
     }
   });
@@ -624,7 +635,12 @@ export async function buildServer() {
   app.get<{ Params: { id: string } }>("/api/messages/:id/image", async (req, reply) => {
     const img = messageImagesRepo.get(req.params.id);
     if (!img) return reply.code(404).send({ error: "no image" });
-    return reply.type(img.mediaType).header("Cache-Control", "private, max-age=86400").send(img.data);
+    return reply
+      .type(img.mediaType)
+      .header("Cache-Control", "private, max-age=86400")
+      .header("X-Content-Type-Options", "nosniff")
+      .header("Content-Disposition", "inline")
+      .send(img.data);
   });
 
   app.post<{ Params: { id: string } }>("/api/signals/:id/confirm", async (req, reply) => {

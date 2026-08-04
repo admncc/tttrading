@@ -125,7 +125,8 @@ export class AsterConnector implements ExchangeConnector {
     return this.signerAccount;
   }
 
-  /** Strictly-increasing microsecond nonce (unique per process, ±10s of server). */
+  /** Strictly-increasing microsecond nonce (monotonic even across clock steps). */
+  private lastNonce = 0;
   private nextNonce(): string {
     const ms = Date.now();
     if (ms === this.lastNonceMs) this.nonceCounter++;
@@ -133,7 +134,11 @@ export class AsterConnector implements ExchangeConnector {
       this.lastNonceMs = ms;
       this.nonceCounter = 0;
     }
-    return String(ms * 1000 + this.nonceCounter);
+    // Never emit a value ≤ the last one (guards a backward clock step or the
+    // counter overflowing past 1000 within a single millisecond).
+    const n = Math.max(ms * 1000 + this.nonceCounter, this.lastNonce + 1);
+    this.lastNonce = n;
+    return String(n);
   }
 
   /**
@@ -426,7 +431,9 @@ export class AsterConnector implements ExchangeConnector {
       };
     }
 
-    const forceReal = !!req.force && !!req.reduceOnly;
+    // `force` only sends a real reduce-only order when the venue can actually
+    // sign (live). Without creds there's no real position here — simulate.
+    const forceReal = !!req.force && !!req.reduceOnly && this.live;
     if (this.simulating() && !forceReal) {
       return { ok: true, filledPrice: mid, size, simulated: true };
     }

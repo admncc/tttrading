@@ -41,6 +41,15 @@ async function extractImage(msg: Api.Message | undefined): Promise<SignalImage |
   if (!msg || !client || !hasAttachment(msg)) return undefined;
   const pdf = !hasPhoto(msg) && hasPdf(msg);
   const cap = pdf ? 12_000_000 : 4_000_000; // PDFs run larger than chart snaps
+  // Reject on the DECLARED size before downloading, so an untrusted channel
+  // can't make us pull a 500 MB "document" into memory just to discard it.
+  const declared = Number(
+    (msg as unknown as { media?: { document?: { size?: number | bigint } } }).media?.document?.size ?? 0,
+  );
+  if (declared > cap) {
+    log.warn(`Attachment declared ${declared} bytes (> ${cap}) — skipping without download.`);
+    return undefined;
+  }
   try {
     const buf = await client.downloadMedia(msg, {});
     if (!buf || !Buffer.isBuffer(buf)) return undefined;
@@ -366,7 +375,7 @@ async function pollCycle(tg: TelegramClient): Promise<void> {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       gh(g.id).lastError = msg;
-      entityCache.delete(g.id); // force re-resolve next cycle
+      entityCache.delete(g.telegramChannel); // force re-resolve next cycle (cache is keyed by channel)
       log.warn(`Telegram poll ${g.name} failed:`, msg);
     }
   }

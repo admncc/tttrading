@@ -39,6 +39,13 @@ export function RiskControls() {
   }, []);
 
   const save = async (patch: Partial<Settings>) => {
+    // Drop non-finite numbers (e.g. an emptied field blurring to NaN) so we
+    // never POST NaN — the field re-reads the server-normalized value on reload.
+    for (const k of Object.keys(patch) as (keyof Settings)[]) {
+      const v = patch[k];
+      if (typeof v === "number" && !Number.isFinite(v)) delete patch[k];
+    }
+    if (Object.keys(patch).length === 0) return;
     setBusy(true);
     setMsg(null);
     try {

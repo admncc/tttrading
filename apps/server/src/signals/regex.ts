@@ -135,8 +135,14 @@ function extractTakeProfits(text: string): number[] {
  * otherwise undefined (a single entry is handled by the normal `entry` field).
  */
 function extractEntries(text: string): { price?: number; mode: "market" | "limit" }[] | undefined {
+  // The ordinal (first/second/1st/2nd…) is REQUIRED so a single entry that
+  // merely mentions the word "entry" twice ("…stop just below entry at 63000")
+  // is NOT mis-split into a bogus second full-size order. Real scale-ins from
+  // these channels always number their zones.
+  // Trailing window (for a cmp/market marker) stops at a period/newline so it
+  // can't consume the NEXT leg's ordinal ("…(63842)(cmp). Second …").
   const re =
-    /\b(?:1st|2nd|3rd|4th|first|second|third|fourth)?\s*(?:limit\s+)?entr(?:y|ies)\b(?:\s*zone)?[^0-9\n]{0,20}([0-9][0-9.,]*)([^\n]{0,14})/gi;
+    /\b(?:1st|2nd|3rd|4th|first|second|third|fourth)\s+(?:limit\s+)?entr(?:y|ies)\b(?:\s*zone)?[^0-9\n]{0,20}([0-9][0-9.,]*)([^\n.]{0,14})/gi;
   const legs: { price?: number; mode: "market" | "limit" }[] = [];
   const seen = new Set<number>();
   for (const m of text.matchAll(re)) {

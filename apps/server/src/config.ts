@@ -192,9 +192,9 @@ export function hyperliquidReady(): boolean {
   return !config.isPaper && (!!config.hyperliquid.testnet.privateKey || !!config.hyperliquid.mainnet.privateKey);
 }
 
-/** Aster can sign & send real orders (V3 API wallet present, not paper mode). */
+/** Aster can sign & send real orders (V3 API wallet + master account present). */
 export function asterReady(): boolean {
-  return !config.isPaper && !!config.aster.privateKey && !!config.aster.signer;
+  return !config.isPaper && !!config.aster.privateKey && !!config.aster.signer && !!config.aster.user;
 }
 
 export function telegramReady(): boolean {

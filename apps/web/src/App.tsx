@@ -114,6 +114,27 @@ export function App() {
     if (authState === "in") void refresh();
   }, [authState, refresh]);
 
+  // Poll health so the sidebar badge (network / LIVE / paused) self-heals after
+  // a change that doesn't broadcast — e.g. the Settings network switch.
+  useEffect(() => {
+    if (authState !== "in") return;
+    const poll = setInterval(() => {
+      api
+        .health()
+        .then((h) =>
+          setHealth({
+            env: h.env,
+            activeNetwork: h.activeNetwork,
+            live: h.live,
+            shadowMode: h.shadowMode,
+            tradingPaused: h.tradingPaused,
+          }),
+        )
+        .catch(() => {});
+    }, 20_000);
+    return () => clearInterval(poll);
+  }, [authState]);
+
   const logout = () => {
     setToken(null);
     setAuthState("out");

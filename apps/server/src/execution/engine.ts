@@ -63,12 +63,17 @@ export async function handleIncoming(group: Group, rawText: string, image?: Sign
           const kinds = new Set(actions.map((a) => a.kind));
           const extra: ManagementAction[] = [];
           if (mv.closed && !kinds.has("close")) extra.push({ kind: "close", symbol: mv.symbol, note: "chart: closed" });
-          if (mv.newStop !== undefined && !kinds.has("sl_move"))
-            extra.push({ kind: "sl_move", symbol: mv.symbol, newStop: mv.newStop, note: `chart: SL to ${mv.newStop}` });
-          if (mv.breakeven && !kinds.has("sl_breakeven") && !kinds.has("partial_close"))
-            extra.push({ kind: "sl_breakeven", symbol: mv.symbol, note: "chart: SL to break-even" });
-          if (mv.partialPercent !== undefined && mv.partialPercent > 0 && mv.partialPercent < 100 && !kinds.has("partial_close"))
-            extra.push({ kind: "partial_close", symbol: mv.symbol, fraction: mv.partialPercent / 100, note: `chart: book ${mv.partialPercent}%` });
+          // The stop-move / partial / break-even extras require an EXPLICIT
+          // symbol from the chart — without one they'd fall back to the sole open
+          // position and could act on the wrong coin the chart actually showed.
+          if (mv.symbol) {
+            if (mv.newStop !== undefined && !kinds.has("sl_move"))
+              extra.push({ kind: "sl_move", symbol: mv.symbol, newStop: mv.newStop, note: `chart: SL to ${mv.newStop}` });
+            if (mv.breakeven && !kinds.has("sl_breakeven") && !kinds.has("partial_close"))
+              extra.push({ kind: "sl_breakeven", symbol: mv.symbol, note: "chart: SL to break-even" });
+            if (mv.partialPercent !== undefined && mv.partialPercent > 0 && mv.partialPercent < 100 && !kinds.has("partial_close"))
+              extra.push({ kind: "partial_close", symbol: mv.symbol, fraction: mv.partialPercent / 100, note: `chart: book ${mv.partialPercent}%` });
+          }
           if (extra.length) actions = [...actions, ...extra];
         }
       } catch (err) {
@@ -450,11 +455,17 @@ async function applyManagement(
         } catch {
           /* use entry as the reference */
         }
-        const ok = t.side === "long" ? action.newStop < price : action.newStop > price;
-        if (ok) await moveStop(t, action.newStop, false);
+        // Protective side AND a plausible magnitude: a real stop sits within
+        // ~50% of the current price. This rejects a garbage number scraped from
+        // prose (e.g. "3R locked in" → newStop 3 while price is 64000), which
+        // would otherwise pass the side check for a long and strip protection.
+        const plausible = action.newStop >= price * 0.5 && action.newStop <= price * 1.5;
+        const rightSide = t.side === "long" ? action.newStop < price : action.newStop > price;
+        if (plausible && rightSide) await moveStop(t, action.newStop, false);
         else {
-          event("manage", `Rejected SL move for ${t.symbol}: ${action.newStop} wrong side of ${price}`, { newStop: action.newStop, price, side: t.side }, { level: "warn", groupId: group.id });
-          results.push(`SL ${action.newStop} rejected (wrong side) for ${t.symbol}`);
+          const why = !plausible ? "implausible distance" : "wrong side";
+          event("manage", `Rejected SL move for ${t.symbol}: ${action.newStop} (${why} vs ${price})`, { newStop: action.newStop, price, side: t.side }, { level: "warn", groupId: group.id });
+          results.push(`SL ${action.newStop} rejected (${why}) for ${t.symbol}`);
           continue;
         }
       } else if (action.kind === "partial_close") {
@@ -985,9 +996,10 @@ async function executeScaleIn(
   // persists its own trade regardless of how the others fared).
   const placed = tradesRepo.forSignal(signal.id).filter((t) => !t.shadow);
   if (placed.length > 0) {
-    const note = legErrors.length
-      ? `scale-in: ${placed.length}/${legs.length} legs placed — ${legErrors.join("; ")}`
-      : undefined;
+    const note =
+      legErrors.length || placed.length < legs.length
+        ? `scale-in: ${placed.length}/${legs.length} legs placed${legErrors.length ? ` — ${legErrors.join("; ")}` : " (others gated/blocked)"}`
+        : undefined;
     const updated = signalsRepo.update(signal.id, { status: "executed", tradeId: placed[0]!.id, error: note })!;
     event(
       "exec",
@@ -1409,8 +1421,14 @@ export async function placeTestOrder(params: {
     ex = chosen;
   }
 
+  // Clamp real (non-simulated) test orders to the global live-order cap FIRST,
+  // so the exposure gate below is evaluated against the size we'll actually send.
+  let sizeUsd = notionalUsd;
+  const liveCap = settingsRepo.getGlobalSettings().liveMaxOrderUsd;
+  if (liveCap > 0 && !ex.simulating() && sizeUsd > liveCap) sizeUsd = liveCap;
+
   // A test order is still a new entry — respect the kill-switch and risk limits.
-  const block = preTradeGate(notionalUsd);
+  const block = preTradeGate(sizeUsd);
   if (block) return { ok: false, error: block };
 
   try {
@@ -1419,11 +1437,6 @@ export async function placeTestOrder(params: {
   } catch {
     /* metadata unavailable — let the order path surface any error */
   }
-
-  // Clamp real (non-simulated) test orders to the global live-order cap too.
-  let sizeUsd = notionalUsd;
-  const liveCap = settingsRepo.getGlobalSettings().liveMaxOrderUsd;
-  if (liveCap > 0 && !ex.simulating() && sizeUsd > liveCap) sizeUsd = liveCap;
 
   const result = await ex.placeMarketOrder({
     symbol,

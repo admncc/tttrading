@@ -399,7 +399,9 @@ export const trades = {
     if (!existing) return undefined;
     const m = { ...existing, ...patch };
     db.prepare(
-      `UPDATE trades SET status=@status, exit_price=@exit_price, stop_loss=@stop_loss,
+      `UPDATE trades SET status=@status, exchange=@exchange, entry_price=@entry_price,
+        signal_entry=@signal_entry, notional_usd=@notional_usd, leverage=@leverage,
+        exit_price=@exit_price, stop_loss=@stop_loss,
         take_profits=@take_profits, realized_pnl=@realized_pnl, size=@size,
         fees=@fees, banked_pnl=@banked_pnl, banked_fees=@banked_fees,
         exchange_order_id=@exchange_order_id, sl_order_id=@sl_order_id,
@@ -410,6 +412,11 @@ export const trades = {
     ).run({
       id,
       status: m.status,
+      exchange: m.exchange ?? null,
+      entry_price: m.entryPrice,
+      signal_entry: m.signalEntry ?? null,
+      notional_usd: m.notionalUsd,
+      leverage: m.leverage,
       exit_price: m.exitPrice ?? null,
       stop_loss: m.stopLoss ?? null,
       take_profits: m.takeProfits ? JSON.stringify(m.takeProfits) : null,

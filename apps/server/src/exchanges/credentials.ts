@@ -82,7 +82,10 @@ export function asterBaseUrl(): string {
   return (settings.getExchangeValue("aster.baseUrl") || config.aster.baseUrl).replace(/\/+$/, "");
 }
 export function asterReady(): boolean {
-  return !config.isPaper && !!asterPrivateKey() && !!asterSigner();
+  // Needs the API-wallet key + its address AND the master account (user): V3
+  // signed requests carry `user`, so being "live" without it would sign every
+  // order missing the master-account field → auth rejection.
+  return !config.isPaper && !!asterPrivateKey() && !!asterSigner() && !!asterUser();
 }
 
 /* --------------------------------- MEXC -------------------------------- */

@@ -174,6 +174,10 @@ export function sanitizedBackup(): Buffer {
   try {
     // Strip the Anthropic key and every desk-stored exchange credential (ex:*).
     tmp.prepare("DELETE FROM app_settings WHERE key = 'anthropicKey' OR key LIKE 'ex:%'").run();
+    // Drop attachment blobs (chart images / PDFs) — pure bloat in a backup that
+    // exists to preserve config + trade history, and they can be multi-MB each.
+    tmp.prepare("DELETE FROM message_images").run();
+    tmp.exec("VACUUM");
     return tmp.serialize();
   } finally {
     tmp.close();

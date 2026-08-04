@@ -32,9 +32,11 @@ const RE_CANCEL_LIMIT =
 const RE_CLOSE_NONCANCEL =
   /\b(invalidated|stopped\s*out|got\s*stopped|\bstopped\b|clos(?:e|ed|ing)\b|cut(?:ting)?\b|exit(?:ed|ing)?\b|off\s+the\s+table|left\s+without\s+us|took\s+profit\s+and\s+clos)/i;
 const RE_CANCEL_WORD = /\bcancel(?:led|ed|ing)?\b/i;
-// "risk free" / "move SL to entry / breakeven".
+// "risk free" / "move SL to entry / breakeven". The second branch requires the
+// word "to" before the target so ordinary prose ("moved my stop, we'll be
+// fine") can't false-trigger on a stray "be".
 const RE_BE =
-  /\b(break\s*even|risk[-\s]?free)\b|\bmov\w+\b[^.\n]{0,40}\b(?:sl|stop|invalidation)\b[^.\n]{0,25}\b(?:entry|break\s*even|be)\b/i;
+  /\b(break\s*even|risk[-\s]?free)\b|\bmov\w+\b[^.\n]{0,40}\b(?:sl|stop|invalidation)\b[^.\n]{0,25}\bto\s+(?:entry|break\s*even|be)\b/i;
 // "move to BE" with the bare abbreviation. Case-SENSITIVE uppercase BE + a move
 // verb, so it won't fire on ordinary prose like "going to be" / "to be honest".
 const RE_BE_ABBR = /\bmov\w+[^.\n]{0,25}\bto\s+BE\b/;
@@ -42,16 +44,22 @@ const RE_BE_ABBR = /\bmov\w+[^.\n]{0,25}\bto\s+BE\b/;
 function isBreakeven(text: string): boolean {
   return RE_BE.test(text) || RE_BE_ABBR.test(text);
 }
-// "moving the SL/invalidation to 61491.4".
+// "moving the SL/invalidation to 61491.4". The number must NOT be immediately
+// followed by r/R (an "RR" multiple), x (leverage) or % — else "moved SL, 3R
+// locked" would set the stop to 3. The engine also range-checks the new stop.
 const RE_SLMOVE =
-  /\b(?:mov\w+|adjust\w*|trail\w*|reduc\w*\s+risk)\b[^.\n]{0,40}\b(sl|stop\s*loss|stop|invalidation)\b[^0-9\n]{0,20}([0-9][0-9.,]*)/i;
+  /\b(?:mov\w+|adjust\w*|trail\w*|reduc\w*\s+risk)\b[^.\n]{0,40}\b(sl|stop\s*loss|stop|invalidation)\b[^0-9\n]{0,20}([0-9][0-9.,]*)(?!\s*[rRxX%])/i;
 // "book 50%", "take 20% profit", "50% out".
 const RE_PARTIAL_A = /\b(?:book(?:ing)?|tak(?:e|ing)|lock(?:ing)?\s*in|secur\w*)\b[^%\n]{0,25}?(\d{1,3})\s*%/i;
 const RE_PARTIAL_B = /\b(\d{1,3})\s*%\s*(?:out|off|pos|position|booked)\b/i;
 // Partial WITHOUT a percentage ("booked partial profits", "manual TP1", "took
-// some off", "lock in some profits", "trim here"). Books a default fraction.
+// some off", "lock in some profits", "secured half"). Requires a partial
+// QUALIFIER (partial/some/half/TPn) — NOT bare "profit", so "take profit at
+// 64000" (a TP target/info line) doesn't get read as a partial. "trim" alone
+// also counts.
 const RE_PARTIAL_WORD =
-  /\b(?:book(?:ed|ing)?|took|tak(?:e|ing|en)|lock(?:ed|ing)?\s*in|secur\w*|trim\w*|scal\w*\s*out)\b[^.\n]{0,30}\b(?:partials?|profits?|some|half|tp\s*\d+|position)\b/i;
+  /\b(?:book(?:ed|ing)?|took|tak(?:e|ing|en)|lock(?:ed|ing)?\s*in|secur\w*|scal\w*\s*out)\b[^.\n]{0,30}\b(?:partials?|some|half|tp\s*\d+)\b/i;
+const RE_TRIM = /\btrim(?:med|ming)?\b/i;
 // "TP1 hit", "target reached", "area 1 reached", "4RR", "done and dusted".
 const RE_TPHIT =
   /\b(?:tp\s*\d*\s*(?:hit|reached|done)|target\s*\d*\s*(?:reached|hit|smashed|done)|area\s*\d*\s*reached|\d+\s*rr\b|done\s+and\s+dusted)\b/i;
@@ -91,7 +99,7 @@ export function classifyManagementAll(text: string): ManagementAction[] {
   }
   // No explicit %, but the trader clearly booked a partial in prose → book the
   // group's default fraction (fraction left undefined; the engine fills it in).
-  if (!partial && RE_PARTIAL_WORD.test(text)) {
+  if (!partial && (RE_PARTIAL_WORD.test(text) || RE_TRIM.test(text))) {
     add({ kind: "partial_close", symbol, alsoBreakeven: isBreakeven(text), note: "book partial (default %)" });
     partial = true;
   }

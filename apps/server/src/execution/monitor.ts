@@ -112,6 +112,13 @@ async function reconcileExchange(ex: ExchangeConnector): Promise<void> {
  * error aborts. A grace period avoids closing a just-opened trade before its
  * position registers.
  */
+// How many consecutive reconcile passes a trade's position must read as MISSING
+// before we book it closed. Debounces a transient/partial positions read (esp.
+// on venues like Aster/MEXC where positions and equity come from separate
+// endpoints, so an equity check can't corroborate an empty positionRisk).
+const CLOSE_CONFIRMATIONS = 2;
+const missingCounts = new Map<string, number>();
+
 async function reconcileByPosition(
   ex: ExchangeConnector,
   open: Trade[],
@@ -143,9 +150,18 @@ async function reconcileByPosition(
         p.size !== 0 &&
         (fresh.side === "long" ? p.size > 0 : p.size < 0),
     );
-    if (stillOpen) continue;
+    if (stillOpen) {
+      missingCounts.delete(fresh.id);
+      continue;
+    }
+    // Require the position to read as missing on several consecutive passes
+    // before closing — one glitchy/partial read must not flatten a live trade.
+    const misses = (missingCounts.get(fresh.id) ?? 0) + 1;
+    missingCounts.set(fresh.id, misses);
+    if (misses < CLOSE_CONFIRMATIONS) continue;
 
     closing.add(fresh.id);
+    missingCounts.delete(fresh.id);
     try {
       const again = tradesRepo.get(fresh.id);
       if (!again || again.status !== "open") continue;
@@ -221,11 +237,10 @@ async function reconcileWorking(
     try {
       const fills = t.exchangeOrderId ? byOid.get(t.exchangeOrderId) ?? [] : [];
       const size = fills.reduce((s, f) => s + f.size, 0);
-      // Promote only once the cumulative fill covers (nearly) the full order —
-      // a partial fill would otherwise orphan the unfilled remainder.
+      const avgFill = () => fills.reduce((s, f) => s + f.price * f.size, 0) / size;
+      // Full (or near-full) fill → promote the whole order.
       if (size >= t.size * 0.999 && size > 0) {
-        const notional = fills.reduce((s, f) => s + f.price * f.size, 0);
-        await promoteWorkingToOpen(t.id, notional / size, size);
+        await promoteWorkingToOpen(t.id, avgFill(), size);
         continue;
       }
 
@@ -252,15 +267,28 @@ async function reconcileWorking(
         }
         // Not resting and no matching position → the order is truly gone.
         if (size > 0) {
-          const notional = fills.reduce((s, f) => s + f.price * f.size, 0);
-          await promoteWorkingToOpen(t.id, notional / size, size);
+          await promoteWorkingToOpen(t.id, avgFill(), size);
         } else if (expired) {
           await cancelWorkingTrade(t.id, `limit expired (not resting, no position)`);
         }
         continue;
       }
 
-      if (expired) await cancelWorkingTrade(t.id, `limit timeout (${timeoutH}h)`);
+      // Still resting with a MEANINGFUL partial fill (≥10%): the filled portion
+      // is a live, unprotected position. Promote what filled now — that also
+      // cancels the resting remainder — so it gets its stop/TP instead of
+      // sitting naked until timeout (and being orphaned at cancel).
+      if (size >= t.size * 0.1) {
+        await promoteWorkingToOpen(t.id, avgFill(), size);
+        continue;
+      }
+
+      // Expiry: promote any (small) partial that filled rather than orphaning
+      // it; only a wholly-unfilled order is cancelled outright.
+      if (expired) {
+        if (size > 0) await promoteWorkingToOpen(t.id, avgFill(), size);
+        else await cancelWorkingTrade(t.id, `limit timeout (${timeoutH}h)`);
+      }
     } catch (err) {
       log.error(`working ${t.symbol} (${t.id}):`, err instanceof Error ? err.message : err);
     }

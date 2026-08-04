@@ -103,27 +103,10 @@ export function AccountPanel() {
     }
   };
 
-  if (!a) return null;
-
-  return (
-    <div className="panel">
-      <div className="row-between">
-        <h2 style={{ margin: 0 }}>Exchange connection</h2>
-        <span style={{ fontSize: 12 }}>
-          <span className={`dot ${a.connected ? "live" : "sim"}`} />
-          {a.connected ? "Connected" : "Not connected — simulated"}
-          <span className="muted"> · {a.env}</span>
-          {a.simulating && a.connected && (
-            <span className="tag pending" style={{ marginLeft: 8 }} title="Global test mode is on — no real orders are sent">
-              TEST MODE
-            </span>
-          )}
-        </span>
-      </div>
-
-      {/* Test order — targets ANY enabled venue (Hyperliquid, Aster, MEXC). Shown
-          regardless of the HL connection so a backup venue can be exercised too. */}
-      <div style={{ borderTop: "1px solid var(--border)", paddingTop: 14, marginTop: 12, marginBottom: 14 }}>
+  // Test order — targets ANY enabled venue. Extracted so it renders even when
+  // the HL account read fails (a backup venue can still be exercised).
+  const testOrderBlock = (
+    <div style={{ borderTop: "1px solid var(--border)", paddingTop: 14, marginTop: 12, marginBottom: 14 }}>
         <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
           Place a one-off <strong>test order</strong> on any enabled venue. It appears in the Trades
           tab and can be closed there. Min order value is ~$10, so use ≥ 12 USDC.{" "}
@@ -185,6 +168,37 @@ export function AccountPanel() {
           {toMsg && <span className="muted" style={{ fontSize: 12 }}>{toMsg}</span>}
         </div>
       </div>
+  );
+
+  if (!a) {
+    return (
+      <div className="panel">
+        <div className="row-between">
+          <h2 style={{ margin: 0 }}>Exchange connection</h2>
+          <span className="muted" style={{ fontSize: 12 }}>account read unavailable</span>
+        </div>
+        {testOrderBlock}
+      </div>
+    );
+  }
+
+  return (
+    <div className="panel">
+      <div className="row-between">
+        <h2 style={{ margin: 0 }}>Exchange connection</h2>
+        <span style={{ fontSize: 12 }}>
+          <span className={`dot ${a.connected ? "live" : "sim"}`} />
+          {a.connected ? "Connected" : "Not connected — simulated"}
+          <span className="muted"> · {a.env}</span>
+          {a.simulating && a.connected && (
+            <span className="tag pending" style={{ marginLeft: 8 }} title="Global test mode is on — no real orders are sent">
+              TEST MODE
+            </span>
+          )}
+        </span>
+      </div>
+
+      {testOrderBlock}
 
       {!a.connected ? (
         <div className="muted" style={{ fontSize: 13 }}>

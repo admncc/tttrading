@@ -239,16 +239,26 @@ export function Settings() {
   };
 
   // Which Hyperliquid network is currently active (enabled + highest priority).
+  // Mirror the server's activeHyperliquid(): among enabled HL venues, prefer the
+  // one that can actually trade (live) with the higher routing priority; only
+  // fall back to priority when neither/both are live, so the badge can't claim
+  // "MAINNET · real funds" while the server actually routes to testnet.
   const activeHlNetwork = (c: ExchangesConfig): "mainnet" | "testnet" => {
     const rank = (name: string) => {
       const i = c.priority.indexOf(name);
       return i < 0 ? 99 : i;
     };
-    const mainOn = c.hyperliquid.enabled;
-    const testOn = c.hyperliquidTestnet.enabled;
-    if (mainOn && !testOn) return "mainnet";
-    if (testOn && !mainOn) return "testnet";
-    if (mainOn && testOn) return rank("hyperliquid") <= rank("hyperliquid-testnet") ? "mainnet" : "testnet";
+    const main = { on: c.hyperliquid.enabled, live: c.hyperliquid.live, rank: rank("hyperliquid") };
+    const test = { on: c.hyperliquidTestnet.enabled, live: c.hyperliquidTestnet.live, rank: rank("hyperliquid-testnet") };
+    const mainEligible = main.on && main.live;
+    const testEligible = test.on && test.live;
+    if (mainEligible && !testEligible) return "mainnet";
+    if (testEligible && !mainEligible) return "testnet";
+    if (mainEligible && testEligible) return main.rank <= test.rank ? "mainnet" : "testnet";
+    // Neither live → fall back to enabled + priority (what would route once keyed).
+    if (main.on && !test.on) return "mainnet";
+    if (test.on && !main.on) return "testnet";
+    if (main.on && test.on) return main.rank <= test.rank ? "mainnet" : "testnet";
     return "testnet";
   };
 

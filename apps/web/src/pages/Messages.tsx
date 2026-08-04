@@ -152,6 +152,9 @@ export function Messages({
                     src={messageImageUrl(s.id)}
                     alt="chart"
                     loading="lazy"
+                    onError={(e) => {
+                      (e.currentTarget as HTMLImageElement).style.display = "none";
+                    }}
                     style={{
                       maxWidth: 320,
                       maxHeight: 220,
