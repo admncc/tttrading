@@ -99,22 +99,29 @@ function AiSettings() {
   );
 }
 
+// Tuned baseline for a new group (matches how our providers actually post):
+// group leverage 4x, fixed 1000 USD size, market/limit auto-picked per signal,
+// single-target signals auto-split into 3 TPs, no auto break-even (SL only moves
+// on the trader's own management messages), red-rated signals still execute
+// (traffic-light is informational), and a 30-min same-symbol cooldown to swallow
+// reposts. The global live-order cap still limits real size on top of this.
 const BLANK: GroupInput = {
   name: "",
   telegramChannel: "",
   enabled: true,
   settings: {
     leverage: 4,
-    tradeSizeUsd: 5000,
+    tradeSizeUsd: 1000,
     executionMode: "auto",
     marginMode: "cross",
     maxSlippage: 0.01,
-    autoSplitSingleTp: false,
+    autoSplitSingleTp: true,
     tpLevels: 3,
     breakevenAfterTp: 0,
     blockRedTrades: false,
     entryMode: "limit",
     limitTimeoutHours: 168,
+    symbolCooldownMinutes: 30,
     instructions: "",
   },
 };
