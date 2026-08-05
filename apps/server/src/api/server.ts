@@ -92,6 +92,7 @@ import {
   setTradeStop,
   setTradeTakeProfits,
   submitManual,
+  syncTrade,
 } from "../execution/engine.js";
 import { reconcileOnce, evaluateSimulated } from "../execution/monitor.js";
 import { backfillAll, backfillGroup } from "../telegram/backfill.js";
@@ -685,6 +686,15 @@ export async function buildServer() {
     if (!trade) return reply.code(404).send({ error: "not found" });
     audit(req, `closed ${trade.symbol}`, { id: req.params.id, pnl: trade.realizedPnl });
     return trade;
+  });
+
+  // Reconcile one trade against its exchange on demand ("Sync"): if the desk
+  // booked it closed but the position is still live on the venue, reopen it.
+  app.post<{ Params: { id: string } }>("/api/trades/:id/sync", async (req, reply) => {
+    const res = await syncTrade(req.params.id);
+    if (!res.ok) return reply.code(400).send({ error: res.error });
+    if (res.changed) audit(req, `synced ${res.trade?.symbol ?? req.params.id} → reopened (live on exchange)`, { id: req.params.id });
+    return res;
   });
 
   // Manually set/move the stop-loss on a trade.

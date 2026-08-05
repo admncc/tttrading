@@ -1423,6 +1423,69 @@ export async function setTradeTakeProfits(
 }
 
 /**
+ * On-demand reconcile of a single trade against its exchange ("Sync" button).
+ * Reads the live position on the trade's venue and compares it to the desk's
+ * record:
+ *  - Desk says closed/failed but the position is STILL open on the exchange
+ *    (e.g. a monitor false-close after a network switch, or a wrong-address
+ *    read) → flip it back to OPEN so the bot manages it again, adopting the
+ *    exchange's real size/entry.
+ *  - Desk says open and the exchange agrees → confirm (no change).
+ *  - Desk says open but the exchange is flat → report it; leave the actual
+ *    close to the monitor/close path (never fabricate an exit here).
+ * Only meaningful for real trades on a venue that can currently read positions.
+ */
+export async function syncTrade(
+  tradeId: string,
+): Promise<{ ok: boolean; error?: string; changed?: boolean; live?: boolean; trade?: Trade }> {
+  const trade = tradesRepo.get(tradeId);
+  if (!trade) return { ok: false, error: "not found" };
+  if (trade.shadow || trade.simulated) return { ok: false, error: "not a real trade" };
+  const ex = connectorFor(trade);
+  if (!ex.live) {
+    return { ok: false, error: `${ex.name} can't read positions right now (no key / paper mode)` };
+  }
+  let positions;
+  try {
+    positions = await ex.getPositions();
+  } catch (e) {
+    return { ok: false, error: `positions read failed: ${e instanceof Error ? e.message : e}` };
+  }
+  const pos = positions.find(
+    (p) =>
+      p.symbol.toUpperCase() === trade.symbol.toUpperCase() &&
+      p.size !== 0 &&
+      (trade.side === "long" ? p.size > 0 : p.size < 0),
+  );
+  const live = !!pos;
+
+  if (live && trade.status !== "open" && trade.status !== "working") {
+    // Desk had it closed/failed but it's still running on the exchange — reopen
+    // and adopt the exchange's real size/entry so management resumes correctly.
+    const updated = tradesRepo.update(tradeId, {
+      status: "open",
+      exitPrice: undefined,
+      realizedPnl: undefined,
+      closedAt: undefined,
+      error: undefined,
+      size: Math.abs(pos!.size),
+      entryPrice: pos!.entryPrice > 0 ? pos!.entryPrice : trade.entryPrice,
+    });
+    if (updated) broadcast({ type: "trade", trade: updated });
+    event(
+      "exec",
+      `Sync: ${trade.symbol} ${trade.side} still live on ${ex.name} — reopened in desk`,
+      { size: pos!.size, entry: pos!.entryPrice },
+      { level: "warn", groupId: trade.groupId, signalId: trade.signalId },
+    );
+    pushStats();
+    return { ok: true, changed: true, live: true, trade: updated ?? trade };
+  }
+
+  return { ok: true, changed: false, live, trade };
+}
+
+/**
  * Place a one-off test order straight from the desk (not tied to a channel).
  * Creates a tracked Trade so it shows up in the Trades area and can be closed
  * there like any other. Respects the global shadow/test switch: simulated when

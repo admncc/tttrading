@@ -288,6 +288,10 @@ export const api = {
     req<Trade>(`/api/trades/${id}/take-profits`, { method: "POST", body: JSON.stringify({ prices }) }),
   bookPartial: (id: string, fraction: number) =>
     req<Trade>(`/api/trades/${id}/partial`, { method: "POST", body: JSON.stringify({ fraction }) }),
+  syncTrade: (id: string) =>
+    req<{ ok: boolean; changed?: boolean; live?: boolean; trade?: Trade }>(`/api/trades/${id}/sync`, {
+      method: "POST",
+    }),
 
   stats: () => req<DashboardStats>("/api/stats"),
 

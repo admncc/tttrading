@@ -53,6 +53,21 @@ export function Trades({
     }
   };
 
+  const sync = async (t: Trade) => {
+    setBusyId(t.id);
+    try {
+      const res = await api.syncTrade(t.id);
+      if (res.changed) alert(`${t.symbol}: still live on the exchange — reopened in the desk.`);
+      else if (res.live) alert(`${t.symbol}: position confirmed live on the exchange.`);
+      else alert(`${t.symbol}: no matching position on the exchange — leaving as is.`);
+      onChange();
+    } catch (e) {
+      alert(`Sync failed: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const toggleManage = (t: Trade) => {
     if (manageId === t.id) {
       setManageId(null);
@@ -228,16 +243,31 @@ export function Trades({
                     <span className={`tag ${t.status}`}>{t.status}</span>
                   </td>
                   <td>
-                    {(t.status === "open" || t.status === "working") && !t.shadow && (
+                    {!t.shadow && !t.simulated && (
                       <div className="btn-row">
-                        <button disabled={busyId === t.id} onClick={() => close(t.id)}>
-                          {busyId === t.id ? "…" : t.status === "working" ? "Cancel" : "Close"}
-                        </button>
+                        {(t.status === "open" || t.status === "working") && (
+                          <>
+                            <button disabled={busyId === t.id} onClick={() => close(t.id)}>
+                              {busyId === t.id ? "…" : t.status === "working" ? "Cancel" : "Close"}
+                            </button>
+                            <button
+                              className={manageId === t.id ? "primary" : "ghost"}
+                              onClick={() => toggleManage(t)}
+                            >
+                              Manage
+                            </button>
+                          </>
+                        )}
+                        {/* Reconcile against the exchange: if the desk booked it
+                            closed but the position is still live (e.g. a false-close
+                            after a network switch), Sync reopens it. */}
                         <button
-                          className={manageId === t.id ? "primary" : "ghost"}
-                          onClick={() => toggleManage(t)}
+                          className="ghost"
+                          disabled={busyId === t.id}
+                          title="Check the exchange — reopen if the position is still live"
+                          onClick={() => sync(t)}
                         >
-                          Manage
+                          {busyId === t.id ? "…" : "Sync"}
                         </button>
                       </div>
                     )}
