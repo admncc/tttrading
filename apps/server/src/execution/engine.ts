@@ -342,6 +342,47 @@ async function partialClose(tradeInput: Trade, rawFraction: number): Promise<voi
       { fraction: frac, exitPx, closedSize, legPnl, legFee, remainingSize: remaining },
       { groupId: trade.groupId },
     );
+
+    // Re-size the resting protective orders to the REMAINING position. A partial
+    // otherwise leaves the SL/TP legs at the old (larger) size — harmless because
+    // they're reduce-only, but it misreads on the desk (a TP showing 253 on a 127
+    // position). Place fresh legs first, then cancel the stale ones, so there's
+    // never a moment without protection.
+    if (!trade.simulated && ex.live && remaining > 0) {
+      const oldIds = [trade.slOrderId, ...(trade.tpOrderIds ?? [])].filter((x): x is string => !!x);
+      const unfilledTps = (trade.takeProfits ?? []).slice(trade.tpFilledCount ?? 0);
+      const hasProtection = trade.stopLoss !== undefined || unfilledTps.length > 0;
+      if (oldIds.length > 0 && hasProtection) {
+        try {
+          const bracket = await ex.placeBracketOrders({
+            symbol: trade.symbol,
+            side: trade.side,
+            size: remaining,
+            stopLoss: trade.stopLoss,
+            takeProfits: unfilledTps,
+            slippage: 0.01,
+            marginMode: groupsRepo.get(trade.groupId)?.settings.marginMode,
+            force: true,
+          });
+          if (bracket.protectedOnExchange) {
+            await ex.cancelOrders(trade.symbol, oldIds);
+            const updated = tradesRepo.update(trade.id, {
+              slOrderId: bracket.slOrderId,
+              tpOrderIds: bracket.tpOrderIds.length ? bracket.tpOrderIds : undefined,
+            });
+            if (updated) broadcast({ type: "trade", trade: updated });
+          } else {
+            log.warn(
+              `partialClose: bracket re-size for ${trade.symbol} didn't confirm — keeping the old (oversized) legs so the position stays protected.`,
+            );
+          }
+        } catch (err) {
+          log.warn(
+            `partialClose: failed to re-size brackets for ${trade.symbol}: ${err instanceof Error ? err.message : err}`,
+          );
+        }
+      }
+    }
   } finally {
     closing.delete(id);
   }
