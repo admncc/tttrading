@@ -903,6 +903,22 @@ interface LegCtx {
 }
 
 /**
+ * Snap a price level to the SAME order of magnitude as a reference price by the
+ * nearest power of 10 — a decimal-typo corrector. E.g. with ref ~0.08, an SL of
+ * 0.725 → 0.0725 and a TP of 0.84 → 0.084. Only genuine order-of-magnitude slips
+ * (≳5× off) are touched; anything within ~0.2×–5× of the reference (normal stops
+ * and even aggressive targets) is returned unchanged, so real levels are safe.
+ */
+function snapMagnitude(level: number, ref: number): number {
+  if (!(level > 0) || !(ref > 0)) return level;
+  const decades = Math.log10(ref / level);
+  if (Math.abs(decades) < 0.7) return level; // within ~5× — leave as written
+  const k = Math.round(decades);
+  if (k === 0) return level;
+  return Number((level * 10 ** k).toPrecision(12)); // trim float dust
+}
+
+/**
  * Place a single entry (a whole single-entry signal, or one leg of a scale-in)
  * and record the resulting trade: sizing, risk gate, collateral check, then the
  * limit or market path. `leg` is set only for scale-in legs — it forces that
@@ -973,29 +989,49 @@ async function placeEntry(
     }
   }
 
-  // Reject a mis-scaled / typo'd signal whose stop-loss sits on the WRONG side
-  // of the market — a long's stop must be below price, a short's above. Entering
-  // would leave a naked position (the stop can't be placed and would instantly
-  // trigger). Catches e.g. a channel writing SL 0.725 for XPL while XPL trades
-  // ~0.08 (a ×10 decimal typo in the text). Uses the stated entry, else the mid.
-  if (parsed.stopLoss !== undefined) {
+  // Decimal-typo safety net + wrong-side stop guard. First CONSISTENTLY snap the
+  // SL and EVERY TP to the entry's (or live mid's) order of magnitude, so a
+  // channel that writes "SL 0.725, Tp 0.84" for a coin trading ~0.08 becomes
+  // SL 0.0725 AND TP 0.084 — never a half-fix that leaves the targets 10× off.
+  // Then, if the (normalized) stop is still on the wrong side, it's a real error,
+  // not a decimal slip — reject rather than enter a position we can't protect.
+  {
     let ref = parsed.entry;
     if (ref === undefined) {
       try {
         ref = await ex.getMidPrice(parsed.symbol);
       } catch {
-        /* no price feed — let the order path handle it */
+        /* no price feed — can't normalize or side-check; let the order path handle it */
       }
     }
     if (ref && ref > 0) {
-      const wrongSide = parsed.side === "long" ? parsed.stopLoss >= ref : parsed.stopLoss <= ref;
-      if (wrongSide) {
-        const reason = `SL ${parsed.stopLoss} on the wrong side of price ${ref} for a ${parsed.side} — likely a mis-scaled signal; not entering`;
-        const failed = signalsRepo.update(signal.id, { status: "failed", error: reason })!;
-        event("exec", `SKIP ${parsed.side} ${parsed.symbol}: ${reason}`, { stopLoss: parsed.stopLoss, ref, side: parsed.side }, { level: "warn", groupId: group.id, signalId: signal.id });
-        alertError(`SL side ${parsed.symbol} (${group.name})`, reason);
-        broadcast({ type: "signal", signal: failed });
-        return failed;
+      const fixes: string[] = [];
+      const sl = parsed.stopLoss !== undefined ? snapMagnitude(parsed.stopLoss, ref) : undefined;
+      if (sl !== undefined && sl !== parsed.stopLoss) fixes.push(`SL ${parsed.stopLoss}→${sl}`);
+      const tps = parsed.takeProfits?.map((t) => snapMagnitude(t, ref!));
+      if (tps && parsed.takeProfits && tps.some((t, i) => t !== parsed.takeProfits![i])) {
+        fixes.push(`TP [${parsed.takeProfits.join(", ")}]→[${tps.join(", ")}]`);
+      }
+      if (fixes.length) {
+        parsed = { ...parsed, stopLoss: sl, takeProfits: tps };
+        event(
+          "exec",
+          `Decimal-normalized ${parsed.symbol} to price ~${ref}: ${fixes.join("; ")}`,
+          { ref, fixes },
+          { level: "warn", groupId: group.id, signalId: signal.id },
+        );
+      }
+
+      if (parsed.stopLoss !== undefined) {
+        const wrongSide = parsed.side === "long" ? parsed.stopLoss >= ref : parsed.stopLoss <= ref;
+        if (wrongSide) {
+          const reason = `SL ${parsed.stopLoss} on the wrong side of price ${ref} for a ${parsed.side} — likely a mis-scaled signal; not entering`;
+          const failed = signalsRepo.update(signal.id, { status: "failed", error: reason })!;
+          event("exec", `SKIP ${parsed.side} ${parsed.symbol}: ${reason}`, { stopLoss: parsed.stopLoss, ref, side: parsed.side }, { level: "warn", groupId: group.id, signalId: signal.id });
+          alertError(`SL side ${parsed.symbol} (${group.name})`, reason);
+          broadcast({ type: "signal", signal: failed });
+          return failed;
+        }
       }
     }
   }
