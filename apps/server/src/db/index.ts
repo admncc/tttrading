@@ -141,21 +141,23 @@ function migrate(database: Database.Database): void {
     }
   }
 
-  // Hyperliquid was split into separate testnet/mainnet venues. Legacy trades
-  // labelled "hyperliquid" (or NULL from before the column existed) must be
-  // relabelled by their env so they reconcile on the CORRECT network connector —
-  // a testnet trade must never be managed against mainnet. Idempotent.
+  // Hyperliquid was split into separate testnet/mainnet venues. Back-fill ONLY
+  // genuinely legacy trades that predate the column (exchange IS NULL), using
+  // their env as the best available hint. We must NEVER rewrite an already-set
+  // venue tag: `env` is the DEFAULT trading network (TRADING_ENV), not the venue
+  // the order actually executed on — a mainnet order placed while TRADING_ENV=
+  // testnet is correctly tagged 'hyperliquid', and overwriting it to
+  // 'hyperliquid-testnet' by env would strand the live position on the wrong
+  // connector and false-close it. Only-NULL makes this naturally idempotent.
   try {
     const tRes = database
-      .prepare(
-        "UPDATE trades SET exchange='hyperliquid-testnet' WHERE (exchange IS NULL OR exchange='hyperliquid') AND env='testnet'",
-      )
+      .prepare("UPDATE trades SET exchange='hyperliquid-testnet' WHERE exchange IS NULL AND env='testnet'")
       .run();
     const mRes = database
       .prepare("UPDATE trades SET exchange='hyperliquid' WHERE exchange IS NULL AND env='mainnet'")
       .run();
     if (tRes.changes || mRes.changes) {
-      log.info(`Migrated: relabelled ${tRes.changes} testnet + ${mRes.changes} mainnet legacy trades to venue names.`);
+      log.info(`Migrated: back-filled venue on ${tRes.changes} testnet + ${mRes.changes} mainnet legacy (NULL) trades.`);
     }
   } catch (err) {
     log.warn("Trade venue relabel migration skipped:", err instanceof Error ? err.message : err);
