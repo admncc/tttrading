@@ -141,6 +141,9 @@ export function Settings() {
   const [diag, setDiag] = useState<{ enabled: boolean; token: string }>({ enabled: false, token: "" });
   const [diagBusy, setDiagBusy] = useState(false);
   const [copied, setCopied] = useState(false);
+  // Auto-refine scheduler (global): auto-optimize channel parsing instructions.
+  const [autoRefine, setAutoRefine] = useState(false);
+  const [refineBusy, setRefineBusy] = useState(false);
 
   // HL (mainnet + testnet as separate venues)
   const [hlMain, setHlMain] = useState<HlEdit>({ key: "", clear: false, addr: "", enabled: false });
@@ -188,6 +191,7 @@ export function Settings() {
         setParseMode(s.parseMode);
         setLlmMemory(s.llmMemory ?? "");
         setMemDirty(false);
+        setAutoRefine(s.autoRefine);
         setDiag({ enabled: s.diagnosticEnabled, token: s.diagnosticToken });
       })
       .catch(() => {});
@@ -204,6 +208,20 @@ export function Settings() {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setMemBusy(false);
+    }
+  };
+
+  const toggleAutoRefine = async (on: boolean) => {
+    setRefineBusy(true);
+    setMsg(null);
+    try {
+      await api.updateSettings({ autoRefine: on });
+      setAutoRefine(on);
+      setMsg(`Auto-refine scheduler ${on ? "activated" : "deactivated"}.`);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRefineBusy(false);
     }
   };
 
@@ -405,6 +423,32 @@ export function Settings() {
           {parseMode === "llm"
             ? "LLM parses first (needs an Anthropic key); a strong rules hit is the guardrail if the LLM declines."
             : "Fast deterministic rules first; the LLM fills in when rules are unsure or a channel has custom instructions."}
+        </div>
+      </div>
+
+      <div className="panel">
+        <div className="row-between">
+          <h3 style={{ margin: 0 }}>
+            Auto-refine scheduler
+            <span className="tag" style={{ marginLeft: 8, background: autoRefine ? "#22c55e" : "#334155", color: "#fff" }}>
+              {autoRefine ? "ACTIVE" : "off"}
+            </span>
+          </h3>
+          <label className="muted" style={{ fontSize: 13, display: "inline-flex", gap: 6 }}>
+            <input
+              type="checkbox"
+              checked={autoRefine}
+              disabled={refineBusy}
+              onChange={(e) => void toggleAutoRefine(e.target.checked)}
+            />
+            active
+          </label>
+        </div>
+        <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+          Global for all channels. When <strong>active</strong>, the bot periodically rewrites each
+          channel's parsing instructions from its recent message history (needs an Anthropic key).
+          When <strong>off</strong>, message/parse settings are never changed automatically — you keep
+          full manual control of each channel's instructions and the global memory above.
         </div>
       </div>
 

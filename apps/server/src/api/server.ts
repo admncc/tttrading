@@ -908,7 +908,8 @@ export async function buildServer() {
     "- GET  /diagnostic            → this doc + a full system snapshot (health, settings, exchanges,",
     "                                account, positions, groups, open/recent trades, recent signals,",
     "                                telegram health, prices, recent logs).",
-    "- GET  /diagnostic/logs?limit=&category=&level=&since=  → detailed in-memory logs (with meta).",
+    "- GET  /diagnostic/logs?limit=&category=&level=&since=&source=  → detailed logs (with meta).",
+    "                                source=ring (default, in-memory since boot) or source=db (persisted history).",
     "- POST /diagnostic/settings   → change NON-SECRET settings. Body shape:",
     '     { "global": { shadowMode?, tradingPaused?, dailyLossLimitUsd?, maxOpenTrades?, maxExposureUsd?,',
     "                   liveMaxOrderUsd?, splitOpposingVenues?, parseMode?('regex'|'llm'), autoRefine?,",
@@ -1015,18 +1016,22 @@ export async function buildServer() {
     return diagnosticSnapshot();
   });
 
-  app.get<{ Querystring: { limit?: string; category?: string; level?: string; since?: string } }>(
+  app.get<{ Querystring: { limit?: string; category?: string; level?: string; since?: string; source?: string } }>(
     "/diagnostic/logs",
     async (req, reply) => {
       if (!diagGuard(req, reply)) return reply;
+      const limit = clampLimit(req.query.limit, 300, 2000);
+      // source=db reads the PERSISTED log (survives restarts, full history incl.
+      // message/exec/manage); default "ring" is the in-memory buffer since boot.
+      if (req.query.source === "db") {
+        return { source: "db", logs: logsRepo.list(limit, req.query.category) };
+      }
       const level = req.query.level;
       const minLevel = level === "warn" || level === "error" || level === "info" ? level : undefined;
-      return recentLogs({
-        limit: clampLimit(req.query.limit, 300, 2000),
-        category: req.query.category,
-        minLevel,
-        since: req.query.since,
-      });
+      return {
+        source: "ring",
+        logs: recentLogs({ limit, category: req.query.category, minLevel, since: req.query.since }),
+      };
     },
   );
 
