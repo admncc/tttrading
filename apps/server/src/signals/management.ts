@@ -145,3 +145,23 @@ export function classifyManagementAll(text: string): ManagementAction[] {
 export function classifyManagement(text: string): ManagementAction {
   return classifyManagementAll(text)[0] ?? { kind: "none", symbol: extractAnySymbol(text), note: "" };
 }
+
+/**
+ * Human-readable catalog of the management/guard regexes, reusing the live RegExp
+ * objects (so it can never drift from what actually runs). Surfaced by the
+ * diagnostic API's /diagnostic/rules so the exact rules are inspectable.
+ */
+export const MANAGEMENT_RULES: { name: string; kind: string; pattern: string; description: string }[] = [
+  { name: "cancel_limit", kind: "cancel_limit", pattern: RE_CANCEL_LIMIT.source, description: "Cancel a still-resting limit ENTRY order (cancel/remove/pull/kill … limit/entry/pending/order)." },
+  { name: "close", kind: "close", pattern: RE_CLOSE_NONCANCEL.source, description: "Full close of a live position (invalidated / stopped out / closed / cut / exited / off the table). Excludes 'close to/above/below/near' and 'closed 50%'." },
+  { name: "cancel_word", kind: "close", pattern: RE_CANCEL_WORD.source, description: "Bare 'cancelled' with no limit context → close a filled trade." },
+  { name: "sl_breakeven", kind: "sl_breakeven", pattern: RE_BE.source, description: "Move SL to entry / breakeven / risk-free (guarded so 'going to be' can't fire it)." },
+  { name: "sl_breakeven_abbr", kind: "sl_breakeven", pattern: RE_BE_ABBR.source, description: "'move to BE' — case-sensitive uppercase BE only." },
+  { name: "sl_move", kind: "sl_move", pattern: RE_SLMOVE.source, description: "Move SL to a specific price; the number must not be an RR/x/% multiple." },
+  { name: "partial_pct_a", kind: "partial_close", pattern: RE_PARTIAL_A.source, description: "book / take / lock in / secure / close  X%." },
+  { name: "partial_pct_b", kind: "partial_close", pattern: RE_PARTIAL_B.source, description: "X% out / off / pos / booked." },
+  { name: "partial_word", kind: "partial_close", pattern: RE_PARTIAL_WORD.source, description: "Prose partial with no % (booked/took/secured partial|some|half|TPn)." },
+  { name: "trim", kind: "partial_close", pattern: RE_TRIM.source, description: "'trim' → partial close (group default %)." },
+  { name: "tp_hit", kind: "tp_hit", pattern: RE_TPHIT.source, description: "TP/target reached/hit/done, 'N RR', 'done and dusted'." },
+  { name: "trade_update_guard", kind: "guard", pattern: RE_TRADE_UPDATE.source, description: "Progress-update markers ('trade update', 'stop now at breakeven', 'now up X%', …) → NEVER open a new entry; handled as management/info." },
+];

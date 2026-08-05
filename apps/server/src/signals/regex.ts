@@ -58,6 +58,22 @@ function extractSymbol(text: string, side: TradeSide): string | undefined {
   return undefined;
 }
 
+/**
+ * Human-readable catalog of the deterministic ENTRY-parsing rules, for the
+ * diagnostic API's /diagnostic/rules. (These patterns are inline in the parser;
+ * this describes them and their precedence so the behaviour is inspectable.)
+ */
+export const ENTRY_RULES: { name: string; pattern: string; description: string }[] = [
+  { name: "direction", pattern: "long|buy|buying  /  short|sell|selling", description: "Trade side; must be present for a fresh entry." },
+  { name: "symbol", pattern: "TICKER before/after the direction word; else $/# tag or PAIR/USDT", description: "Base ticker (USDT/USDC/PERP suffixes stripped); 2–6 letters, not a stopword." },
+  { name: "market_entry", pattern: "cmp | current price | market (price/order/buy/entry) | at/@ market", description: "Enter now at market; a 'CMP till X' zone ignores X (far DCA bound)." },
+  { name: "entry_price", pattern: "entry|enter|entrada|einstieg + price  →  @price  →  till X  →  price", description: "Precedence order: an explicit entry label WINS over a 'till X' DCA bound." },
+  { name: "stop_loss", pattern: "sl | stop loss | stop | invalidation + number   (also 🛑 + number)", description: "Stop price; tolerates filler between label and value." },
+  { name: "take_profits", pattern: "tp / take profit / target / ziel  labels + number list (comma/slash/space)", description: "One label with several values, or repeated labels; RR-multiples not treated as prices." },
+  { name: "scale_in", pattern: "ordinal entries: first/second/third/final/DCA (with cmp/market/limit)", description: "Each labelled entry becomes its own order (market if cmp, else limit), sharing the SL/TPs." },
+  { name: "leverage", pattern: "lev|leverage|hebel + N  /  N x", description: "Leverage hint (non-blocking)." },
+];
+
 /** Extract a symbol without needing a direction (for management messages). */
 export function extractAnySymbol(text: string): string | undefined {
   const tag = text.match(/[$#]([A-Za-z]{2,6})\b/);

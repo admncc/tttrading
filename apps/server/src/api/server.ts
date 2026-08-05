@@ -101,6 +101,8 @@ import { getListenerHealth } from "../telegram/listener.js";
 import { getPrices } from "../market/ticker.js";
 import { backtestGroup } from "../backtest/engine.js";
 import { suggestChannelInstructions } from "../signals/llm.js";
+import { MANAGEMENT_RULES } from "../signals/management.js";
+import { ENTRY_RULES } from "../signals/regex.js";
 import { exportAllText, exportGroupText, safeFilename } from "../export/text.js";
 import { broadcast, register, unregister, type SocketLike } from "../ws/hub.js";
 
@@ -213,6 +215,17 @@ export async function buildServer() {
     loginAttempts.delete(ip);
     return { token: signToken(), authRequired: true };
   });
+
+  /* ------------------------------ rules ------------------------------- */
+  // The deterministic parsing rules (entry regexes + management classifiers),
+  // for display in the desk and the diagnostic API. Read-only, no secrets — the
+  // LLM path is separate and governed by the parse mode + instructions/memory.
+  const rulesPayload = () => ({
+    note: "Deterministic rules used to parse messages (regex). The LLM path is separate; see parse mode + global LLM memory + per-channel instructions. Source: apps/server/src/signals/regex.ts (entry) and management.ts (management).",
+    entry: ENTRY_RULES,
+    management: MANAGEMENT_RULES,
+  });
+  app.get("/api/rules", async () => rulesPayload());
 
   /* ------------------------------ health ------------------------------ */
   app.get("/api/health", async () => ({
@@ -456,7 +469,38 @@ export async function buildServer() {
       if (d.mexc.apiSecret !== undefined) settingsRepo.setExchangeValue("mexc.apiSecret", d.mexc.apiSecret.trim());
       if (d.mexc.baseUrl !== undefined) settingsRepo.setExchangeValue("mexc.baseUrl", d.mexc.baseUrl.trim());
     }
-    audit(req, "exchange settings updated", { venues: Object.keys(d) });
+    // Describe WHAT changed (never the secret values — keys are logged as
+    // "key updated"/"key cleared" only) so the audit trail is self-explanatory.
+    const changes: string[] = [];
+    if (d.priority) changes.push(`priority=[${d.priority.join(" > ")}]`);
+    const hlDesc = (net: string, p?: { enabled?: boolean; privateKey?: string; accountAddress?: string }) => {
+      if (!p) return;
+      const parts: string[] = [];
+      if (p.enabled !== undefined) parts.push(`enabled=${p.enabled}`);
+      if (p.privateKey !== undefined) parts.push(p.privateKey.trim() ? "key updated" : "key cleared");
+      if (p.accountAddress !== undefined) parts.push("address set");
+      if (parts.length) changes.push(`HL-${net}: ${parts.join(", ")}`);
+    };
+    hlDesc("mainnet", d.hyperliquid);
+    hlDesc("testnet", d.hyperliquidTestnet);
+    if (d.aster) {
+      const p: string[] = [];
+      if (d.aster.enabled !== undefined) p.push(`enabled=${d.aster.enabled}`);
+      if (d.aster.user !== undefined) p.push("user set");
+      if (d.aster.signer !== undefined) p.push("signer set");
+      if (d.aster.privateKey !== undefined) p.push(d.aster.privateKey.trim() ? "key updated" : "key cleared");
+      if (d.aster.baseUrl !== undefined) p.push("baseUrl set");
+      if (p.length) changes.push(`Aster: ${p.join(", ")}`);
+    }
+    if (d.mexc) {
+      const p: string[] = [];
+      if (d.mexc.enabled !== undefined) p.push(`enabled=${d.mexc.enabled}`);
+      if (d.mexc.apiKey !== undefined) p.push(d.mexc.apiKey.trim() ? "key updated" : "key cleared");
+      if (d.mexc.apiSecret !== undefined) p.push(d.mexc.apiSecret.trim() ? "secret updated" : "secret cleared");
+      if (d.mexc.baseUrl !== undefined) p.push("baseUrl set");
+      if (p.length) changes.push(`MEXC: ${p.join(", ")}`);
+    }
+    audit(req, `exchange settings updated — ${changes.join("; ") || "no change"}`, { changes });
     return exchangesPayload();
   });
 
@@ -705,12 +749,12 @@ export async function buildServer() {
     const existing = tradesRepo.get(req.params.id);
     if (existing?.status === "working") {
       await cancelWorkingTrade(req.params.id, "canceled from desk");
-      audit(req, `canceled working ${existing.symbol}`, { id: req.params.id });
+      audit(req, `canceled working ${existing.symbol} (${existing.groupName})`, { id: req.params.id, group: existing.groupName });
       return tradesRepo.get(req.params.id) ?? existing;
     }
     const trade = await closeTrade(req.params.id, parsed.data.exitPrice);
     if (!trade) return reply.code(404).send({ error: "not found" });
-    audit(req, `closed ${trade.symbol}`, { id: req.params.id, pnl: trade.realizedPnl });
+    audit(req, `closed ${trade.symbol} (${trade.groupName})`, { id: req.params.id, group: trade.groupName, pnl: trade.realizedPnl });
     return trade;
   });
 
@@ -719,7 +763,7 @@ export async function buildServer() {
   app.post<{ Params: { id: string } }>("/api/trades/:id/sync", async (req, reply) => {
     const res = await syncTrade(req.params.id);
     if (!res.ok) return reply.code(400).send({ error: res.error });
-    if (res.changed) audit(req, `synced ${res.trade?.symbol ?? req.params.id} → reopened (live on exchange)`, { id: req.params.id });
+    if (res.changed) audit(req, `synced ${res.trade?.symbol ?? req.params.id} (${res.trade?.groupName ?? "?"}) → reopened (live on exchange)`, { id: req.params.id, group: res.trade?.groupName });
     return res;
   });
 
@@ -729,7 +773,7 @@ export async function buildServer() {
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     const res = await setTradeStop(req.params.id, parsed.data.price);
     if (!res.ok) return reply.code(400).send({ error: res.error });
-    audit(req, `set SL ${parsed.data.price} on ${res.trade?.symbol ?? req.params.id}`, { id: req.params.id });
+    audit(req, `set SL ${parsed.data.price} on ${res.trade?.symbol ?? req.params.id} (${res.trade?.groupName ?? "?"})`, { id: req.params.id, group: res.trade?.groupName });
     return res.trade;
   });
 
@@ -741,7 +785,7 @@ export async function buildServer() {
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     const res = await setTradeTakeProfits(req.params.id, parsed.data.prices);
     if (!res.ok) return reply.code(400).send({ error: res.error });
-    audit(req, `set TPs [${parsed.data.prices.join(", ")}] on ${res.trade?.symbol ?? req.params.id}`, { id: req.params.id });
+    audit(req, `set TPs [${parsed.data.prices.join(", ")}] on ${res.trade?.symbol ?? req.params.id} (${res.trade?.groupName ?? "?"})`, { id: req.params.id, group: res.trade?.groupName });
     return res.trade;
   });
 
@@ -751,7 +795,7 @@ export async function buildServer() {
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     const res = await bookTradePartial(req.params.id, parsed.data.fraction);
     if (!res.ok) return reply.code(400).send({ error: res.error });
-    audit(req, `booked ${(parsed.data.fraction * 100).toFixed(0)}% of ${res.trade?.symbol ?? req.params.id}`, { id: req.params.id });
+    audit(req, `booked ${(parsed.data.fraction * 100).toFixed(0)}% of ${res.trade?.symbol ?? req.params.id} (${res.trade?.groupName ?? "?"})`, { id: req.params.id, group: res.trade?.groupName });
     return res.trade;
   });
 
@@ -910,6 +954,7 @@ export async function buildServer() {
     "                                telegram health, prices, recent logs).",
     "- GET  /diagnostic/logs?limit=&category=&level=&since=&source=  → detailed logs (with meta).",
     "                                source=ring (default, in-memory since boot) or source=db (persisted history).",
+    "- GET  /diagnostic/rules      → the deterministic entry + management regex rules (what fires, and why).",
     "- POST /diagnostic/settings   → change NON-SECRET settings. Body shape:",
     '     { "global": { shadowMode?, tradingPaused?, dailyLossLimitUsd?, maxOpenTrades?, maxExposureUsd?,',
     "                   liveMaxOrderUsd?, splitOpposingVenues?, parseMode?('regex'|'llm'), autoRefine?,",
@@ -1034,6 +1079,11 @@ export async function buildServer() {
       };
     },
   );
+
+  app.get("/diagnostic/rules", async (req, reply) => {
+    if (!diagGuard(req, reply)) return reply;
+    return rulesPayload();
+  });
 
   app.post("/diagnostic/settings", async (req, reply) => {
     if (!diagGuard(req, reply)) return reply;

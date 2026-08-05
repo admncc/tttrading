@@ -144,6 +144,9 @@ export function Settings() {
   // Auto-refine scheduler (global): auto-optimize channel parsing instructions.
   const [autoRefine, setAutoRefine] = useState(false);
   const [refineBusy, setRefineBusy] = useState(false);
+  // Deterministic parsing rules (regex), loaded lazily when expanded.
+  const [rules, setRules] = useState<Awaited<ReturnType<typeof api.rules>> | null>(null);
+  const [rulesOpen, setRulesOpen] = useState(false);
 
   // HL (mainnet + testnet as separate venues)
   const [hlMain, setHlMain] = useState<HlEdit>({ key: "", clear: false, addr: "", enabled: false });
@@ -209,6 +212,11 @@ export function Settings() {
     } finally {
       setMemBusy(false);
     }
+  };
+
+  const toggleRules = () => {
+    setRulesOpen((o) => !o);
+    if (!rules) api.rules().then(setRules).catch((e) => setErr(e instanceof Error ? e.message : String(e)));
   };
 
   const toggleAutoRefine = async (on: boolean) => {
@@ -424,6 +432,58 @@ export function Settings() {
             ? "LLM parses first (needs an Anthropic key); a strong rules hit is the guardrail if the LLM declines."
             : "Fast deterministic rules first; the LLM fills in when rules are unsure or a channel has custom instructions."}
         </div>
+      </div>
+
+      <div className="panel">
+        <div className="row-between">
+          <h3 style={{ margin: 0 }}>Parsing rules (regex)</h3>
+          <button className="ghost" onClick={toggleRules}>
+            {rulesOpen ? "Hide" : "Show rules"}
+          </button>
+        </div>
+        <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+          The deterministic patterns the bot uses to read messages into signals and trade-management
+          actions. The LLM path is separate (governed by parse mode + the global memory and per-channel
+          instructions above/below). These are read-only — source lives in <code>signals/regex.ts</code>{" "}
+          and <code>signals/management.ts</code>.
+        </div>
+        {rulesOpen &&
+          (rules ? (
+            <div style={{ marginTop: 12, overflowX: "auto" }}>
+              {[
+                { title: "Entry parsing", rows: rules.entry.map((r) => ({ name: r.name, kind: "", pattern: r.pattern, description: r.description })) },
+                { title: "Trade-management classifiers", rows: rules.management.map((r) => ({ name: r.name, kind: r.kind, pattern: r.pattern, description: r.description })) },
+              ].map((sec) => (
+                <div key={sec.title} style={{ marginBottom: 14 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13, margin: "6px 0" }}>{sec.title}</div>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                    <thead>
+                      <tr className="muted" style={{ textAlign: "left" }}>
+                        <th style={{ padding: "4px 8px" }}>name</th>
+                        {sec.title.startsWith("Trade") && <th style={{ padding: "4px 8px" }}>→ intent</th>}
+                        <th style={{ padding: "4px 8px" }}>what it matches</th>
+                        <th style={{ padding: "4px 8px" }}>pattern</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sec.rows.map((r) => (
+                        <tr key={r.name} style={{ borderTop: "1px solid var(--border)", verticalAlign: "top" }}>
+                          <td style={{ padding: "4px 8px", whiteSpace: "nowrap" }}><code>{r.name}</code></td>
+                          {sec.title.startsWith("Trade") && <td style={{ padding: "4px 8px", whiteSpace: "nowrap" }}>{r.kind}</td>}
+                          <td style={{ padding: "4px 8px" }}>{r.description}</td>
+                          <td style={{ padding: "4px 8px" }}>
+                            <code style={{ fontSize: 11, wordBreak: "break-all", opacity: 0.8 }}>{r.pattern}</code>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="muted" style={{ marginTop: 10, fontSize: 12 }}>Loading…</div>
+          ))}
       </div>
 
       <div className="panel">

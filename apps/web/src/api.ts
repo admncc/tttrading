@@ -200,6 +200,12 @@ export const api = {
       ready: boolean;
       checks: { key: string; ok: boolean; label: string }[];
     }>("/api/readiness"),
+  rules: () =>
+    req<{
+      note: string;
+      entry: { name: string; pattern: string; description: string }[];
+      management: { name: string; kind: string; pattern: string; description: string }[];
+    }>("/api/rules"),
   downloadBackup: () => downloadFile("/api/backup", "tttrading-backup.sqlite"),
   saveAnthropic: (anthropicKey: string | undefined, anthropicModel: string | undefined) =>
     req<{ anthropicConfigured: boolean; anthropicModel: string }>("/api/settings", {
