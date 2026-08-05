@@ -39,16 +39,19 @@ function symbolAllowed(group: Group, symbol: string): boolean {
  * Entry point for a raw message from a group. Parses it, applies group rules,
  * and either executes immediately (auto) or queues it for confirmation.
  */
-export async function handleIncoming(group: Group, rawText: string, image?: SignalImage): Promise<Signal> {
+export async function handleIncoming(group: Group, rawText: string, images?: SignalImage[]): Promise<Signal> {
+  const imgs = (images ?? []).filter(Boolean);
+  const primary = imgs[0];
   const preview = rawText.replace(/\s+/g, " ").trim().slice(0, 160);
-  event("message", `Incoming from ${group.name}${image ? " (with chart image)" : ""}`, {
+  event("message", `Incoming from ${group.name}${primary ? ` (with ${imgs.length} chart image${imgs.length > 1 ? "s" : ""})` : ""}`, {
     channel: group.telegramChannel,
     length: rawText.length,
-    hasImage: !!image,
+    hasImage: !!primary,
+    imageCount: imgs.length,
     preview,
   }, { groupId: group.id });
 
-  const parsed = await parseSignal(rawText, group.settings.instructions, image);
+  const parsed = await parseSignal(rawText, group.settings.instructions, imgs);
 
   if (!parsed || parsed.confidence < ACT_THRESHOLD) {
     // Not a fresh entry — maybe it's one or more trade-management updates (SL
@@ -56,9 +59,9 @@ export async function handleIncoming(group: Group, rawText: string, image?: Sign
     let actions = classifyManagementAll(rawText);
     // With an attached chart (vision on), let the LLM read levels the text omits
     // — e.g. a stop moved to a price only drawn on the chart — and merge them in.
-    if (image) {
+    if (primary) {
       try {
-        const mv = await readManagementLevels(rawText, group.settings.instructions, image);
+        const mv = await readManagementLevels(rawText, group.settings.instructions, imgs);
         if (mv?.isManagement && mv.confidence >= 0.5) {
           const kinds = new Set(actions.map((a) => a.kind));
           const extra: ManagementAction[] = [];

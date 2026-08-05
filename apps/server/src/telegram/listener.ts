@@ -64,11 +64,6 @@ async function extractImage(msg: Api.Message | undefined): Promise<SignalImage |
   }
 }
 
-/** The image to hand the LLM for vision (only when vision is enabled + a key). */
-function visionImage(image: SignalImage | undefined): SignalImage | undefined {
-  return image && config.anthropic.vision && llmReady() ? image : undefined;
-}
-
 /** Persist a downloaded chart image against its signal record (for Messages). */
 function storeImage(signalId: string | undefined, image: SignalImage | undefined): void {
   if (!signalId || !image) return;
@@ -208,24 +203,33 @@ function mergeBundles(items: MergeItem[]): Bundle[] {
   return bundles;
 }
 
-/** Process one merged bundle as a single signal (combined text + primary chart). */
+/** Process one merged bundle as a single signal (combined text + all charts). */
 async function processBundle(group: Group, bundle: Bundle): Promise<void> {
   const text = bundle.texts.join("\n\n").trim();
-  // Primary attachment for vision + display: prefer a photo (chart) over a PDF.
-  const imgItem =
-    bundle.items.find((i) => hasPhoto(i.msg)) ?? bundle.items.find((i) => hasAttachment(i.msg));
+  // Every attachment in the bundle, photos (charts) before PDFs — an album can
+  // split one signal's levels across images (entry on one, TPs on another), so
+  // the LLM must see them ALL. The first is the primary shown on the Messages tab.
+  const imgItems = bundle.items
+    .filter((i) => hasPhoto(i.msg) || hasAttachment(i.msg))
+    .sort((a, b) => Number(hasPhoto(b.msg)) - Number(hasPhoto(a.msg)));
+  const visionOn = config.anthropic.vision && llmReady();
   try {
     if (bundle.items.length > 1) {
       logEvent(
         "message",
         `Merged ${bundle.items.length} adjacent messages from ${group.name} into one signal`,
-        { ids: bundle.items.map((i) => i.id), hasImage: !!imgItem },
+        { ids: bundle.items.map((i) => i.id), images: imgItems.length },
         { groupId: group.id },
       );
     }
-    const image = imgItem ? await extractImage(imgItem.msg) : undefined;
-    const sig = await handleIncoming(group, text, visionImage(image));
-    storeImage(sig?.id, image);
+    // Download every image only when vision is on (extras are useless without it);
+    // otherwise just the primary, which is still stored for the Messages tab.
+    const toDownload = visionOn ? imgItems : imgItems.slice(0, 1);
+    const images = (await Promise.all(toDownload.map((i) => extractImage(i.msg)))).filter(
+      (x): x is SignalImage => !!x,
+    );
+    const sig = await handleIncoming(group, text, visionOn ? images : []);
+    storeImage(sig?.id, images[0]);
     gh(group.id).lastMessageAt = new Date().toISOString();
   } catch (err) {
     // Keep the claims (at-most-once): handleIncoming may already have placed a
