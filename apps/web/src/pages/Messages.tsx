@@ -23,6 +23,34 @@ export function Messages({
   const [days, setDays] = useState(30);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<string | null>(null);
+  // Manual "paste a message and process it" tester.
+  const [testGroup, setTestGroup] = useState<string>(groups[0]?.id ?? "");
+  const [testText, setTestText] = useState("");
+  const [testBusy, setTestBusy] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
+
+  const runTest = async () => {
+    const gid = testGroup || groups[0]?.id;
+    if (!gid || !testText.trim()) {
+      setTestResult("Pick a channel and paste a message.");
+      return;
+    }
+    setTestBusy(true);
+    setTestResult(null);
+    try {
+      const sig = await api.simulate(gid, testText.trim());
+      const p = sig.parsed;
+      const desc = p
+        ? `${p.side.toUpperCase()} ${p.symbol}${p.entries && p.entries.length > 1 ? ` · scale-in ×${p.entries.length}` : p.entry !== undefined ? ` @ ${p.entry}` : " @ market"}${p.stopLoss !== undefined ? ` · SL ${p.stopLoss}` : ""}${p.takeProfits?.length ? ` · TP ${p.takeProfits.join("/")}` : ""} (${p.source})`
+        : "no signal parsed";
+      setTestResult(`→ ${sig.status.toUpperCase()}: ${desc}${sig.error ? ` — ${sig.error}` : ""}`);
+      onChange();
+    } catch (e) {
+      setTestResult(`Failed: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setTestBusy(false);
+    }
+  };
 
   const shown = signals
     .filter((s) => (groupId === "all" ? true : s.groupId === groupId))
@@ -73,6 +101,40 @@ export function Messages({
             ))}
           </select>
         </div>
+      </div>
+
+      {/* Manual message tester — paste a real message and run it through the
+          full pipeline (parse → route → execute per the group's mode). */}
+      <div className="panel">
+        <h2 style={{ margin: "0 0 8px", fontSize: 15 }}>Test a message</h2>
+        <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
+          Paste a channel message to see how it's parsed and routed. Runs the real
+          pipeline — with test mode on it's simulated; on a live/auto group it can place a real order.
+        </div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+          <select value={testGroup} onChange={(e) => setTestGroup(e.target.value)} style={{ minWidth: 200 }}>
+            {groups.map((g) => (
+              <option key={g.id} value={g.id}>
+                {g.name} ({g.settings.executionMode})
+              </option>
+            ))}
+          </select>
+          <button className="primary" disabled={testBusy} onClick={runTest}>
+            {testBusy ? "Processing…" : "Parse & route"}
+          </button>
+        </div>
+        <textarea
+          rows={3}
+          placeholder="Paste a message here…"
+          value={testText}
+          onChange={(e) => setTestText(e.target.value)}
+          style={{ width: "100%" }}
+        />
+        {testResult && (
+          <div className="muted" style={{ fontSize: 13, marginTop: 8, whiteSpace: "pre-wrap" }}>
+            {testResult}
+          </div>
+        )}
       </div>
 
       <div className="panel" style={{ display: "flex", alignItems: "center", gap: 12 }}>
