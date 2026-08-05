@@ -423,16 +423,26 @@ async function partialClose(tradeInput: Trade, rawFraction: number): Promise<voi
  * move SL to 62000" binds to the open BTC position. Precise: only ever matches a
  * symbol we truly have a position/order in, so unrelated chatter can't select one.
  */
-function deriveSymbol(action: ManagementAction, held: string[], rawText: string): string | undefined {
-  if (action.symbol) return action.symbol.toUpperCase();
+function deriveSymbol(
+  action: ManagementAction,
+  held: string[],
+  rawText: string,
+): { sym?: string; named: string[] } {
+  if (action.symbol) {
+    const s = action.symbol.toUpperCase();
+    return { sym: s, named: [s] };
+  }
   // Derive from held coins named in the text — but ONLY tickers ≥3 chars, so
   // short word-like symbols (ME, OP, ID, BE, GO) can't match ordinary English
   // ("book 50% for me"). Two-char coins must be tagged ($OP) or be the sole
   // managed position (the single-position fallback in applyManagement handles that).
-  return held.find((c) => {
+  const named = held.filter((c) => {
     const clean = c.replace(/[^A-Z0-9]/g, "");
     return clean.length >= 3 && new RegExp(`\\b${clean}\\b`, "i").test(rawText);
   });
+  // Only resolve to a symbol when the text names EXACTLY one held coin. Naming
+  // several (a status recap) is ambiguous — the caller must not guess one.
+  return { sym: named.length === 1 ? named[0] : undefined, named };
 }
 
 /**
@@ -457,7 +467,18 @@ async function applyManagement(
     const openForGroup = tradesRepo.open().filter((t) => t.groupId === group.id && !t.shadow);
     const groupWorking = tradesRepo.working().filter((t) => t.groupId === group.id && !t.shadow);
     const held = [...new Set([...openForGroup, ...groupWorking].map((t) => t.symbol.toUpperCase()))];
-    const sym = deriveSymbol(action, held, rawText);
+    const { sym, named } = deriveSymbol(action, held, rawText);
+
+    // A status RECAP that names several held coins ("1. BTC … SL breakeven 2. SOL
+    // active … 6. PENGU active") must never fire a position change: a single
+    // SL/close/partial can't be attributed to one of them. Skip and record why —
+    // rather than guess a symbol and act on the wrong trade.
+    if (!action.symbol && named.length > 1) {
+      results.push(
+        `${action.note} — message names ${named.length} open symbols (${named.join(", ")}); ambiguous recap, not acting`,
+      );
+      continue;
+    }
 
     // Cancel a still-RESTING limit ENTRY order — never touches an open position.
     if (action.kind === "cancel_limit") {
