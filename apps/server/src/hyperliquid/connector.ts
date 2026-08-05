@@ -242,6 +242,14 @@ export class HyperliquidConnector implements ExchangeConnector {
 
   /** All current mid prices, symbol -> price (finite values only). */
   async getAllMids(): Promise<Record<string, number>> {
+    // Ensure the HIP-3 builder-dex list is known so builder-perp marks (e.g.
+    // xyz:GOLD) are included — otherwise the price ticker shows no mark/uPnL for
+    // them. Cached after the first load, so this is cheap on later ticks.
+    try {
+      await this.loadAssets();
+    } catch {
+      /* fall back to main mids only */
+    }
     const mids = (await this.info.allMids()) as unknown as Record<string, string>;
     const out: Record<string, number> = {};
     for (const [sym, raw] of Object.entries(mids)) {
