@@ -11,7 +11,7 @@ import { activeHyperliquid, byName, known, resolveAllForSymbol, resolveForSymbol
 import type { ExchangeConnector } from "../exchanges/types.js";
 import { parseSignal } from "../signals/parser.js";
 import { readManagementLevels, type SignalImage } from "../signals/llm.js";
-import { classifyManagementAll, type ManagementAction } from "../signals/management.js";
+import { classifyManagementAll, isTradeUpdate, type ManagementAction } from "../signals/management.js";
 import { expandTakeProfits } from "../signals/takeprofit.js";
 import { assessRisk } from "../risk/score.js";
 import { alertBlocked, alertClosed, alertError, alertOpened, sendAlert } from "../alerts/notifier.js";
@@ -53,7 +53,20 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
 
   const parsed = await parseSignal(rawText, group.settings.instructions, imgs);
 
-  if (!parsed || parsed.confidence < ACT_THRESHOLD) {
+  // A progress UPDATE about an existing trade ("$UNI Trade Update … my stop is now
+  // at breakeven … up 7%") must never open a NEW position, even when the LLM reads
+  // the attached chart as a fresh long/short. Route it to management instead.
+  const tradeUpdate = isTradeUpdate(rawText);
+  if (parsed && parsed.confidence >= ACT_THRESHOLD && tradeUpdate) {
+    event(
+      "message",
+      `Parsed as ${parsed.side.toUpperCase()} ${parsed.symbol} but message is a trade UPDATE — not opening a new position`,
+      { source: parsed.source, confidence: parsed.confidence, symbol: parsed.symbol },
+      { level: "warn", groupId: group.id },
+    );
+  }
+
+  if (!parsed || parsed.confidence < ACT_THRESHOLD || tradeUpdate) {
     // Not a fresh entry — maybe it's one or more trade-management updates (SL
     // move, partial, close, cancel-limit) for existing positions/orders.
     let actions = classifyManagementAll(rawText);

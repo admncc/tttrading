@@ -72,6 +72,18 @@ const RE_TRIM = /\btrim(?:med|ming)?\b/i;
 const RE_TPHIT =
   /\b(?:tp\s*\d*\s*(?:hit|reached|done)|target\s*\d*\s*(?:reached|hit|smashed|done)|area\s*\d*\s*reached|\d+\s*rr\b|done\s+and\s+dusted)\b/i;
 
+// Strong markers that a message is a PROGRESS UPDATE about an already-open trade
+// (an update heading, a stop already at break-even, the trade "protected/running"
+// / "in profit / up X%"). These phrases essentially never appear in a genuine
+// fresh-entry call, so a message carrying one must be handled as management —
+// NEVER opened as a new position, even if a chart shows drawn levels.
+const RE_TRADE_UPDATE =
+  /\btrade\s+update\b|\b(?:my\s+)?stop\s+(?:is\s+now|has\s+been\s+moved|(?:is\s+)?now\s+moved|moved)\s+(?:to\s+)?(?:break\s*even|breakeven|\bbe\b|entry)\b|\btrade\s+is\s+(?:protected|running|now\s+risk[-\s]?free)\b|\b(?:now|already)\s+up\s+\d+(?:\.\d+)?\s*%|\bin\s+profit\b/i;
+/** True when the message reads as an update to an EXISTING trade, not a new call. */
+export function isTradeUpdate(text: string): boolean {
+  return RE_TRADE_UPDATE.test(text);
+}
+
 /**
  * Classify ALL trade-management intents in a message. A single message may carry
  * several ("remove the limit entry and move SL to 62000" → cancel_limit +

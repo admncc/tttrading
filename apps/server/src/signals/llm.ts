@@ -89,6 +89,10 @@ function attachmentBlock(image: SignalImage): Anthropic.ImageBlockParam {
 const SYSTEM = `You extract structured crypto perpetual trading signals from noisy Telegram messages
 in any language. Normalize the ticker to its base symbol (drop USDT/USDC/PERP suffixes).
 If the message is chat, news, or not actionable, set is_signal=false.
+If the message is a PROGRESS UPDATE about an already-open trade rather than a new
+call to enter — e.g. "trade update", "my stop is now at breakeven / trade is
+protected", "now up X%", "TP1 done, running to TP2" — set is_signal=false even if
+a chart shows entry/SL/TP levels. Only a fresh call to OPEN a position is a signal.
 If the message lists SEVERAL entry zones to scale/add into (e.g. a first entry at
 CMP plus a second/limit entry higher or lower), record EACH one in "entries" (in
 order, with its price and whether it is a market/cmp leg); still fill "entry" with
