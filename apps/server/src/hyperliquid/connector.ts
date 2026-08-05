@@ -164,9 +164,11 @@ export class HyperliquidConnector implements ExchangeConnector {
     try {
       const dexs = await this.infoPost<({ name?: string } | null)[]>({ type: "perpDexs" });
       const best = new Map<string, { oi: number; entry: AssetInfo }>();
+      const allDexNames = new Set<string>();
       for (let di = 0; di < dexs.length; di++) {
         const dx = dexs[di];
         if (!dx || !dx.name) continue; // index 0 = main (null)
+        allDexNames.add(dx.name);
         let mc: [{ universe: { name: string; szDecimals: number; maxLeverage: number }[] }, { markPx?: string; openInterest?: string }[]];
         try {
           mc = await this.infoPost({ type: "metaAndAssetCtxs", dex: dx.name });
@@ -196,12 +198,13 @@ export class HyperliquidConnector implements ExchangeConnector {
           }
         });
       }
-      const dexNames = new Set<string>();
       for (const { entry } of best.values()) {
         next.set(entry.name.toUpperCase(), entry);
-        if (entry.dex) dexNames.add(entry.dex);
       }
-      this.builderDexNames = [...dexNames];
+      // Track EVERY builder dex, not just the ones that currently win a symbol —
+      // so a position on a dex that later stops being "most-liquid" is still read
+      // (getPositions) and priced (getAllMids), never orphaned/unclosable.
+      this.builderDexNames = [...allDexNames];
     } catch (err) {
       log.warn("HL builder-dex meta load failed:", err instanceof Error ? err.message : err);
     }
@@ -256,14 +259,18 @@ export class HyperliquidConnector implements ExchangeConnector {
       const n = Number(raw);
       if (Number.isFinite(n) && n > 0) out[sym.toUpperCase()] = n;
     }
-    // Add HIP-3 builder-dex marks (keyed by bare symbol; main perps keep priority).
+    // Add HIP-3 builder-dex marks (main perps keep priority). Only take a symbol's
+    // mark from the dex we actually ROUTE it to (asset.dex) — a coin can be listed
+    // on several builder books, and the mark must match the book the position
+    // trades on, not whichever dex happens to be iterated first.
     for (const dex of this.builderDexNames) {
       try {
         const bm = await this.infoPost<Record<string, string>>({ type: "allMids", dex });
         for (const [full, raw] of Object.entries(bm)) {
           const bare = (full.split(":").pop() ?? full).toUpperCase();
+          if (out[bare] || this.assets.get(bare)?.dex !== dex) continue;
           const n = Number(raw);
-          if (!out[bare] && Number.isFinite(n) && n > 0) out[bare] = n;
+          if (Number.isFinite(n) && n > 0) out[bare] = n;
         }
       } catch {
         /* skip this dex's mids */
@@ -730,8 +737,10 @@ export class HyperliquidConnector implements ExchangeConnector {
     }[];
     return fills.map((f) => ({
       oid: String(f.oid),
-      // Builder-dex fills are namespaced ("xyz:GOLD") — strip to the bare symbol.
-      symbol: (f.coin.split(":").pop() ?? f.coin),
+      // Builder-dex fills are namespaced ("xyz:GOLD") — strip to the bare symbol
+      // and upper-case it (as getPositions does) so fill↔position/trade matching
+      // is case-consistent.
+      symbol: (f.coin.split(":").pop() ?? f.coin).toUpperCase(),
       size: Math.abs(Number(f.sz)),
       price: Number(f.px),
       side: f.side,

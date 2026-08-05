@@ -29,6 +29,10 @@ export async function reconcileOnce(): Promise<void> {
   // real (non-simulated) open/working trade — so a position isn't stranded if the
   // venue's key is later cleared. Simulated trades go through evaluateSimulated().
   const active = tradesRepo.activeAndWorking().filter((t) => !t.simulated);
+  // Prune stale missing-position counters for trades that are no longer open
+  // (closed via fill-matching or manually) so the map can't grow unbounded.
+  const activeIds = new Set(active.map((t) => t.id));
+  for (const id of missingCounts.keys()) if (!activeIds.has(id)) missingCounts.delete(id);
   for (const ex of knownExchanges()) {
     const relevant = ex.live || active.some((t) => byName(t.exchange).name === ex.name);
     if (!relevant) continue;
@@ -176,21 +180,38 @@ async function reconcileByPosition(
     // close a trade that is demonstrably still open somewhere.
     const elsewhere = await findPositionElsewhere(ex, fresh);
     if (elsewhere) {
-      missingCounts.delete(fresh.id);
-      const moved = tradesRepo.update(fresh.id, {
-        exchange: elsewhere.ex.name,
-        size: Math.abs(elsewhere.pos.size),
-        entryPrice: elsewhere.pos.entryPrice > 0 ? elsewhere.pos.entryPrice : fresh.entryPrice,
-      });
-      if (moved) {
-        broadcast({ type: "trade", trade: moved });
-        changed = true;
-        log.warn(
-          `reconcile: ${fresh.symbol} ${fresh.side} not on ${ex.name} but LIVE on ${elsewhere.ex.name} — ` +
-            `re-homed the trade, not closed (was mis-tagged).`,
+      // Only re-home if no OTHER open/working trade already maps to that
+      // symbol+side on the found venue. If a sibling already owns it (e.g. two
+      // scale-in legs), this trade's own position is genuinely gone → fall
+      // through and close it, rather than double-map both legs onto one position.
+      const ownedByOther = tradesRepo
+        .activeAndWorking()
+        .some(
+          (t) =>
+            t.id !== fresh.id &&
+            !t.simulated &&
+            !t.shadow &&
+            t.symbol.toUpperCase() === fresh.symbol.toUpperCase() &&
+            t.side === fresh.side &&
+            byName(t.exchange).name === elsewhere.ex.name,
         );
+      if (!ownedByOther) {
+        missingCounts.delete(fresh.id);
+        const moved = tradesRepo.update(fresh.id, {
+          exchange: elsewhere.ex.name,
+          size: Math.abs(elsewhere.pos.size),
+          entryPrice: elsewhere.pos.entryPrice > 0 ? elsewhere.pos.entryPrice : fresh.entryPrice,
+        });
+        if (moved) {
+          broadcast({ type: "trade", trade: moved });
+          changed = true;
+          log.warn(
+            `reconcile: ${fresh.symbol} ${fresh.side} not on ${ex.name} but LIVE on ${elsewhere.ex.name} — ` +
+              `re-homed the trade, not closed (was mis-tagged).`,
+          );
+        }
+        continue;
       }
-      continue;
     }
 
     closing.add(fresh.id);
@@ -256,8 +277,15 @@ async function findPositionElsewhere(
   current: ExchangeConnector,
   t: Trade,
 ): Promise<{ ex: ExchangeConnector; pos: Position } | undefined> {
+  // Only self-heal across the Hyperliquid mainnet/testnet PAIR — that is the
+  // network-mistag case this exists for (an order that filled on one HL network
+  // but was tagged the other; its order ids are valid on the real network). NEVER
+  // re-home onto a different EXCHANGE's same-symbol position: it could be an
+  // unrelated manual position, and the trade's HL order ids wouldn't exist there.
+  const isHl = (n: string) => n === "hyperliquid" || n === "hyperliquid-testnet";
+  if (!isHl(current.name)) return undefined;
   for (const ex of knownExchanges()) {
-    if (ex === current) continue;
+    if (ex === current || !isHl(ex.name)) continue;
     let positions: Position[];
     try {
       positions = await ex.getPositions();
@@ -320,8 +348,25 @@ async function reconcileWorking(
               (t.side === "long" ? p.size > 0 : p.size < 0),
           );
           if (pos) {
-            await promoteWorkingToOpen(t.id, pos.entryPrice || t.entryPrice, Math.abs(pos.size));
-            continue;
+            // Cap at THIS order's intended size, and only adopt the position-scan
+            // size when no OTHER open trade shares the symbol+side on this venue —
+            // otherwise a pre-existing or sibling (scale-in) position would be
+            // over-adopted as the full netted size.
+            const ownedByOther = tradesRepo
+              .open()
+              .some(
+                (o) =>
+                  o.id !== t.id &&
+                  !o.simulated &&
+                  !o.shadow &&
+                  o.symbol.toUpperCase() === t.symbol.toUpperCase() &&
+                  o.side === t.side &&
+                  byName(o.exchange).name === ex.name,
+              );
+            if (!ownedByOther) {
+              await promoteWorkingToOpen(t.id, pos.entryPrice || t.entryPrice, Math.min(Math.abs(pos.size), t.size));
+              continue;
+            }
           }
         } catch {
           /* positions unavailable — fall through */

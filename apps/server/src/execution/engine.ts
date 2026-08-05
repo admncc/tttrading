@@ -290,7 +290,26 @@ async function partialClose(tradeInput: Trade, rawFraction: number): Promise<voi
     const trade = tradesRepo.get(id);
     if (!trade || trade.status !== "open" || trade.shadow) return;
     const ex = connectorFor(trade);
-    const intendedSize = trade.size * frac;
+    // Base the fraction on the ACTUAL live position, not trade.size: a TP
+    // scale-out bumps tpFilledCount but does NOT decrement trade.size, so
+    // booking "50%" off the stale size would close more than half of what's
+    // really left. Fall back to trade.size if the position can't be read.
+    let base = trade.size;
+    if (!trade.simulated && ex.live) {
+      try {
+        const positions = await ex.getPositions();
+        const pos = positions.find(
+          (p) =>
+            p.symbol.toUpperCase() === trade.symbol.toUpperCase() &&
+            p.size !== 0 &&
+            (trade.side === "long" ? p.size > 0 : p.size < 0),
+        );
+        if (pos && Math.abs(pos.size) > 0) base = Math.abs(pos.size);
+      } catch {
+        /* fall back to the recorded size */
+      }
+    }
+    const intendedSize = base * frac;
     if (intendedSize <= 0) return;
 
     // Determine the exit price up front from the live mid, then size the order
@@ -329,7 +348,7 @@ async function partialClose(tradeInput: Trade, rawFraction: number): Promise<voi
     // Round-trip fee for this leg (entry + exit side); the remaining size's entry
     // fee is charged by closeTrade, so together they sum to one entry fee.
     const legFee = (trade.entryPrice + exitPx) * closedSize * FEE_RATE;
-    const remaining = Math.max(0, trade.size - closedSize);
+    const remaining = Math.max(0, base - closedSize);
 
     tradesRepo.update(trade.id, {
       size: remaining,
@@ -364,7 +383,13 @@ async function partialClose(tradeInput: Trade, rawFraction: number): Promise<voi
             marginMode: groupsRepo.get(trade.groupId)?.settings.marginMode,
             force: true,
           });
-          if (bracket.protectedOnExchange) {
+          // Only cancel the old legs once the REPLACEMENTS we intended actually
+          // confirmed — never drop a live SL because a TP was rejected (or vice
+          // versa). If either half didn't confirm, keep the old legs (reduce-only,
+          // so a brief duplicate can't over-close) rather than strip protection.
+          const slOk = trade.stopLoss === undefined || bracket.slOrderId !== undefined;
+          const tpOk = unfilledTps.length === 0 || bracket.tpOrderIds.length > 0;
+          if (slOk && tpOk) {
             await ex.cancelOrders(trade.symbol, oldIds);
             const updated = tradesRepo.update(trade.id, {
               slOrderId: bracket.slOrderId,
@@ -373,7 +398,7 @@ async function partialClose(tradeInput: Trade, rawFraction: number): Promise<voi
             if (updated) broadcast({ type: "trade", trade: updated });
           } else {
             log.warn(
-              `partialClose: bracket re-size for ${trade.symbol} didn't confirm — keeping the old (oversized) legs so the position stays protected.`,
+              `partialClose: bracket re-size for ${trade.symbol} only partially confirmed (sl=${!!bracket.slOrderId}, tps=${bracket.tpOrderIds.length}/${unfilledTps.length}) — keeping the old legs so protection isn't dropped.`,
             );
           }
         } catch (err) {
@@ -1523,6 +1548,31 @@ export async function syncTrade(
   const wasClosed = trade.status !== "open" && trade.status !== "working";
   if (!venueChanged && !wasClosed) {
     return { ok: true, changed: false, live: true, venue: ex.name, trade };
+  }
+  // Ownership guard: if ANOTHER open/working real trade already maps to this
+  // symbol+side on the found venue, the live position (Hyperliquid nets per
+  // symbol) is already accounted for by that trade. Reopening/adopting here would
+  // bind two desk trades to one real position — a later close/SL-move on one
+  // would reduce the other's position out from under it. Leave this one as-is.
+  const otherOwner = tradesRepo
+    .activeAndWorking()
+    .find(
+      (t) =>
+        t.id !== trade.id &&
+        !t.simulated &&
+        !t.shadow &&
+        t.symbol.toUpperCase() === trade.symbol.toUpperCase() &&
+        t.side === trade.side &&
+        byName(t.exchange).name === ex.name,
+    );
+  if (otherOwner) {
+    event(
+      "exec",
+      `Sync: ${trade.symbol} ${trade.side} on ${ex.name} is already tracked by another open trade — not reopening (would double-map one position)`,
+      { otherTradeId: otherOwner.id, venue: ex.name },
+      { level: "warn", groupId: trade.groupId, signalId: trade.signalId },
+    );
+    return { ok: true, changed: false, live: false, venue: ex.name, trade };
   }
   // Reopen and adopt the exchange's real venue/size/entry so management resumes.
   const updated = tradesRepo.update(tradeId, {

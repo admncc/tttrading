@@ -183,12 +183,13 @@ export function parseWithRegex(text: string): ParsedSignal | null {
   let entry = marketEntry
     ? undefined
     : firstNumber(text, [
-        // "buy up till 0.245" -> the limit after "till".
-        /\btill\s*([0-9][0-9.,]*)/i,
-        // Allow small filler between the label and the number ("entry at $3361",
-        // "entry: 3361", "enter @ 3361").
+        // An EXPLICIT entry label wins over a "…till X" DCA bound, so
+        // "entry 3361, add till 3300" rests at 3361, not the far bound 3300.
+        // Allow small filler ("entry at $3361", "entry: 3361", "enter @ 3361").
         /\b(?:entry|enter|entradas?|einstieg)\b(?:\s*(?:at|@|:|=|around|near)?\s*\$?){0,2}\s*([0-9][0-9.,]*)/i,
         /@\s*([0-9][0-9.,]*)/,
+        // Only when there's no labeled entry: "buy up till 0.245" -> the limit.
+        /\btill\s*([0-9][0-9.,]*)/i,
         /\bprice\b[:\s]*([0-9][0-9.,]*)/i,
       ]);
 

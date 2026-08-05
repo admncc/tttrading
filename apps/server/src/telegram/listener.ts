@@ -263,7 +263,15 @@ async function flushLive(groupId: string): Promise<void> {
   const p = pending.get(groupId);
   if (!p) return;
   pending.delete(groupId);
-  for (const bundle of mergeBundles(p.items)) {
+  // Claim each id NOW (at-most-once): a message the catch-up poller already
+  // grabbed during the debounce window fails its claim and is dropped here, so it
+  // is never double-processed; anything we didn't reach before a restart stays
+  // unclaimed and the poller recovers it.
+  const claimed = p.items.filter(
+    (it) => it.id === 0 || settingsRepo.claimTelegramMessage(p.group.id, it.id),
+  );
+  if (claimed.length === 0) return;
+  for (const bundle of mergeBundles(claimed)) {
     await processBundle(p.group, bundle);
   }
 }
@@ -338,14 +346,12 @@ async function onMessage(event: NewMessageEvent): Promise<void> {
   if (!text && !attach) return; // nothing actionable
   const group = await matchGroup(event);
   if (!group) return; // message from a channel we don't track
-  const msgId = event.message?.id;
-  // Claim by id so the catch-up poller never re-processes what we handle here.
-  if (typeof msgId === "number" && !settingsRepo.claimTelegramMessage(group.id, msgId)) {
-    return; // already processed (e.g. poller beat us to it)
-  }
-  // Don't process yet: buffer briefly so a chart sent separately (immediately
-  // before/after the text, or as an album) merges into the same signal. The
-  // buffer flushes MERGE_DEBOUNCE_MS after the last message in the burst.
+  // Buffer briefly so a chart sent separately (immediately before/after the text,
+  // or as an album) merges into the same signal. We DON'T claim the id here — the
+  // claim happens at flush time (see flushLive), so a restart during the debounce
+  // leaves the message UNclaimed for the poller to recover instead of stranding a
+  // claimed-but-unprocessed message. A message the poller grabs during the window
+  // simply fails the flush-time claim and is skipped (no double-processing).
   bufferLive(group, toMergeItem(event.message as Api.Message, text));
 }
 
