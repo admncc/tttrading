@@ -32,7 +32,13 @@ export function hlPrivateKey(net: HlNetwork): string {
 export function hlAccountAddress(net: HlNetwork): string {
   const desk = settings.getExchangeValue(`hl.${net}.accountAddress`);
   if (desk) return desk;
-  if (config.tradingEnv === net) {
+  // The legacy single account address only applies when this network is ALSO
+  // using the legacy single key (no explicit per-network key). Otherwise a
+  // per-network setup could read the OTHER network's master address — e.g. the
+  // testnet connector reading the mainnet master while switched to mainnet, then
+  // seeing an empty position list and false-closing live testnet trades.
+  const hasPerNetKey = !!settings.getExchangeValue(`hl.${net}.privateKey`);
+  if (!hasPerNetKey && config.tradingEnv === net) {
     const legacy = settings.getExchangeValue("hl.accountAddress");
     if (legacy) return legacy;
   }

@@ -125,18 +125,28 @@ async function reconcileByPosition(
   fills: FillLite[],
 ): Promise<boolean> {
   const positions = await ex.getPositions(); // throws → caller skips (inconclusive)
-  // Guard against a misconfigured read (e.g. wrong account address → always an
-  // empty list) mass-closing real trades: when NO positions are returned, only
-  // proceed if the account clearly reads (positive equity). Otherwise it's
-  // inconclusive — leave the trades untouched (the user can still close manually).
+  // Guard against a misconfigured read (e.g. wrong account address after a
+  // network switch → always an empty list) mass-closing real trades: when NO
+  // positions are returned, only proceed if the account both (a) reads with
+  // positive equity AND (b) shows no margin in use. If the account has margin
+  // used but zero positions came back, the read is inconsistent (partial/wrong
+  // address) — NOT a genuinely flat account — so treat it as inconclusive and
+  // leave the trades untouched (the user can Sync or close manually).
   if (positions.length === 0) {
-    let equity = 0;
+    let summary;
     try {
-      equity = (await ex.getAccountSummary())?.accountValue ?? 0;
+      summary = await ex.getAccountSummary();
     } catch {
       return false;
     }
-    if (!(equity > 0)) return false;
+    if (!summary || !(summary.accountValue > 0)) return false;
+    if (summary.totalMarginUsed > 0) {
+      log.warn(
+        `reconcile ${ex.name}: ${open.length} open trade(s) but positions read EMPTY while margin is in use ` +
+          `($${summary.totalMarginUsed.toFixed(2)}) — inconsistent read, not closing. Use Sync to verify.`,
+      );
+      return false;
+    }
   }
   let changed = false;
   for (const t of open) {
