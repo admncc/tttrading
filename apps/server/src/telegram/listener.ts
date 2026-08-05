@@ -148,6 +148,126 @@ const POLL_LIMIT = 30;
 /** Max messages to page back per group per cycle when covering a gap. */
 const MAX_CATCHUP = 200;
 
+/* ----------------------- adjacent-message merging ---------------------- */
+// Channels sometimes send the chart as a SEPARATE message right before/after the
+// text (or as a Telegram album). Each on its own loses information — the TP
+// levels are only drawn on the chart. We merge such neighbours into ONE signal.
+
+/** Max seconds between two neighbours for them to belong to the same signal. */
+const MERGE_WINDOW_S = 90;
+/** Live debounce: wait this long after a message for a straggler chart/text. */
+const MERGE_DEBOUNCE_MS = 5000;
+
+interface MergeItem {
+  id: number;
+  text: string;
+  msg: Api.Message;
+  date: number; // unix seconds
+  groupedId?: string; // Telegram album id (same id = one album)
+}
+interface Bundle {
+  items: MergeItem[];
+  texts: string[];
+}
+
+function toMergeItem(msg: Api.Message, text: string): MergeItem {
+  const id = (msg as { id?: number }).id ?? 0;
+  const date = Number((msg as { date?: number }).date ?? 0) || Math.floor(Date.now() / 1000);
+  const gid = (msg as unknown as { groupedId?: unknown }).groupedId;
+  return { id, text, msg, date, groupedId: gid != null ? String(gid) : undefined };
+}
+
+/** Whether `it` belongs to the bundle we're currently building. */
+function canMerge(b: Bundle, it: MergeItem): boolean {
+  const prev = b.items[b.items.length - 1]!;
+  // Same Telegram album always merges.
+  if (it.groupedId && prev.groupedId && it.groupedId === prev.groupedId) return true;
+  // Otherwise require time-adjacency…
+  if (Math.abs(it.date - prev.date) > MERGE_WINDOW_S) return false;
+  // …and only ABSORB an attachment-only neighbour into a text (or a text into a
+  // run of images). Never fuse two text-bearing messages — those are two signals.
+  const bundleHasText = b.texts.length > 0;
+  const itemHasText = !!it.text.trim();
+  if (bundleHasText && itemHasText) return false;
+  return true;
+}
+
+/** Group an ordered message list into merge bundles (one signal each). */
+function mergeBundles(items: MergeItem[]): Bundle[] {
+  const sorted = [...items].sort((a, b) => a.id - b.id);
+  const bundles: Bundle[] = [];
+  for (const it of sorted) {
+    const last = bundles[bundles.length - 1];
+    if (last && canMerge(last, it)) {
+      last.items.push(it);
+      if (it.text.trim()) last.texts.push(it.text);
+    } else {
+      bundles.push({ items: [it], texts: it.text.trim() ? [it.text] : [] });
+    }
+  }
+  return bundles;
+}
+
+/** Process one merged bundle as a single signal (combined text + primary chart). */
+async function processBundle(group: Group, bundle: Bundle): Promise<void> {
+  const text = bundle.texts.join("\n\n").trim();
+  // Primary attachment for vision + display: prefer a photo (chart) over a PDF.
+  const imgItem =
+    bundle.items.find((i) => hasPhoto(i.msg)) ?? bundle.items.find((i) => hasAttachment(i.msg));
+  try {
+    if (bundle.items.length > 1) {
+      logEvent(
+        "message",
+        `Merged ${bundle.items.length} adjacent messages from ${group.name} into one signal`,
+        { ids: bundle.items.map((i) => i.id), hasImage: !!imgItem },
+        { groupId: group.id },
+      );
+    }
+    const image = imgItem ? await extractImage(imgItem.msg) : undefined;
+    const sig = await handleIncoming(group, text, visionImage(image));
+    storeImage(sig?.id, image);
+    gh(group.id).lastMessageAt = new Date().toISOString();
+  } catch (err) {
+    // Keep the claims (at-most-once): handleIncoming may already have placed a
+    // real order before throwing, so retrying could DOUBLE a live position.
+    log.error("Failed to handle Telegram bundle:", err instanceof Error ? err.message : err);
+  }
+}
+
+// Live-path debounce buffer: hold a channel's just-arrived messages briefly so a
+// chart sent immediately before/after the text lands in the same bundle.
+interface Pending {
+  group: Group;
+  items: MergeItem[];
+  timer: ReturnType<typeof setTimeout>;
+}
+const pending = new Map<string, Pending>();
+
+function bufferLive(group: Group, it: MergeItem): void {
+  const p = pending.get(group.id);
+  if (p) {
+    p.group = group;
+    p.items.push(it);
+    clearTimeout(p.timer);
+    p.timer = setTimeout(() => void flushLive(group.id), MERGE_DEBOUNCE_MS);
+    return;
+  }
+  pending.set(group.id, {
+    group,
+    items: [it],
+    timer: setTimeout(() => void flushLive(group.id), MERGE_DEBOUNCE_MS),
+  });
+}
+
+async function flushLive(groupId: string): Promise<void> {
+  const p = pending.get(groupId);
+  if (!p) return;
+  pending.delete(groupId);
+  for (const bundle of mergeBundles(p.items)) {
+    await processBundle(p.group, bundle);
+  }
+}
+
 /** Resolved-entity cache so we don't call getDialogs() every poll. Keyed by the
  *  channel STRING so editing a group's channel naturally uses a fresh entry. */
 const entityCache = new Map<string, unknown>();
@@ -223,16 +343,10 @@ async function onMessage(event: NewMessageEvent): Promise<void> {
   if (typeof msgId === "number" && !settingsRepo.claimTelegramMessage(group.id, msgId)) {
     return; // already processed (e.g. poller beat us to it)
   }
-  try {
-    const image = attach ? await extractImage(event.message) : undefined;
-    const sig = await handleIncoming(group, text, visionImage(image));
-    storeImage(sig?.id, image);
-    gh(group.id).lastMessageAt = new Date().toISOString();
-  } catch (err) {
-    // Keep the claim (at-most-once): handleIncoming may already have placed a
-    // real order before throwing, so retrying could DOUBLE a live position.
-    log.error("Failed to handle Telegram message:", err instanceof Error ? err.message : err);
-  }
+  // Don't process yet: buffer briefly so a chart sent separately (immediately
+  // before/after the text, or as an album) merges into the same signal. The
+  // buffer flushes MERGE_DEBOUNCE_MS after the last message in the burst.
+  bufferLive(group, toMergeItem(event.message as Api.Message, text));
 }
 
 /**
@@ -350,24 +464,18 @@ async function pollCycle(tg: TelegramClient): Promise<void> {
         log.warn(`Catch-up for ${g.name} hit the ${MAX_CATCHUP}-message cap; older gap not paged.`);
       }
 
-      // Process oldest-first so ordering matches how they were sent.
-      fresh.sort((a, b) => a.id - b.id);
-      for (const f of fresh) {
-        try {
-          logEvent("message", `Catch-up: recovered missed message from ${g.name}`, { msgId: f.id }, {
-            groupId: g.id,
-          });
-          const image = await extractImage(f.msg);
-          const sig = await handleIncoming(g, f.text, visionImage(image));
-          storeImage(sig?.id, image);
-          const h = gh(g.id);
-          h.lastMessageAt = new Date().toISOString();
-          h.recoveredCount++;
-        } catch (err) {
-          // Keep the claim (at-most-once): a retry could double a live position
-          // if the order already went through before the throw.
-          log.error("Catch-up handleIncoming failed:", err instanceof Error ? err.message : err);
-        }
+      // Merge adjacent recovered messages (albums, or a chart sent just before/
+      // after the text) into single signals, then process oldest-first.
+      const bundles = mergeBundles(fresh.map((f) => toMergeItem(f.msg, f.text)));
+      for (const b of bundles) {
+        logEvent(
+          "message",
+          `Catch-up: recovered ${b.items.length > 1 ? `${b.items.length} merged messages` : "missed message"} from ${g.name}`,
+          { ids: b.items.map((i) => i.id) },
+          { groupId: g.id },
+        );
+        await processBundle(g, b);
+        gh(g.id).recoveredCount += b.items.length;
       }
       const h = gh(g.id);
       h.lastPolledAt = new Date().toISOString();
@@ -422,6 +530,9 @@ export async function stopTelegram(): Promise<void> {
     clearInterval(pollTimer);
     pollTimer = undefined;
   }
+  // Drop any pending merge buffers so their timers can't fire after shutdown.
+  for (const p of pending.values()) clearTimeout(p.timer);
+  pending.clear();
   if (client) {
     await client.disconnect();
     client = null;
