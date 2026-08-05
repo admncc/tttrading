@@ -49,6 +49,24 @@ export class HyperliquidConnector implements ExchangeConnector {
   private exchangeKey?: string;
   private assets = new Map<string, AssetInfo>();
   private assetsLoadedAt = 0;
+  /** HIP-3 builder dex names we host a routed symbol on (for position reads). */
+  private builderDexNames: string[] = [];
+
+  /** Raw info-endpoint host for dex-scoped queries the SDK doesn't type. */
+  private infoUrl(): string {
+    return this.network === "testnet"
+      ? "https://api.hyperliquid-testnet.xyz/info"
+      : "https://api.hyperliquid.xyz/info";
+  }
+  private async infoPost<T>(body: Record<string, unknown>): Promise<T> {
+    const res = await fetch(this.infoUrl(), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`HL info ${res.status}`);
+    return (await res.json()) as T;
+  }
 
   constructor(network: "testnet" | "mainnet", name: ExchangeName) {
     this.network = network;
@@ -130,15 +148,65 @@ export class HyperliquidConnector implements ExchangeConnector {
     const meta = (await this.info.meta()) as unknown as {
       universe: { name: string; szDecimals: number; maxLeverage: number }[];
     };
-    this.assets.clear();
+    const next = new Map<string, AssetInfo>();
     meta.universe.forEach((a, index) => {
-      this.assets.set(a.name.toUpperCase(), {
+      next.set(a.name.toUpperCase(), {
         name: a.name,
         index,
         szDecimals: a.szDecimals,
         maxLeverage: a.maxLeverage,
       });
     });
+
+    // HIP-3 builder-deployed perps live on separate order books. Add any symbol
+    // NOT on the main book, resolving to the MOST LIQUID builder dex (OI×mark).
+    // Order asset id = 100000 + perpDexIndex*10000 + localIndex.
+    try {
+      const dexs = await this.infoPost<({ name?: string } | null)[]>({ type: "perpDexs" });
+      const best = new Map<string, { oi: number; entry: AssetInfo }>();
+      for (let di = 0; di < dexs.length; di++) {
+        const dx = dexs[di];
+        if (!dx || !dx.name) continue; // index 0 = main (null)
+        let mc: [{ universe: { name: string; szDecimals: number; maxLeverage: number }[] }, { markPx?: string; openInterest?: string }[]];
+        try {
+          mc = await this.infoPost({ type: "metaAndAssetCtxs", dex: dx.name });
+        } catch {
+          continue;
+        }
+        const uni = mc[0]?.universe ?? [];
+        const ctx = mc[1] ?? [];
+        uni.forEach((a, li) => {
+          const bare = (a.name.split(":").pop() ?? a.name).toUpperCase();
+          if (next.has(bare)) return; // a real main perp always wins
+          const c = ctx[li] ?? {};
+          const oiNotional = (Number(c.markPx) || 0) * (Number(c.openInterest) || 0);
+          const prev = best.get(bare);
+          if (!prev || oiNotional > prev.oi) {
+            best.set(bare, {
+              oi: oiNotional,
+              entry: {
+                name: bare,
+                index: 100000 + di * 10000 + li,
+                szDecimals: a.szDecimals,
+                maxLeverage: a.maxLeverage,
+                dex: dx.name,
+                venueSymbol: a.name,
+              },
+            });
+          }
+        });
+      }
+      const dexNames = new Set<string>();
+      for (const { entry } of best.values()) {
+        next.set(entry.name.toUpperCase(), entry);
+        if (entry.dex) dexNames.add(entry.dex);
+      }
+      this.builderDexNames = [...dexNames];
+    } catch (err) {
+      log.warn("HL builder-dex meta load failed:", err instanceof Error ? err.message : err);
+    }
+
+    this.assets = next;
     this.assetsLoadedAt = Date.now();
     return this.assets;
   }
@@ -158,8 +226,15 @@ export class HyperliquidConnector implements ExchangeConnector {
     return new Set(orders.map((o) => String(o.oid)));
   }
 
-  /** Current mid price for a symbol. */
+  /** Current mid price for a symbol (dex-aware for HIP-3 builder perps). */
   async getMidPrice(symbol: string): Promise<number | undefined> {
+    const asset = await this.getAsset(symbol);
+    if (asset?.dex && asset.venueSymbol) {
+      // Builder perp: mids come from that dex's book, keyed "dex:SYMBOL".
+      const mids = await this.infoPost<Record<string, string>>({ type: "allMids", dex: asset.dex });
+      const raw = mids[asset.venueSymbol];
+      return raw ? Number(raw) : undefined;
+    }
     const mids = (await this.info.allMids()) as unknown as Record<string, string>;
     const raw = mids[symbol.toUpperCase()] ?? mids[symbol];
     return raw ? Number(raw) : undefined;
@@ -173,15 +248,34 @@ export class HyperliquidConnector implements ExchangeConnector {
       const n = Number(raw);
       if (Number.isFinite(n) && n > 0) out[sym.toUpperCase()] = n;
     }
+    // Add HIP-3 builder-dex marks (keyed by bare symbol; main perps keep priority).
+    for (const dex of this.builderDexNames) {
+      try {
+        const bm = await this.infoPost<Record<string, string>>({ type: "allMids", dex });
+        for (const [full, raw] of Object.entries(bm)) {
+          const bare = (full.split(":").pop() ?? full).toUpperCase();
+          const n = Number(raw);
+          if (!out[bare] && Number.isFinite(n) && n > 0) out[bare] = n;
+        }
+      } catch {
+        /* skip this dex's mids */
+      }
+    }
     return out;
   }
 
-  /** Open positions for the configured account. */
+  /** Open positions for the configured account (main perps + HIP-3 builder dexs). */
   async getPositions(): Promise<Position[]> {
     if (!this.live && !hlAccountAddress(this.network)) return [];
-    const state = (await this.info.clearinghouseState({
-      user: this.accountAddress(),
-    })) as unknown as {
+    // Ensure builder-dex names are known (cheap after first cached load) so a
+    // builder-perp position is reconciled even right after a restart.
+    try {
+      await this.loadAssets();
+    } catch {
+      /* fall back to whatever we have */
+    }
+    const user = this.accountAddress();
+    type CH = {
       assetPositions: {
         position: {
           coin: string;
@@ -192,13 +286,29 @@ export class HyperliquidConnector implements ExchangeConnector {
         };
       }[];
     };
-    return state.assetPositions.map((p) => ({
-      symbol: p.position.coin,
-      size: Number(p.position.szi),
-      entryPrice: Number(p.position.entryPx ?? 0),
-      unrealizedPnl: Number(p.position.unrealizedPnl),
-      leverage: p.position.leverage?.value ?? 0,
-    }));
+    // The coin on a builder dex is namespaced ("xyz:GOLD") — strip to the bare
+    // symbol so reconciliation matches trade.symbol.
+    const mapPos = (s: CH): Position[] =>
+      (s.assetPositions ?? []).map((p) => ({
+        symbol: (p.position.coin.split(":").pop() ?? p.position.coin).toUpperCase(),
+        size: Number(p.position.szi),
+        entryPrice: Number(p.position.entryPx ?? 0),
+        unrealizedPnl: Number(p.position.unrealizedPnl),
+        leverage: p.position.leverage?.value ?? 0,
+      }));
+
+    const main = (await this.info.clearinghouseState({ user })) as unknown as CH;
+    const out = mapPos(main);
+    // Builder dexs have SEPARATE per-dex collateral/positions — query each we route to.
+    for (const dex of this.builderDexNames) {
+      try {
+        const s = await this.infoPost<CH>({ type: "clearinghouseState", user, dex });
+        out.push(...mapPos(s));
+      } catch (err) {
+        log.warn(`HL positions ${dex}:`, err instanceof Error ? err.message : err);
+      }
+    }
+    return out;
   }
 
   /** The address that SIGNS orders (derived from HL_PRIVATE_KEY), or null. */
@@ -220,8 +330,12 @@ export class HyperliquidConnector implements ExchangeConnector {
     }
   }
 
-  /** Account equity + free collateral for the configured account. */
-  async getAccountSummary(): Promise<{
+  /**
+   * Account equity + free collateral. When `symbol` is a HIP-3 builder perp,
+   * read that dex's SEPARATE collateral pot (builder dexs don't share the main
+   * perp margin) so the pre-route collateral check sees the right balance.
+   */
+  async getAccountSummary(symbol?: string): Promise<{
     address: string;
     accountValue: number;
     withdrawable: number;
@@ -229,12 +343,15 @@ export class HyperliquidConnector implements ExchangeConnector {
   } | null> {
     const address = this.publicAddress();
     if (!address) return null;
-    const state = (await this.info.clearinghouseState({
-      user: address as `0x${string}`,
-    })) as unknown as {
-      marginSummary?: { accountValue?: string; totalMarginUsed?: string };
-      withdrawable?: string;
-    };
+    let dex: string | undefined;
+    if (symbol) {
+      const asset = await this.getAsset(symbol);
+      dex = asset?.dex;
+    }
+    type CH = { marginSummary?: { accountValue?: string; totalMarginUsed?: string }; withdrawable?: string };
+    const state = dex
+      ? await this.infoPost<CH>({ type: "clearinghouseState", user: address, dex })
+      : ((await this.info.clearinghouseState({ user: address as `0x${string}` })) as unknown as CH);
     return {
       address,
       accountValue: Number(state.marginSummary?.accountValue ?? 0),
@@ -605,7 +722,8 @@ export class HyperliquidConnector implements ExchangeConnector {
     }[];
     return fills.map((f) => ({
       oid: String(f.oid),
-      symbol: f.coin,
+      // Builder-dex fills are namespaced ("xyz:GOLD") — strip to the bare symbol.
+      symbol: (f.coin.split(":").pop() ?? f.coin),
       size: Math.abs(Number(f.sz)),
       price: Number(f.px),
       side: f.side,

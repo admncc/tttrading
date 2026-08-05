@@ -10,14 +10,22 @@ import type { ExchangeName, TradeSide } from "@tttrading/shared";
  */
 
 export interface AssetInfo {
-  /** Bare coin symbol, e.g. "BTC". */
+  /** Bare coin symbol, e.g. "BTC" or "GOLD". */
   name: string;
-  /** Venue asset index (Hyperliquid) or 0 where not applicable. */
+  /**
+   * Venue asset index used in orders. For Hyperliquid main perps this is the
+   * universe index; for HIP-3 builder-deployed perps it's the encoded id
+   * (100000 + perpDexIndex*10000 + localIndex). 0 where not applicable.
+   */
   index: number;
   /** Decimal places allowed for the order size. */
   szDecimals: number;
   /** Max leverage the venue allows for this asset. */
   maxLeverage: number;
+  /** HIP-3 builder dex name (e.g. "xyz") when this is a builder perp; else undefined. */
+  dex?: string;
+  /** Full venue symbol incl. the dex prefix, e.g. "xyz:GOLD" (mids/positions/fills). */
+  venueSymbol?: string;
 }
 
 export interface OrderRequest {
@@ -123,7 +131,12 @@ export interface ExchangeConnector {
   getMidPrice(symbol: string): Promise<number | undefined>;
   getAllMids(): Promise<Record<string, number>>;
   getPositions(): Promise<Position[]>;
-  getAccountSummary(): Promise<AccountSummary | null>;
+  /**
+   * Account equity + free collateral. `symbol` lets a venue with per-market
+   * collateral pots (Hyperliquid HIP-3 builder dexs) return the balance of the
+   * pot that symbol trades from; venues with one account ignore it.
+   */
+  getAccountSummary(symbol?: string): Promise<AccountSummary | null>;
   /**
    * Recent fills for the account. `symbols` is an optional hint of the coins we
    * currently care about — venues whose fills API is per-symbol (Aster/Binance)

@@ -851,7 +851,9 @@ async function placeEntry(
   // (don't block on a transient error — let the order path surface it).
   if (!ex.simulating()) {
     try {
-      const summary = await ex.getAccountSummary();
+      // Pass the symbol so HL reads the right collateral pot (HIP-3 builder dexs
+      // have separate per-dex balances).
+      const summary = await ex.getAccountSummary(parsed.symbol);
       if (summary) {
         const needMargin = tradeSizeUsd / Math.max(1, group.settings.leverage);
         if (summary.withdrawable < needMargin * 0.99) {
@@ -865,6 +867,33 @@ async function placeEntry(
       }
     } catch {
       /* balance unreadable — don't block; the order path will surface any error */
+    }
+  }
+
+  // Reject a mis-scaled / typo'd signal whose stop-loss sits on the WRONG side
+  // of the market — a long's stop must be below price, a short's above. Entering
+  // would leave a naked position (the stop can't be placed and would instantly
+  // trigger). Catches e.g. a channel writing SL 0.725 for XPL while XPL trades
+  // ~0.08 (a ×10 decimal typo in the text). Uses the stated entry, else the mid.
+  if (parsed.stopLoss !== undefined) {
+    let ref = parsed.entry;
+    if (ref === undefined) {
+      try {
+        ref = await ex.getMidPrice(parsed.symbol);
+      } catch {
+        /* no price feed — let the order path handle it */
+      }
+    }
+    if (ref && ref > 0) {
+      const wrongSide = parsed.side === "long" ? parsed.stopLoss >= ref : parsed.stopLoss <= ref;
+      if (wrongSide) {
+        const reason = `SL ${parsed.stopLoss} on the wrong side of price ${ref} for a ${parsed.side} — likely a mis-scaled signal; not entering`;
+        const failed = signalsRepo.update(signal.id, { status: "failed", error: reason })!;
+        event("exec", `SKIP ${parsed.side} ${parsed.symbol}: ${reason}`, { stopLoss: parsed.stopLoss, ref, side: parsed.side }, { level: "warn", groupId: group.id, signalId: signal.id });
+        alertError(`SL side ${parsed.symbol} (${group.name})`, reason);
+        broadcast({ type: "signal", signal: failed });
+        return failed;
+      }
     }
   }
 
