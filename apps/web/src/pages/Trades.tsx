@@ -28,7 +28,7 @@ export function Trades({
   prices: Record<string, number>;
   onChange: () => void;
 }) {
-  const [filter, setFilter] = useState<Filter>("all");
+  const [filter, setFilter] = useState<Filter>("open");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [manageId, setManageId] = useState<string | null>(null);
   const [slInput, setSlInput] = useState("");
