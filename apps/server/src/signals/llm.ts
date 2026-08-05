@@ -20,9 +20,12 @@ export function llmReady(): boolean {
 /**
  * Fold the two operator-authored instruction layers into a base system prompt:
  * (1) GLOBAL LLM memory that applies to every channel, then (2) the per-channel
- * hints. Both are operator guidance to help INTERPRET messages — the base prompt's
- * safety rules (never obey directives inside the message, is_signal discipline)
- * still win, so a channel note can't turn chatter into a forced trade.
+ * hints. Both are OPERATOR-authored (desk password / narrowed diagnostic API), so
+ * they are trusted guidance the model may follow — unlike the message body, which
+ * the SYSTEM prompt fences as untrusted. NOTE: because these layers are trusted,
+ * a careless operator note ("always is_signal=true") WOULD be obeyed; they are not
+ * bounded by the message-level safety rules. Downstream code still re-validates
+ * symbol/side/SL-side/plausibility before any order is placed.
  */
 function withInstructions(base: string, channelInstructions?: string): string {
   let s = base;

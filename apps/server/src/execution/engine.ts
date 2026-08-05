@@ -935,6 +935,70 @@ async function placeEntry(
 ): Promise<Signal> {
   const { leverage, marginMode, maxSlippage } = group.settings;
 
+  // Decimal-typo safety net + wrong-side stop guard — run BEFORE sizing so
+  // risk-per-trade uses the corrected stop distance. Snap the SL and every TP to
+  // the entry's (or live mid's) order of magnitude so "SL 0.725, Tp 0.84" on a
+  // ~0.08 coin becomes SL 0.0725 AND TP 0.084. A TP is only snapped when the
+  // result stays on the PROFIT side (so a real 6×–9× target is never flipped
+  // across the entry); any TP still on the wrong side is dropped. A stop still on
+  // the wrong side after snapping is a real error → reject rather than enter.
+  {
+    let ref = parsed.entry;
+    if (ref === undefined) {
+      try {
+        ref = await ex.getMidPrice(parsed.symbol);
+      } catch {
+        /* no price feed — can't normalize or side-check; let the order path handle it */
+      }
+    }
+    if (ref && ref > 0) {
+      const fixes: string[] = [];
+      const sl = parsed.stopLoss !== undefined ? snapMagnitude(parsed.stopLoss, ref) : undefined;
+      if (sl !== undefined && sl !== parsed.stopLoss) fixes.push(`SL ${parsed.stopLoss}→${sl}`);
+
+      const onProfitSide = (t: number) => (parsed.side === "long" ? t > ref! : t < ref!);
+      let tps = parsed.takeProfits;
+      if (tps && tps.length) {
+        const snapped = tps.map((t) => {
+          const s = snapMagnitude(t, ref!);
+          if (s !== t && onProfitSide(s)) {
+            fixes.push(`TP ${t}→${s}`);
+            return s;
+          }
+          return t;
+        });
+        const kept = snapped.filter((t) => {
+          if (onProfitSide(t)) return true;
+          fixes.push(`dropped wrong-side TP ${t}`);
+          return false;
+        });
+        tps = kept.length ? kept : undefined;
+      }
+
+      if (fixes.length) {
+        parsed = { ...parsed, stopLoss: sl, takeProfits: tps };
+        event(
+          "exec",
+          `Normalized ${parsed.symbol} to price ~${ref}: ${fixes.join("; ")}`,
+          { ref, fixes },
+          { level: "warn", groupId: group.id, signalId: signal.id },
+        );
+      }
+
+      if (parsed.stopLoss !== undefined) {
+        const wrongSide = parsed.side === "long" ? parsed.stopLoss >= ref : parsed.stopLoss <= ref;
+        if (wrongSide) {
+          const reason = `SL ${parsed.stopLoss} on the wrong side of price ${ref} for a ${parsed.side} — likely a mis-scaled signal; not entering`;
+          const failed = signalsRepo.update(signal.id, { status: "failed", error: reason })!;
+          event("exec", `SKIP ${parsed.side} ${parsed.symbol}: ${reason}`, { stopLoss: parsed.stopLoss, ref, side: parsed.side }, { level: "warn", groupId: group.id, signalId: signal.id });
+          alertError(`SL side ${parsed.symbol} (${group.name})`, reason);
+          broadcast({ type: "signal", signal: failed });
+          return failed;
+        }
+      }
+    }
+  }
+
   // Position size per the group's sizing mode (against the routed venue).
   let tradeSizeUsd = await effectiveNotional(group, parsed, ex);
 
@@ -986,53 +1050,6 @@ async function placeEntry(
       }
     } catch {
       /* balance unreadable — don't block; the order path will surface any error */
-    }
-  }
-
-  // Decimal-typo safety net + wrong-side stop guard. First CONSISTENTLY snap the
-  // SL and EVERY TP to the entry's (or live mid's) order of magnitude, so a
-  // channel that writes "SL 0.725, Tp 0.84" for a coin trading ~0.08 becomes
-  // SL 0.0725 AND TP 0.084 — never a half-fix that leaves the targets 10× off.
-  // Then, if the (normalized) stop is still on the wrong side, it's a real error,
-  // not a decimal slip — reject rather than enter a position we can't protect.
-  {
-    let ref = parsed.entry;
-    if (ref === undefined) {
-      try {
-        ref = await ex.getMidPrice(parsed.symbol);
-      } catch {
-        /* no price feed — can't normalize or side-check; let the order path handle it */
-      }
-    }
-    if (ref && ref > 0) {
-      const fixes: string[] = [];
-      const sl = parsed.stopLoss !== undefined ? snapMagnitude(parsed.stopLoss, ref) : undefined;
-      if (sl !== undefined && sl !== parsed.stopLoss) fixes.push(`SL ${parsed.stopLoss}→${sl}`);
-      const tps = parsed.takeProfits?.map((t) => snapMagnitude(t, ref!));
-      if (tps && parsed.takeProfits && tps.some((t, i) => t !== parsed.takeProfits![i])) {
-        fixes.push(`TP [${parsed.takeProfits.join(", ")}]→[${tps.join(", ")}]`);
-      }
-      if (fixes.length) {
-        parsed = { ...parsed, stopLoss: sl, takeProfits: tps };
-        event(
-          "exec",
-          `Decimal-normalized ${parsed.symbol} to price ~${ref}: ${fixes.join("; ")}`,
-          { ref, fixes },
-          { level: "warn", groupId: group.id, signalId: signal.id },
-        );
-      }
-
-      if (parsed.stopLoss !== undefined) {
-        const wrongSide = parsed.side === "long" ? parsed.stopLoss >= ref : parsed.stopLoss <= ref;
-        if (wrongSide) {
-          const reason = `SL ${parsed.stopLoss} on the wrong side of price ${ref} for a ${parsed.side} — likely a mis-scaled signal; not entering`;
-          const failed = signalsRepo.update(signal.id, { status: "failed", error: reason })!;
-          event("exec", `SKIP ${parsed.side} ${parsed.symbol}: ${reason}`, { stopLoss: parsed.stopLoss, ref, side: parsed.side }, { level: "warn", groupId: group.id, signalId: signal.id });
-          alertError(`SL side ${parsed.symbol} (${group.name})`, reason);
-          broadcast({ type: "signal", signal: failed });
-          return failed;
-        }
-      }
     }
   }
 

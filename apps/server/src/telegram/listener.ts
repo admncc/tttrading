@@ -223,8 +223,10 @@ async function processBundle(group: Group, bundle: Bundle): Promise<void> {
       );
     }
     // Download every image only when vision is on (extras are useless without it);
-    // otherwise just the primary, which is still stored for the Messages tab.
-    const toDownload = visionOn ? imgItems : imgItems.slice(0, 1);
+    // otherwise just the primary, which is still stored for the Messages tab. Cap
+    // the count so an untrusted channel can't drive a huge multi-image vision bill.
+    const MAX_VISION_IMAGES = 6;
+    const toDownload = visionOn ? imgItems.slice(0, MAX_VISION_IMAGES) : imgItems.slice(0, 1);
     const images = (await Promise.all(toDownload.map((i) => extractImage(i.msg)))).filter(
       (x): x is SignalImage => !!x,
     );

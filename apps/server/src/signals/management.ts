@@ -35,7 +35,7 @@ const RE_CANCEL_LIMIT =
 // dropped ("stopped at resistance" is not a stop-out); only "stopped out" /
 // "got stopped" count.
 const RE_CLOSE_NONCANCEL =
-  /\b(invalidated|stopped\s*out|got\s*stopped|clos(?:e|ed|ing)\b(?!\s*(?:\d|to\b|above\b|below\b|near\b|by\b))|cut(?:ting)?\b|exit(?:ed|ing)?\b|off\s+the\s+table|left\s+without\s+us|took\s+profit\s+and\s+clos)/i;
+  /\b(invalidated|stopped\s*out|got\s*stopped|clos(?:e|ed|ing)\b(?!\s*(?:\d|to\b|above\b|below\b|near\b|by\b|half\b|part|some\b))|cut(?:ting)?\b|exit(?:ed|ing)?\b|off\s+the\s+table|left\s+without\s+us|took\s+profit\s+and\s+clos)/i;
 const RE_CANCEL_WORD = /\bcancel(?:led|ed|ing)?\b/i;
 // "risk free" / "move SL to entry / breakeven". The second branch requires the
 // word "to" before the target so ordinary prose ("moved my stop, we'll be
@@ -66,7 +66,7 @@ const RE_PARTIAL_B = /\b(\d{1,3})\s*%\s*(?:out|off|pos|position|booked)\b/i;
 // 64000" (a TP target/info line) doesn't get read as a partial. "trim" alone
 // also counts.
 const RE_PARTIAL_WORD =
-  /\b(?:book(?:ed|ing)?|took|tak(?:e|ing|en)|lock(?:ed|ing)?\s*in|secur\w*|scal\w*\s*out)\b[^.\n]{0,30}\b(?:partials?|some|half|tp\s*\d+)\b/i;
+  /\b(?:book(?:ed|ing)?|took|tak(?:e|ing|en)|lock(?:ed|ing)?\s*in|secur\w*|scal\w*\s*out|clos(?:e|ed|ing)?)\b[^.\n]{0,30}\b(?:partials?|some|half|tp\s*\d+)\b/i;
 const RE_TRIM = /\btrim(?:med|ming)?\b/i;
 // "TP1 hit", "target reached", "area 1 reached", "4RR", "done and dusted".
 const RE_TPHIT =
@@ -77,8 +77,11 @@ const RE_TPHIT =
 // / "in profit / up X%"). These phrases essentially never appear in a genuine
 // fresh-entry call, so a message carrying one must be handled as management —
 // NEVER opened as a new position, even if a chart shows drawn levels.
+// NB: no bare "in profit" here — it appears in fresh-call hype ("last call already
+// in profit, new setup: LONG …") and would wrongly veto a real entry. The markers
+// kept are specific enough that a genuine new call won't contain them.
 const RE_TRADE_UPDATE =
-  /\btrade\s+update\b|\b(?:my\s+)?stop\s+(?:is\s+now|has\s+been\s+moved|(?:is\s+)?now\s+moved|moved)\s+(?:to\s+)?(?:break\s*even|breakeven|\bbe\b|entry)\b|\btrade\s+is\s+(?:protected|running|now\s+risk[-\s]?free)\b|\b(?:now|already)\s+up\s+\d+(?:\.\d+)?\s*%|\bin\s+profit\b/i;
+  /\btrade\s+update\b|\b(?:my\s+)?stop\s+(?:is\s+now|has\s+been\s+moved|(?:is\s+)?now\s+moved|moved)\s+(?:to\s+)?(?:break\s*even|breakeven|\bbe\b|entry)\b|\btrade\s+is\s+(?:protected|running|now\s+risk[-\s]?free)\b|\b(?:now|already)\s+up\s+\d+(?:\.\d+)?\s*%/i;
 /** True when the message reads as an update to an EXISTING trade, not a new call. */
 export function isTradeUpdate(text: string): boolean {
   return RE_TRADE_UPDATE.test(text);
@@ -112,7 +115,11 @@ export function classifyManagementAll(text: string): ManagementAction[] {
   let partial = false;
   if (pm) {
     const pct = Number(pm[1]);
-    if (Number.isFinite(pct) && pct > 0 && pct < 100) {
+    if (Number.isFinite(pct) && pct >= 100) {
+      // "closed 100%" / "book 100%" is a FULL close, not a partial (and the close
+      // matcher's \d lookahead deliberately skipped it) — classify it as close.
+      add({ kind: "close", symbol, note: "closed 100%" });
+    } else if (Number.isFinite(pct) && pct > 0) {
       add({ kind: "partial_close", symbol, fraction: pct / 100, alsoBreakeven: isBreakeven(text), note: `book ${pct}%` });
       partial = true;
     }

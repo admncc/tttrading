@@ -323,7 +323,11 @@ export async function buildServer() {
     // Diagnostic API toggle. Enabling (re)generates a fresh secret token so a
     // previously-shared URL is invalidated on each enable; explicit regenerate
     // rotates it too. Disabling clears the token so the endpoint fully closes.
-    if (d.diagnosticRegenerateToken || (d.diagnosticEnabled === true && !settingsRepo.getDiagnosticToken())) {
+    // Mint a fresh token on every OFF→ON enable (so a previously-shared URL is
+    // always invalidated) and on an explicit regenerate — not merely when no token
+    // exists, which a regenerate-while-disabled could otherwise leave stale.
+    const wasDiagEnabled = settingsRepo.getDiagnosticEnabled();
+    if (d.diagnosticRegenerateToken || (d.diagnosticEnabled === true && !wasDiagEnabled)) {
       settingsRepo.setDiagnosticToken(randomBytes(24).toString("hex"));
     }
     if (d.diagnosticEnabled !== undefined) {
@@ -948,20 +952,19 @@ export async function buildServer() {
     "This endpoint is your read/write window into the running system. Secrets (private keys, API keys,",
     "the Anthropic key, the Telegram session) are NEVER exposed here.",
     "",
-    "## Endpoints (append ?token=<TOKEN> or send header X-Diag-Token)",
+    "## Endpoints (prefer header  X-Diag-Token: <TOKEN>  — a ?token= query param works too but",
+    "##            can leak into access logs / Referer on this plain-HTTP endpoint)",
     "- GET  /diagnostic            → this doc + a full system snapshot (health, settings, exchanges,",
     "                                account, positions, groups, open/recent trades, recent signals,",
     "                                telegram health, prices, recent logs).",
     "- GET  /diagnostic/logs?limit=&category=&level=&since=&source=  → detailed logs (with meta).",
     "                                source=ring (default, in-memory since boot) or source=db (persisted history).",
     "- GET  /diagnostic/rules      → the deterministic entry + management regex rules (what fires, and why).",
-    "- POST /diagnostic/settings   → change NON-SECRET settings. Body shape:",
-    '     { "global": { shadowMode?, tradingPaused?, dailyLossLimitUsd?, maxOpenTrades?, maxExposureUsd?,',
-    "                   liveMaxOrderUsd?, splitOpposingVenues?, parseMode?('regex'|'llm'), autoRefine?,",
-    "                   anthropicModel?, llmMemory? },",
-    '       "group":  { id, enabled?, instructions?, settings?{...group settings} },',
-    '       "exchange": { priority?[], hyperliquidEnabled?, hyperliquidTestnetEnabled?, asterEnabled?, mexcEnabled? } }',
-    "   (Exchange API/private keys can NOT be set here — use the desk for those.)",
+    "- POST /diagnostic/settings   → tune MESSAGE PROCESSING only. Body shape:",
+    '     { "global": { parseMode?("regex"|"llm"), autoRefine?, anthropicModel?, llmMemory? },',
+    '       "group":  { id, enabled?, instructions? } }',
+    "   Safety switches (shadow mode, kill-switch, exchange enable/priority, risk caps, per-channel",
+    "   sizing/leverage/exec) and all secrets are NOT writable here — desk password only.",
     "",
     "## The two-level LLM instruction model (this is how messages get parsed right)",
     "- Level 1 — GLOBAL LLM memory (`global.llmMemory`): operator guidance applied to EVERY channel.",
@@ -1087,17 +1090,15 @@ export async function buildServer() {
 
   app.post("/diagnostic/settings", async (req, reply) => {
     if (!diagGuard(req, reply)) return reply;
-    const groupSettingsPatch = groupSettingsSchema.partial();
+    // SCOPE: message-processing / LLM tuning ONLY. The master safety switches
+    // (shadow mode, kill-switch, exchange enable/priority, risk caps, per-channel
+    // sizing/leverage/exec) are DELIBERATELY not writable here — a leaked
+    // diagnostic token must never be able to disarm safety or resize live orders.
+    // Those stay desk-password only. Diagnostic writes: parse mode, auto-refine,
+    // model, global LLM memory, and a channel's instructions/enabled.
     const schema = z.object({
       global: z
         .object({
-          shadowMode: z.boolean().optional(),
-          tradingPaused: z.boolean().optional(),
-          dailyLossLimitUsd: z.number().min(0).max(1e9).optional(),
-          maxOpenTrades: z.number().int().min(0).max(1000).optional(),
-          maxExposureUsd: z.number().min(0).max(1e9).optional(),
-          liveMaxOrderUsd: z.number().min(0).max(1e9).optional(),
-          splitOpposingVenues: z.boolean().optional(),
           parseMode: z.enum(["regex", "llm"]).optional(),
           autoRefine: z.boolean().optional(),
           anthropicModel: z.string().max(100).optional(),
@@ -1109,32 +1110,15 @@ export async function buildServer() {
           id: z.string().max(64),
           enabled: z.boolean().optional(),
           instructions: z.string().max(8000).optional(),
-          settings: groupSettingsPatch.optional(),
-        })
-        .optional(),
-      exchange: z
-        .object({
-          priority: z.array(z.enum(["hyperliquid", "hyperliquid-testnet", "aster", "mexc"])).max(4).optional(),
-          hyperliquidEnabled: z.boolean().optional(),
-          hyperliquidTestnetEnabled: z.boolean().optional(),
-          asterEnabled: z.boolean().optional(),
-          mexcEnabled: z.boolean().optional(),
         })
         .optional(),
     });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
-    const { global: g, group: grp, exchange: ex } = parsed.data;
+    const { global: g, group: grp } = parsed.data;
     const applied: string[] = [];
 
     if (g) {
-      if (g.shadowMode !== undefined) { settingsRepo.setShadowMode(g.shadowMode); applied.push("shadowMode"); }
-      if (g.tradingPaused !== undefined) { settingsRepo.setTradingPaused(g.tradingPaused); applied.push("tradingPaused"); }
-      if (g.dailyLossLimitUsd !== undefined) { settingsRepo.setRiskLimit("dailyLossLimitUsd", g.dailyLossLimitUsd); applied.push("dailyLossLimitUsd"); }
-      if (g.maxOpenTrades !== undefined) { settingsRepo.setRiskLimit("maxOpenTrades", g.maxOpenTrades); applied.push("maxOpenTrades"); }
-      if (g.maxExposureUsd !== undefined) { settingsRepo.setRiskLimit("maxExposureUsd", g.maxExposureUsd); applied.push("maxExposureUsd"); }
-      if (g.liveMaxOrderUsd !== undefined) { settingsRepo.setRiskLimit("liveMaxOrderUsd", g.liveMaxOrderUsd); applied.push("liveMaxOrderUsd"); }
-      if (g.splitOpposingVenues !== undefined) { settingsRepo.setSplitOpposingVenues(g.splitOpposingVenues); applied.push("splitOpposingVenues"); }
       if (g.parseMode !== undefined) { settingsRepo.setParseMode(g.parseMode); applied.push("parseMode"); }
       if (g.autoRefine !== undefined) { settingsRepo.setAutoRefine(g.autoRefine); applied.push("autoRefine"); }
       if (g.anthropicModel !== undefined) { settingsRepo.setAnthropicModel(g.anthropicModel.trim()); applied.push("anthropicModel"); }
@@ -1150,21 +1134,12 @@ export async function buildServer() {
         enabled: grp.enabled ?? existing.enabled,
         settings: {
           ...existing.settings,
-          ...(grp.settings ?? {}),
           ...(grp.instructions !== undefined ? { instructions: grp.instructions } : {}),
         },
       };
       const updated = groupsRepo.update(grp.id, merged);
       if (updated) broadcast({ type: "group", group: updated });
       applied.push(`group:${existing.name}`);
-    }
-
-    if (ex) {
-      if (ex.priority) { settingsRepo.setExchangePriority(ex.priority); applied.push("priority"); }
-      if (ex.hyperliquidEnabled !== undefined) { settingsRepo.setExchangeFlag("hl.mainnet.enabled", ex.hyperliquidEnabled); hyperliquid.reloadCredentials(); applied.push("hl.mainnet.enabled"); }
-      if (ex.hyperliquidTestnetEnabled !== undefined) { settingsRepo.setExchangeFlag("hl.testnet.enabled", ex.hyperliquidTestnetEnabled); hyperliquidTestnet.reloadCredentials(); applied.push("hl.testnet.enabled"); }
-      if (ex.asterEnabled !== undefined) { settingsRepo.setExchangeFlag("aster.enabled", ex.asterEnabled); applied.push("aster.enabled"); }
-      if (ex.mexcEnabled !== undefined) { settingsRepo.setExchangeFlag("mexc.enabled", ex.mexcEnabled); applied.push("mexc.enabled"); }
     }
 
     event("audit", `diagnostic API changed settings: ${applied.join(", ") || "(nothing)"}`, { applied, ip: req.ip }, { level: "warn" });
