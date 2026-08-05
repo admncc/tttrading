@@ -163,6 +163,9 @@ export const api = {
       anthropicModel: string;
       autoRefine: boolean;
       parseMode: "regex" | "llm";
+      llmMemory: string;
+      diagnosticEnabled: boolean;
+      diagnosticToken: string;
     }>("/api/settings"),
   updateSettings: (patch: {
     shadowMode?: boolean;
@@ -174,8 +177,17 @@ export const api = {
     splitOpposingVenues?: boolean;
     autoRefine?: boolean;
     parseMode?: "regex" | "llm";
+    llmMemory?: string;
+    diagnosticEnabled?: boolean;
+    diagnosticRegenerateToken?: boolean;
   }) =>
-    req<{ shadowMode: boolean }>("/api/settings", {
+    req<{
+      shadowMode: boolean;
+      parseMode: "regex" | "llm";
+      llmMemory: string;
+      diagnosticEnabled: boolean;
+      diagnosticToken: string;
+    }>("/api/settings", {
       method: "PUT",
       body: JSON.stringify(patch),
     }),

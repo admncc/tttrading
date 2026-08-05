@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
@@ -8,7 +9,7 @@ import type { WsEvent } from "@tttrading/shared";
 import { config, authEnabled } from "../config.js";
 import { checkUpdates, runUpdate } from "../system/update.js";
 import { bearer, checkPassword, signToken, verifyToken } from "../auth.js";
-import { log, event } from "../logger.js";
+import { log, event, recentLogs, logCategories } from "../logger.js";
 import type { FastifyRequest } from "fastify";
 
 /** Record a desk action to the audit trail (category "audit"), with requester IP. */
@@ -252,6 +253,12 @@ export async function buildServer() {
     anthropicModel: settingsRepo.getAnthropicModel() || config.anthropic.model,
     autoRefine: settingsRepo.getAutoRefine(config.anthropic.autoRefine),
     parseMode: settingsRepo.getParseMode(),
+    // Global LLM memory (level-1 guidance applied to every channel).
+    llmMemory: settingsRepo.getLlmMemory(),
+    // Diagnostic API state. The token is only returned here (this route is behind
+    // the desk password), so the operator can copy the diagnostic URL.
+    diagnosticEnabled: settingsRepo.getDiagnosticEnabled(),
+    diagnosticToken: settingsRepo.getDiagnosticToken(),
   });
   app.get("/api/settings", async () => settingsPayload());
 
@@ -269,6 +276,9 @@ export async function buildServer() {
       anthropicModel: z.string().max(100).optional(),
       autoRefine: z.boolean().optional(),
       parseMode: z.enum(["regex", "llm"]).optional(),
+      llmMemory: z.string().max(20000).optional(),
+      diagnosticEnabled: z.boolean().optional(),
+      diagnosticRegenerateToken: z.boolean().optional(),
     });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
@@ -293,6 +303,22 @@ export async function buildServer() {
       log.info(`Anthropic key ${d.anthropicKey.trim() ? "updated via desk" : "cleared"}.`);
     }
     if (d.anthropicModel !== undefined) settingsRepo.setAnthropicModel(d.anthropicModel.trim());
+    if (d.llmMemory !== undefined) {
+      settingsRepo.setLlmMemory(d.llmMemory);
+      log.info(`Global LLM memory ${d.llmMemory.trim() ? "updated" : "cleared"} (${d.llmMemory.length} chars).`);
+    }
+    // Diagnostic API toggle. Enabling (re)generates a fresh secret token so a
+    // previously-shared URL is invalidated on each enable; explicit regenerate
+    // rotates it too. Disabling clears the token so the endpoint fully closes.
+    if (d.diagnosticRegenerateToken || (d.diagnosticEnabled === true && !settingsRepo.getDiagnosticToken())) {
+      settingsRepo.setDiagnosticToken(randomBytes(24).toString("hex"));
+    }
+    if (d.diagnosticEnabled !== undefined) {
+      settingsRepo.setDiagnosticEnabled(d.diagnosticEnabled);
+      if (!d.diagnosticEnabled) settingsRepo.setDiagnosticToken("");
+      audit(req, `diagnostic API ${d.diagnosticEnabled ? "ENABLED" : "disabled"}`);
+      log.warn(`Diagnostic API ${d.diagnosticEnabled ? "ENABLED — reachable with the secret token" : "disabled"}.`);
+    }
     audit(req, "settings updated", { fields: Object.keys(d) });
     broadcast({ type: "settings", settings: settingsRepo.getGlobalSettings() });
     return settingsPayload();
@@ -864,6 +890,231 @@ export async function buildServer() {
       log.warn("account summary unavailable:", msg);
       return { ...base, positions: [], error: msg };
     }
+  });
+
+  /* --------------------------- diagnostic API ------------------------- */
+  // Toggle-gated, token-protected remote diagnosis channel (NOT under /api, so
+  // it's outside the desk-password hook — the toggle + secret token are its
+  // guard). OFF by default → 404. Secrets are ALWAYS redacted. Scope: full read
+  // snapshot + write of non-secret settings (global + per-channel). See DIAG_DOCS.
+  const DIAG_DOCS = [
+    "# tttrading — Diagnostic API",
+    "",
+    "You are connected to a LIVE crypto trading bot (Telegram signals → Hyperliquid/Aster/MEXC perps).",
+    "This endpoint is your read/write window into the running system. Secrets (private keys, API keys,",
+    "the Anthropic key, the Telegram session) are NEVER exposed here.",
+    "",
+    "## Endpoints (append ?token=<TOKEN> or send header X-Diag-Token)",
+    "- GET  /diagnostic            → this doc + a full system snapshot (health, settings, exchanges,",
+    "                                account, positions, groups, open/recent trades, recent signals,",
+    "                                telegram health, prices, recent logs).",
+    "- GET  /diagnostic/logs?limit=&category=&level=&since=  → detailed in-memory logs (with meta).",
+    "- POST /diagnostic/settings   → change NON-SECRET settings. Body shape:",
+    '     { "global": { shadowMode?, tradingPaused?, dailyLossLimitUsd?, maxOpenTrades?, maxExposureUsd?,',
+    "                   liveMaxOrderUsd?, splitOpposingVenues?, parseMode?('regex'|'llm'), autoRefine?,",
+    "                   anthropicModel?, llmMemory? },",
+    '       "group":  { id, enabled?, instructions?, settings?{...group settings} },',
+    '       "exchange": { priority?[], hyperliquidEnabled?, hyperliquidTestnetEnabled?, asterEnabled?, mexcEnabled? } }',
+    "   (Exchange API/private keys can NOT be set here — use the desk for those.)",
+    "",
+    "## The two-level LLM instruction model (this is how messages get parsed right)",
+    "- Level 1 — GLOBAL LLM memory (`global.llmMemory`): operator guidance applied to EVERY channel.",
+    "  Put durable, cross-channel rules here (e.g. how to treat updates vs new calls, house conventions).",
+    "- Level 2 — per-channel `group.instructions`: format quirks specific to ONE channel.",
+    "  Both are folded into the LLM system prompt; message content is always treated as untrusted.",
+    "",
+    "## How to diagnose a bad parse/execution",
+    "1. GET /diagnostic and read `recentSignals` — each has rawText, parsed result, status.",
+    "2. Correlate with `logs` (categories: message, exec, manage, audit, system) via /diagnostic/logs.",
+    "3. Adjust `global.llmMemory` and/or the channel's `group.instructions`, then re-test.",
+    "",
+    "## Safety",
+    "- This never places, closes, or resizes orders. It reads state and edits settings only.",
+    "- Every write is recorded to the audit log. Ask the operator to disable this endpoint when done.",
+  ].join("\n");
+
+  const diagRedactToken = "***";
+  function diagAuthorized(req: FastifyRequest): "off" | "unauthorized" | "ok" {
+    if (!settingsRepo.getDiagnosticEnabled()) return "off";
+    const stored = settingsRepo.getDiagnosticToken();
+    const provided =
+      (req.query as { token?: string } | undefined)?.token ||
+      (req.headers["x-diag-token"] as string | undefined) ||
+      bearer(req.headers.authorization);
+    if (!stored || !provided) return "unauthorized";
+    const a = Buffer.from(stored);
+    const b = Buffer.from(provided);
+    if (a.length !== b.length) return "unauthorized";
+    return timingSafeEqual(a, b) ? "ok" : "unauthorized";
+  }
+  function diagGuard(req: FastifyRequest, reply: import("fastify").FastifyReply): boolean {
+    const state = diagAuthorized(req);
+    if (state === "off") {
+      reply.code(404).send({ error: "not found" });
+      return false;
+    }
+    if (state === "unauthorized") {
+      reply.code(401).send({ error: "diagnostic token required (?token=… or X-Diag-Token header)" });
+      return false;
+    }
+    return true;
+  }
+
+  async function diagnosticSnapshot() {
+    const hl = activeHyperliquid();
+    let account: Record<string, unknown> = { connected: hl.live, address: hl.publicAddress() };
+    try {
+      if (hl.publicAddress()) {
+        const [summary, positions] = await Promise.all([hl.getAccountSummary(), hl.getPositions()]);
+        account = {
+          connected: hl.live,
+          simulating: hl.simulating(),
+          network: hl.name,
+          address: hl.publicAddress(),
+          accountValue: summary?.accountValue,
+          withdrawable: summary?.withdrawable,
+          totalMarginUsed: summary?.totalMarginUsed,
+          positions,
+        };
+      }
+    } catch (err) {
+      account.error = err instanceof Error ? err.message : String(err);
+    }
+    const allTrades = tradesRepo.list(80);
+    return {
+      docs: DIAG_DOCS,
+      generatedAt: new Date().toISOString(),
+      uptimeSec: Math.round(process.uptime()),
+      health: {
+        env: config.tradingEnv,
+        activeNetwork: hl.name === "hyperliquid" ? "mainnet" : "testnet",
+        live: hl.live,
+        shadowMode: settingsRepo.getShadowMode(),
+        tradingPaused: settingsRepo.getTradingPaused(),
+        exchanges: allExchanges().map((e) => ({ name: e.name, live: e.live })),
+      },
+      settings: { ...settingsPayload(), diagnosticToken: diagRedactToken },
+      exchanges: exchangesPayload(),
+      account,
+      groups: groupsRepo.list(),
+      trades: {
+        open: allTrades.filter((t) => t.status === "open"),
+        working: allTrades.filter((t) => t.status === "working"),
+        recentClosed: allTrades.filter((t) => t.status !== "open" && t.status !== "working").slice(0, 40),
+      },
+      recentSignals: signalsRepo.list(60),
+      telegram: getListenerHealth(),
+      prices: getPrices(),
+      logCategories: logCategories(),
+      logs: recentLogs({ limit: 250 }),
+    };
+  }
+
+  app.get("/diagnostic", async (req, reply) => {
+    if (!diagGuard(req, reply)) return reply;
+    return diagnosticSnapshot();
+  });
+
+  app.get<{ Querystring: { limit?: string; category?: string; level?: string; since?: string } }>(
+    "/diagnostic/logs",
+    async (req, reply) => {
+      if (!diagGuard(req, reply)) return reply;
+      const level = req.query.level;
+      const minLevel = level === "warn" || level === "error" || level === "info" ? level : undefined;
+      return recentLogs({
+        limit: clampLimit(req.query.limit, 300, 2000),
+        category: req.query.category,
+        minLevel,
+        since: req.query.since,
+      });
+    },
+  );
+
+  app.post("/diagnostic/settings", async (req, reply) => {
+    if (!diagGuard(req, reply)) return reply;
+    const groupSettingsPatch = groupSettingsSchema.partial();
+    const schema = z.object({
+      global: z
+        .object({
+          shadowMode: z.boolean().optional(),
+          tradingPaused: z.boolean().optional(),
+          dailyLossLimitUsd: z.number().min(0).max(1e9).optional(),
+          maxOpenTrades: z.number().int().min(0).max(1000).optional(),
+          maxExposureUsd: z.number().min(0).max(1e9).optional(),
+          liveMaxOrderUsd: z.number().min(0).max(1e9).optional(),
+          splitOpposingVenues: z.boolean().optional(),
+          parseMode: z.enum(["regex", "llm"]).optional(),
+          autoRefine: z.boolean().optional(),
+          anthropicModel: z.string().max(100).optional(),
+          llmMemory: z.string().max(20000).optional(),
+        })
+        .optional(),
+      group: z
+        .object({
+          id: z.string().max(64),
+          enabled: z.boolean().optional(),
+          instructions: z.string().max(8000).optional(),
+          settings: groupSettingsPatch.optional(),
+        })
+        .optional(),
+      exchange: z
+        .object({
+          priority: z.array(z.enum(["hyperliquid", "hyperliquid-testnet", "aster", "mexc"])).max(4).optional(),
+          hyperliquidEnabled: z.boolean().optional(),
+          hyperliquidTestnetEnabled: z.boolean().optional(),
+          asterEnabled: z.boolean().optional(),
+          mexcEnabled: z.boolean().optional(),
+        })
+        .optional(),
+    });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    const { global: g, group: grp, exchange: ex } = parsed.data;
+    const applied: string[] = [];
+
+    if (g) {
+      if (g.shadowMode !== undefined) { settingsRepo.setShadowMode(g.shadowMode); applied.push("shadowMode"); }
+      if (g.tradingPaused !== undefined) { settingsRepo.setTradingPaused(g.tradingPaused); applied.push("tradingPaused"); }
+      if (g.dailyLossLimitUsd !== undefined) { settingsRepo.setRiskLimit("dailyLossLimitUsd", g.dailyLossLimitUsd); applied.push("dailyLossLimitUsd"); }
+      if (g.maxOpenTrades !== undefined) { settingsRepo.setRiskLimit("maxOpenTrades", g.maxOpenTrades); applied.push("maxOpenTrades"); }
+      if (g.maxExposureUsd !== undefined) { settingsRepo.setRiskLimit("maxExposureUsd", g.maxExposureUsd); applied.push("maxExposureUsd"); }
+      if (g.liveMaxOrderUsd !== undefined) { settingsRepo.setRiskLimit("liveMaxOrderUsd", g.liveMaxOrderUsd); applied.push("liveMaxOrderUsd"); }
+      if (g.splitOpposingVenues !== undefined) { settingsRepo.setSplitOpposingVenues(g.splitOpposingVenues); applied.push("splitOpposingVenues"); }
+      if (g.parseMode !== undefined) { settingsRepo.setParseMode(g.parseMode); applied.push("parseMode"); }
+      if (g.autoRefine !== undefined) { settingsRepo.setAutoRefine(g.autoRefine); applied.push("autoRefine"); }
+      if (g.anthropicModel !== undefined) { settingsRepo.setAnthropicModel(g.anthropicModel.trim()); applied.push("anthropicModel"); }
+      if (g.llmMemory !== undefined) { settingsRepo.setLlmMemory(g.llmMemory); applied.push("llmMemory"); }
+    }
+
+    if (grp) {
+      const existing = groupsRepo.get(grp.id);
+      if (!existing) return reply.code(404).send({ error: `group ${grp.id} not found` });
+      const merged = {
+        name: existing.name,
+        telegramChannel: existing.telegramChannel,
+        enabled: grp.enabled ?? existing.enabled,
+        settings: {
+          ...existing.settings,
+          ...(grp.settings ?? {}),
+          ...(grp.instructions !== undefined ? { instructions: grp.instructions } : {}),
+        },
+      };
+      const updated = groupsRepo.update(grp.id, merged);
+      if (updated) broadcast({ type: "group", group: updated });
+      applied.push(`group:${existing.name}`);
+    }
+
+    if (ex) {
+      if (ex.priority) { settingsRepo.setExchangePriority(ex.priority); applied.push("priority"); }
+      if (ex.hyperliquidEnabled !== undefined) { settingsRepo.setExchangeFlag("hl.mainnet.enabled", ex.hyperliquidEnabled); hyperliquid.reloadCredentials(); applied.push("hl.mainnet.enabled"); }
+      if (ex.hyperliquidTestnetEnabled !== undefined) { settingsRepo.setExchangeFlag("hl.testnet.enabled", ex.hyperliquidTestnetEnabled); hyperliquidTestnet.reloadCredentials(); applied.push("hl.testnet.enabled"); }
+      if (ex.asterEnabled !== undefined) { settingsRepo.setExchangeFlag("aster.enabled", ex.asterEnabled); applied.push("aster.enabled"); }
+      if (ex.mexcEnabled !== undefined) { settingsRepo.setExchangeFlag("mexc.enabled", ex.mexcEnabled); applied.push("mexc.enabled"); }
+    }
+
+    event("audit", `diagnostic API changed settings: ${applied.join(", ") || "(nothing)"}`, { applied, ip: req.ip }, { level: "warn" });
+    broadcast({ type: "settings", settings: settingsRepo.getGlobalSettings() });
+    return { ok: true, applied, settings: { ...settingsPayload(), diagnosticToken: diagRedactToken } };
   });
 
   /* -------------------------------- ws -------------------------------- */

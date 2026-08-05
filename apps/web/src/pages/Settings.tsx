@@ -133,6 +133,14 @@ export function Settings() {
   // Message-processing priority (LLM vs regex rules).
   const [parseMode, setParseMode] = useState<"regex" | "llm">("regex");
   const [parseBusy, setParseBusy] = useState(false);
+  // Global LLM memory (level-1 guidance applied to every channel).
+  const [llmMemory, setLlmMemory] = useState("");
+  const [memDirty, setMemDirty] = useState(false);
+  const [memBusy, setMemBusy] = useState(false);
+  // Diagnostic API (toggle + secret token).
+  const [diag, setDiag] = useState<{ enabled: boolean; token: string }>({ enabled: false, token: "" });
+  const [diagBusy, setDiagBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   // HL (mainnet + testnet as separate venues)
   const [hlMain, setHlMain] = useState<HlEdit>({ key: "", clear: false, addr: "", enabled: false });
@@ -174,8 +182,68 @@ export function Settings() {
   };
   useEffect(load, []);
   useEffect(() => {
-    api.getSettings().then((s) => setParseMode(s.parseMode)).catch(() => {});
+    api
+      .getSettings()
+      .then((s) => {
+        setParseMode(s.parseMode);
+        setLlmMemory(s.llmMemory ?? "");
+        setMemDirty(false);
+        setDiag({ enabled: s.diagnosticEnabled, token: s.diagnosticToken });
+      })
+      .catch(() => {});
   }, []);
+
+  const saveMemory = async () => {
+    setMemBusy(true);
+    try {
+      const s = await api.updateSettings({ llmMemory });
+      setLlmMemory(s.llmMemory ?? "");
+      setMemDirty(false);
+      setMsg("Global LLM memory saved.");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setMemBusy(false);
+    }
+  };
+
+  const toggleDiag = async (enabled: boolean) => {
+    setDiagBusy(true);
+    setMsg(null);
+    try {
+      const s = await api.updateSettings({ diagnosticEnabled: enabled });
+      setDiag({ enabled: s.diagnosticEnabled, token: s.diagnosticToken });
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDiagBusy(false);
+    }
+  };
+
+  const regenDiagToken = async () => {
+    setDiagBusy(true);
+    try {
+      const s = await api.updateSettings({ diagnosticRegenerateToken: true });
+      setDiag({ enabled: s.diagnosticEnabled, token: s.diagnosticToken });
+      setMsg("New diagnostic token generated — the old URL no longer works.");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDiagBusy(false);
+    }
+  };
+
+  const diagUrl = diag.token ? `${window.location.origin}/diagnostic?token=${diag.token}` : "";
+  const copyDiagUrl = () => {
+    if (!diagUrl) return;
+    void navigator.clipboard?.writeText(diagUrl).then(
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      },
+      () => {},
+    );
+  };
 
   const saveParseMode = async (mode: "regex" | "llm") => {
     setParseBusy(true);
@@ -338,6 +406,94 @@ export function Settings() {
             ? "LLM parses first (needs an Anthropic key); a strong rules hit is the guardrail if the LLM declines."
             : "Fast deterministic rules first; the LLM fills in when rules are unsure or a channel has custom instructions."}
         </div>
+      </div>
+
+      <h2 style={{ marginBottom: 4 }}>Global LLM memory</h2>
+      <div className="panel">
+        <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
+          Level-1 guidance the LLM applies to <strong>every</strong> channel when parsing signals and
+          trade-management updates. Put durable, cross-channel rules here (house conventions, how to treat
+          updates vs. new calls, symbols to watch). Per-channel quirks go in each group's own instructions
+          (level 2). Message content is always treated as untrusted — these notes only guide interpretation.
+        </div>
+        <textarea
+          value={llmMemory}
+          onChange={(e) => {
+            setLlmMemory(e.target.value);
+            setMemDirty(true);
+          }}
+          rows={7}
+          maxLength={20000}
+          placeholder={"e.g.\n- Treat 'trade update', 'SL at breakeven', 'now up X%' as management, never a new entry.\n- Channel group X trades gold/silver on HIP-3; normalize XAU→GOLD.\n- Ignore purely educational posts and disclaimers."}
+          style={{ width: "100%", fontFamily: "inherit", fontSize: 13, resize: "vertical" }}
+        />
+        <div className="btn-row" style={{ marginTop: 8 }}>
+          <button className="primary" onClick={saveMemory} disabled={memBusy || !memDirty}>
+            {memBusy ? "Saving…" : "Save memory"}
+          </button>
+          <span className="muted" style={{ alignSelf: "center", fontSize: 11 }}>
+            {llmMemory.length}/20000{memDirty ? " · unsaved" : ""}
+          </span>
+        </div>
+      </div>
+
+      <h2 style={{ marginBottom: 4 }}>Diagnostic API</h2>
+      <div className="panel" style={{ borderColor: diag.enabled ? "#f59e0b" : "var(--border)" }}>
+        <div className="row-between">
+          <h3 style={{ margin: 0 }}>
+            Remote diagnosis endpoint
+            <span className="tag" style={{ marginLeft: 8, background: diag.enabled ? "#f59e0b" : "#334155", color: "#fff" }}>
+              {diag.enabled ? "ENABLED" : "off"}
+            </span>
+          </h3>
+          <label className="muted" style={{ fontSize: 13, display: "inline-flex", gap: 6 }}>
+            <input
+              type="checkbox"
+              checked={diag.enabled}
+              disabled={diagBusy}
+              onChange={(e) => void toggleDiag(e.target.checked)}
+            />
+            enable
+          </label>
+        </div>
+        <div className="muted" style={{ fontSize: 12, margin: "8px 0 10px" }}>
+          Exposes a read snapshot of the whole system (trades, signals, positions, logs, settings — secrets
+          always redacted) and lets non-secret settings be changed remotely, protected by the secret token
+          below. Off by default. <strong>Enable only while you need a diagnosis, then switch it off.</strong>
+        </div>
+        {diag.enabled && diagUrl ? (
+          <>
+            <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>Diagnostic URL (contains the secret token):</div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <code
+                style={{
+                  flex: 1,
+                  minWidth: 240,
+                  overflowX: "auto",
+                  whiteSpace: "nowrap",
+                  padding: "8px 10px",
+                  border: "1px solid var(--border)",
+                  borderRadius: 8,
+                  fontSize: 12,
+                }}
+              >
+                {diagUrl}
+              </code>
+              <button className="ghost" onClick={copyDiagUrl}>{copied ? "Copied ✓" : "Copy"}</button>
+              <button className="ghost" onClick={regenDiagToken} disabled={diagBusy} title="Invalidate the old URL and mint a new token">
+                Regenerate
+              </button>
+            </div>
+            <div className="muted" style={{ fontSize: 11, marginTop: 8, color: "#f59e0b" }}>
+              ⚠️ Anyone with this URL can read system state and change non-secret settings. Share it only with
+              your diagnosis session, and regenerate or disable when done.
+            </div>
+          </>
+        ) : (
+          <div className="muted" style={{ fontSize: 11 }}>
+            Turn it on to generate a URL you can hand to a diagnosis session.
+          </div>
+        )}
       </div>
 
       <h2 style={{ marginBottom: 4 }}>Exchanges</h2>
