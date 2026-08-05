@@ -289,9 +289,10 @@ export const api = {
   bookPartial: (id: string, fraction: number) =>
     req<Trade>(`/api/trades/${id}/partial`, { method: "POST", body: JSON.stringify({ fraction }) }),
   syncTrade: (id: string) =>
-    req<{ ok: boolean; changed?: boolean; live?: boolean; trade?: Trade }>(`/api/trades/${id}/sync`, {
-      method: "POST",
-    }),
+    req<{ ok: boolean; changed?: boolean; live?: boolean; venue?: string; trade?: Trade }>(
+      `/api/trades/${id}/sync`,
+      { method: "POST" },
+    ),
 
   stats: () => req<DashboardStats>("/api/stats"),
 

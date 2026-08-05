@@ -1437,52 +1437,73 @@ export async function setTradeTakeProfits(
  */
 export async function syncTrade(
   tradeId: string,
-): Promise<{ ok: boolean; error?: string; changed?: boolean; live?: boolean; trade?: Trade }> {
+): Promise<{ ok: boolean; error?: string; changed?: boolean; live?: boolean; venue?: string; trade?: Trade }> {
   const trade = tradesRepo.get(tradeId);
   if (!trade) return { ok: false, error: "not found" };
   if (trade.shadow || trade.simulated) return { ok: false, error: "not a real trade" };
-  const ex = connectorFor(trade);
-  if (!ex.live) {
-    return { ok: false, error: `${ex.name} can't read positions right now (no key / paper mode)` };
-  }
-  let positions;
-  try {
-    positions = await ex.getPositions();
-  } catch (e) {
-    return { ok: false, error: `positions read failed: ${e instanceof Error ? e.message : e}` };
-  }
-  const pos = positions.find(
-    (p) =>
-      p.symbol.toUpperCase() === trade.symbol.toUpperCase() &&
-      p.size !== 0 &&
-      (trade.side === "long" ? p.size > 0 : p.size < 0),
-  );
-  const live = !!pos;
 
-  if (live && trade.status !== "open" && trade.status !== "working") {
-    // Desk had it closed/failed but it's still running on the exchange — reopen
-    // and adopt the exchange's real size/entry so management resumes correctly.
-    const updated = tradesRepo.update(tradeId, {
-      status: "open",
-      exitPrice: undefined,
-      realizedPnl: undefined,
-      closedAt: undefined,
-      error: undefined,
-      size: Math.abs(pos!.size),
-      entryPrice: pos!.entryPrice > 0 ? pos!.entryPrice : trade.entryPrice,
-    });
-    if (updated) broadcast({ type: "trade", trade: updated });
-    event(
-      "exec",
-      `Sync: ${trade.symbol} ${trade.side} still live on ${ex.name} — reopened in desk`,
-      { size: pos!.size, entry: pos!.entryPrice },
-      { level: "warn", groupId: trade.groupId, signalId: trade.signalId },
+  // Search the trade's OWN venue first, then every other venue that can read
+  // positions. This also re-homes a MIS-TAGGED trade: e.g. a signal recorded as
+  // "hyperliquid-testnet" whose order actually filled on mainnet — Sync finds it
+  // on mainnet and moves the trade there so it reconciles against reality.
+  const own = connectorFor(trade);
+  const candidates = [own, ...known().filter((e) => e !== own)];
+  let found: { ex: ExchangeConnector; pos: { size: number; entryPrice: number } } | undefined;
+  let readAny = false;
+  for (const ex of candidates) {
+    let positions;
+    try {
+      positions = await ex.getPositions(); // read-only where a key/address exists
+    } catch {
+      continue;
+    }
+    readAny = true;
+    const pos = positions.find(
+      (p) =>
+        p.symbol.toUpperCase() === trade.symbol.toUpperCase() &&
+        p.size !== 0 &&
+        (trade.side === "long" ? p.size > 0 : p.size < 0),
     );
-    pushStats();
-    return { ok: true, changed: true, live: true, trade: updated ?? trade };
+    if (pos) {
+      found = { ex, pos };
+      break;
+    }
   }
 
-  return { ok: true, changed: false, live, trade };
+  if (!found) {
+    if (!readAny) {
+      return { ok: false, error: "no venue could read positions (no key / no read address configured)" };
+    }
+    return { ok: true, changed: false, live: false, trade };
+  }
+
+  const { ex, pos } = found;
+  const venueChanged = ex.name !== trade.exchange;
+  const wasClosed = trade.status !== "open" && trade.status !== "working";
+  if (!venueChanged && !wasClosed) {
+    return { ok: true, changed: false, live: true, venue: ex.name, trade };
+  }
+  // Reopen and adopt the exchange's real venue/size/entry so management resumes.
+  const updated = tradesRepo.update(tradeId, {
+    status: "open",
+    exchange: ex.name,
+    exitPrice: undefined,
+    realizedPnl: undefined,
+    closedAt: undefined,
+    error: undefined,
+    size: Math.abs(pos.size),
+    entryPrice: pos.entryPrice > 0 ? pos.entryPrice : trade.entryPrice,
+  });
+  if (updated) broadcast({ type: "trade", trade: updated });
+  event(
+    "exec",
+    `Sync: ${trade.symbol} ${trade.side} live on ${ex.name}` +
+      `${venueChanged ? ` (was tagged ${trade.exchange})` : ""} — reopened in desk`,
+    { size: pos.size, entry: pos.entryPrice, venue: ex.name, wasVenue: trade.exchange },
+    { level: "warn", groupId: trade.groupId, signalId: trade.signalId },
+  );
+  pushStats();
+  return { ok: true, changed: true, live: true, venue: ex.name, trade: updated ?? trade };
 }
 
 /**

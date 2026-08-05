@@ -57,9 +57,10 @@ export function Trades({
     setBusyId(t.id);
     try {
       const res = await api.syncTrade(t.id);
-      if (res.changed) alert(`${t.symbol}: still live on the exchange — reopened in the desk.`);
-      else if (res.live) alert(`${t.symbol}: position confirmed live on the exchange.`);
-      else alert(`${t.symbol}: no matching position on the exchange — leaving as is.`);
+      const on = res.venue ? ` on ${res.venue}` : "";
+      if (res.changed) alert(`${t.symbol}: still live${on} — reopened${res.venue && res.venue !== t.exchange ? ` and re-homed to ${res.venue}` : ""} in the desk.`);
+      else if (res.live) alert(`${t.symbol}: position confirmed live${on}.`);
+      else alert(`${t.symbol}: no matching position on any connected venue — leaving as is.`);
       onChange();
     } catch (e) {
       alert(`Sync failed: ${e instanceof Error ? e.message : e}`);

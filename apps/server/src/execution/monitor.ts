@@ -4,7 +4,7 @@ import { log } from "../logger.js";
 import { groups as groupsRepo, trades as tradesRepo } from "../db/repositories.js";
 import type { FillLite } from "../hyperliquid/connector.js";
 import { known as knownExchanges, byName } from "../exchanges/registry.js";
-import type { ExchangeConnector } from "../exchanges/types.js";
+import type { ExchangeConnector, Position } from "../exchanges/types.js";
 import { closing, promoteWorkingToOpen, cancelWorkingTrade } from "./engine.js";
 import { alertClosed } from "../alerts/notifier.js";
 import { broadcast } from "../ws/hub.js";
@@ -170,6 +170,29 @@ async function reconcileByPosition(
     missingCounts.set(fresh.id, misses);
     if (misses < CLOSE_CONFIRMATIONS) continue;
 
+    // Before closing, self-heal a MIS-TAGGED trade: the position may be live on a
+    // DIFFERENT venue than the one recorded (e.g. a trade tagged testnet whose
+    // order really filled on mainnet). If found elsewhere, re-home it — never
+    // close a trade that is demonstrably still open somewhere.
+    const elsewhere = await findPositionElsewhere(ex, fresh);
+    if (elsewhere) {
+      missingCounts.delete(fresh.id);
+      const moved = tradesRepo.update(fresh.id, {
+        exchange: elsewhere.ex.name,
+        size: Math.abs(elsewhere.pos.size),
+        entryPrice: elsewhere.pos.entryPrice > 0 ? elsewhere.pos.entryPrice : fresh.entryPrice,
+      });
+      if (moved) {
+        broadcast({ type: "trade", trade: moved });
+        changed = true;
+        log.warn(
+          `reconcile: ${fresh.symbol} ${fresh.side} not on ${ex.name} but LIVE on ${elsewhere.ex.name} — ` +
+            `re-homed the trade, not closed (was mis-tagged).`,
+        );
+      }
+      continue;
+    }
+
     closing.add(fresh.id);
     missingCounts.delete(fresh.id);
     try {
@@ -222,6 +245,34 @@ async function reconcileByPosition(
     }
   }
   return changed;
+}
+
+/**
+ * Look for a trade's position on every OTHER known venue — used to self-heal a
+ * mis-tagged trade before the monitor would wrongly close it. Returns the venue
+ * and position if a matching (symbol + side) open position is found elsewhere.
+ */
+async function findPositionElsewhere(
+  current: ExchangeConnector,
+  t: Trade,
+): Promise<{ ex: ExchangeConnector; pos: Position } | undefined> {
+  for (const ex of knownExchanges()) {
+    if (ex === current) continue;
+    let positions: Position[];
+    try {
+      positions = await ex.getPositions();
+    } catch {
+      continue;
+    }
+    const pos = positions.find(
+      (p) =>
+        p.symbol.toUpperCase() === t.symbol.toUpperCase() &&
+        p.size !== 0 &&
+        (t.side === "long" ? p.size > 0 : p.size < 0),
+    );
+    if (pos) return { ex, pos };
+  }
+  return undefined;
 }
 
 /**
