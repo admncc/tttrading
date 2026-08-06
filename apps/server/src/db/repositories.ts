@@ -625,6 +625,34 @@ export const settings = {
   setDiagnosticToken(t: string): void {
     kvSet("diagnosticToken", t);
   },
+  /**
+   * Telegram notification categories (all default ON; the env ALERT_ON_* provides
+   * the default when the toggle was never set, the desk toggle overrides at runtime):
+   *  - system:   errors / operational alerts
+   *  - trades:   opened / filled / closed / SL-hit / blocked
+   *  - classify: every incoming message's classification (can be chatty)
+   */
+  getAlertOnSystem(envDefault: boolean): boolean {
+    const v = kvGet("alertOnSystem");
+    return v === undefined ? envDefault : v === "true";
+  },
+  setAlertOnSystem(on: boolean): void {
+    kvSet("alertOnSystem", on ? "true" : "false");
+  },
+  getAlertOnTrades(envDefault: boolean): boolean {
+    const v = kvGet("alertOnTrades");
+    return v === undefined ? envDefault : v === "true";
+  },
+  setAlertOnTrades(on: boolean): void {
+    kvSet("alertOnTrades", on ? "true" : "false");
+  },
+  getAlertOnClassify(): boolean {
+    const v = kvGet("alertOnClassify");
+    return v === undefined ? true : v === "true";
+  },
+  setAlertOnClassify(on: boolean): void {
+    kvSet("alertOnClassify", on ? "true" : "false");
+  },
   /** Anthropic API key set via the desk (empty string => not set). */
   getAnthropicKey(): string {
     return kvGet("anthropicKey") ?? "";

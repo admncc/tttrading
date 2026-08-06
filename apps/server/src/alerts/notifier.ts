@@ -1,9 +1,21 @@
 import type { Trade } from "@tttrading/shared";
 import { config, alertsEnabled } from "../config.js";
+import { settings as settingsRepo } from "../db/repositories.js";
 import { log } from "../logger.js";
 
 function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/**
+ * Post how an incoming message was classified (signal / managed / trade-update /
+ * market-commentary / ignored / blocked) to the alert chat. Gated by the
+ * alertOnClassify toggle. `label` may contain HTML (emoji + <b>); `detail` is
+ * escaped plain text.
+ */
+export function alertClassification(groupName: string, label: string, detail?: string): void {
+  if (!settingsRepo.getAlertOnClassify()) return;
+  void sendAlert(`${label}${detail ? ` · ${esc(detail)}` : ""}\n<i>${esc(groupName)}</i>`);
 }
 
 /** Send a raw alert to the configured Telegram bot chat. Fire-and-forget. */
@@ -32,7 +44,7 @@ const pnl = (n?: number) => (n === undefined ? "?" : `${n >= 0 ? "+" : ""}${n.to
 const venueTag = (t: Trade) => (t.exchange && t.exchange !== "hyperliquid" ? ` · ${t.exchange}` : "");
 
 export function alertOpened(trade: Trade, filledFromLimit = false): void {
-  if (!config.alerts.onFill) return;
+  if (!settingsRepo.getAlertOnTrades(config.alerts.onFill)) return;
   const head = filledFromLimit ? "🎯 <b>Limit filled</b>" : "🟢 <b>Opened</b>";
   void sendAlert(
     `${head} ${trade.side.toUpperCase()} ${esc(trade.symbol)} ` +
@@ -57,7 +69,7 @@ function closeReason(t: Trade): string {
 }
 
 export function alertClosed(trade: Trade): void {
-  if (!config.alerts.onFill) return;
+  if (!settingsRepo.getAlertOnTrades(config.alerts.onFill)) return;
   void sendAlert(
     `${closeReason(trade)} ${trade.side.toUpperCase()} ${esc(trade.symbol)} — ${pnl(trade.realizedPnl)}\n` +
       `<i>${esc(trade.groupName)}${venueTag(trade)}</i>`,
@@ -65,11 +77,11 @@ export function alertClosed(trade: Trade): void {
 }
 
 export function alertError(context: string, message: string): void {
-  if (!config.alerts.onError) return;
+  if (!settingsRepo.getAlertOnSystem(config.alerts.onError)) return;
   void sendAlert(`⚠️ <b>Error</b> ${esc(context)}\n${esc(message)}`);
 }
 
 export function alertBlocked(groupName: string, summary: string, score: number): void {
-  if (!config.alerts.onBlocked) return;
+  if (!settingsRepo.getAlertOnTrades(config.alerts.onBlocked)) return;
   void sendAlert(`🚫 <b>Blocked red</b> ${esc(summary)} (${score}/100)\n<i>${esc(groupName)}</i>`);
 }

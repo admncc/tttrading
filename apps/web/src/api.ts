@@ -166,6 +166,10 @@ export const api = {
       llmMemory: string;
       diagnosticEnabled: boolean;
       diagnosticToken: string;
+      alertsConfigured: boolean;
+      alertOnSystem: boolean;
+      alertOnTrades: boolean;
+      alertOnClassify: boolean;
     }>("/api/settings"),
   updateSettings: (patch: {
     shadowMode?: boolean;
@@ -180,6 +184,9 @@ export const api = {
     llmMemory?: string;
     diagnosticEnabled?: boolean;
     diagnosticRegenerateToken?: boolean;
+    alertOnSystem?: boolean;
+    alertOnTrades?: boolean;
+    alertOnClassify?: boolean;
   }) =>
     req<{
       shadowMode: boolean;

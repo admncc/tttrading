@@ -14,7 +14,7 @@ import { readManagementLevels, llmReady, type SignalImage } from "../signals/llm
 import { classifyManagementAll, isTradeUpdate, isMarketCommentary, type ManagementAction } from "../signals/management.js";
 import { expandTakeProfits } from "../signals/takeprofit.js";
 import { assessRisk } from "../risk/score.js";
-import { alertBlocked, alertClosed, alertError, alertOpened, sendAlert } from "../alerts/notifier.js";
+import { alertBlocked, alertClassification, alertClosed, alertError, alertOpened, sendAlert } from "../alerts/notifier.js";
 import { broadcast } from "../ws/hub.js";
 import { pushStats } from "../stats/service.js";
 
@@ -126,7 +126,10 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
     }
     if (actions.length > 0) {
       const managed = await applyManagement(group, rawText, actions);
-      if (managed) return managed;
+      if (managed) {
+        alertClassification(group.name, "🔧 <b>Managed</b>", managed.error || actions.map((a) => a.kind).join(", "));
+        return managed;
+      }
     }
     const signal = signalsRepo.create({
       groupId: group.id,
@@ -140,6 +143,15 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
       parsed ? `Parsed but below threshold — ignored` : `No signal detected — ignored`,
       { confidence: parsed?.confidence, source: parsed?.source, threshold: ACT_THRESHOLD },
       { groupId: group.id, signalId: signal.id },
+    );
+    alertClassification(
+      group.name,
+      marketCommentary
+        ? "🗒️ <b>Market commentary</b> — no action"
+        : tradeUpdate
+          ? "↩️ <b>Trade update</b> — no new entry"
+          : "⚪ <b>Ignored</b> — no signal",
+      parsed ? `${parsed.side} ${parsed.symbol}` : undefined,
     );
     broadcast({ type: "signal", signal });
     return signal;
@@ -156,6 +168,13 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
       takeProfits: parsed.takeProfits,
     },
     { groupId: group.id },
+  );
+  alertClassification(
+    group.name,
+    `📊 <b>Signal</b> ${parsed.side.toUpperCase()}`,
+    `${parsed.symbol} · entry ${parsed.entry ?? "CMP"}` +
+      `${parsed.stopLoss !== undefined ? ` · SL ${parsed.stopLoss}` : ""}` +
+      `${parsed.takeProfits?.length ? ` · TP ${parsed.takeProfits.join("/")}` : ""}`,
   );
 
   if (!group.enabled) {

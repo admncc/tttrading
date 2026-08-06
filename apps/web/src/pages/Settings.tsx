@@ -144,6 +144,9 @@ export function Settings() {
   // Auto-refine scheduler (global): auto-optimize channel parsing instructions.
   const [autoRefine, setAutoRefine] = useState(false);
   const [refineBusy, setRefineBusy] = useState(false);
+  // Telegram notification categories.
+  const [notif, setNotif] = useState({ configured: false, system: true, trades: true, classify: true });
+  const [notifBusy, setNotifBusy] = useState(false);
   // Deterministic parsing rules (regex), loaded lazily when expanded.
   const [rules, setRules] = useState<Awaited<ReturnType<typeof api.rules>> | null>(null);
   const [rulesOpen, setRulesOpen] = useState(false);
@@ -195,6 +198,7 @@ export function Settings() {
         setLlmMemory(s.llmMemory ?? "");
         setMemDirty(false);
         setAutoRefine(s.autoRefine);
+        setNotif({ configured: s.alertsConfigured, system: s.alertOnSystem, trades: s.alertOnTrades, classify: s.alertOnClassify });
         setDiag({ enabled: s.diagnosticEnabled, token: s.diagnosticToken });
       })
       .catch(() => {});
@@ -217,6 +221,23 @@ export function Settings() {
   const toggleRules = () => {
     setRulesOpen((o) => !o);
     if (!rules) api.rules().then(setRules).catch((e) => setErr(e instanceof Error ? e.message : String(e)));
+  };
+
+  const setNotifPref = async (patch: Partial<{ system: boolean; trades: boolean; classify: boolean }>) => {
+    setNotifBusy(true);
+    const next = { ...notif, ...patch };
+    setNotif(next);
+    try {
+      await api.updateSettings({
+        alertOnSystem: next.system,
+        alertOnTrades: next.trades,
+        alertOnClassify: next.classify,
+      });
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setNotifBusy(false);
+    }
   };
 
   const toggleAutoRefine = async (on: boolean) => {
@@ -432,6 +453,42 @@ export function Settings() {
             ? "LLM parses first (needs an Anthropic key); a strong rules hit is the guardrail if the LLM declines."
             : "Fast deterministic rules first; the LLM fills in when rules are unsure or a channel has custom instructions."}
         </div>
+      </div>
+
+      <h2 style={{ marginBottom: 4 }}>Telegram Notifications</h2>
+      <div className="panel">
+        <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>
+          What the bot posts to your alert Telegram chat. All on by default.{" "}
+          {notif.configured ? (
+            <span className="tag pos">bot configured</span>
+          ) : (
+            <span className="tag" style={{ color: "#f59e0b" }}>
+              no alert bot — set ALERT_TG_BOT_TOKEN + ALERT_TG_CHAT_ID
+            </span>
+          )}
+        </div>
+        {[
+          { key: "system" as const, label: "System notifications", hint: "Errors & operational alerts." },
+          { key: "trades" as const, label: "Trades / Signals / SL-hit", hint: "Opened, filled, closed, stopped-out, blocked." },
+          { key: "classify" as const, label: "Incoming messages", hint: "Every incoming message + how it was classified (can be chatty)." },
+        ].map((row) => (
+          <label
+            key={row.key}
+            style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "8px 0", borderTop: "1px solid var(--border)" }}
+          >
+            <input
+              type="checkbox"
+              checked={notif[row.key]}
+              disabled={notifBusy}
+              onChange={(e) => void setNotifPref({ [row.key]: e.target.checked })}
+              style={{ marginTop: 3 }}
+            />
+            <span>
+              <div style={{ fontSize: 14 }}>{row.label}</div>
+              <div className="muted" style={{ fontSize: 11 }}>{row.hint}</div>
+            </span>
+          </label>
+        ))}
       </div>
 
       <div className="panel">

@@ -268,6 +268,11 @@ export async function buildServer() {
     parseMode: settingsRepo.getParseMode(),
     // Global LLM memory (level-1 guidance applied to every channel).
     llmMemory: settingsRepo.getLlmMemory(),
+    // Telegram notification categories (all default on; env ALERT_ON_* is the default).
+    alertsConfigured: !!(config.alerts.telegramBotToken && config.alerts.telegramChatId),
+    alertOnSystem: settingsRepo.getAlertOnSystem(config.alerts.onError),
+    alertOnTrades: settingsRepo.getAlertOnTrades(config.alerts.onFill),
+    alertOnClassify: settingsRepo.getAlertOnClassify(),
     // Diagnostic API state. The token is only returned here (this route is behind
     // the desk password), so the operator can copy the diagnostic URL.
     diagnosticEnabled: settingsRepo.getDiagnosticEnabled(),
@@ -292,10 +297,16 @@ export async function buildServer() {
       llmMemory: z.string().max(20000).optional(),
       diagnosticEnabled: z.boolean().optional(),
       diagnosticRegenerateToken: z.boolean().optional(),
+      alertOnSystem: z.boolean().optional(),
+      alertOnTrades: z.boolean().optional(),
+      alertOnClassify: z.boolean().optional(),
     });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     const d = parsed.data;
+    if (d.alertOnSystem !== undefined) settingsRepo.setAlertOnSystem(d.alertOnSystem);
+    if (d.alertOnTrades !== undefined) settingsRepo.setAlertOnTrades(d.alertOnTrades);
+    if (d.alertOnClassify !== undefined) settingsRepo.setAlertOnClassify(d.alertOnClassify);
     if (d.autoRefine !== undefined) settingsRepo.setAutoRefine(d.autoRefine);
     if (d.shadowMode !== undefined) {
       settingsRepo.setShadowMode(d.shadowMode);
