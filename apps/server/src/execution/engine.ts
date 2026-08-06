@@ -11,7 +11,7 @@ import { activeHyperliquid, byName, known, resolveAllForSymbol, resolveForSymbol
 import type { ExchangeConnector } from "../exchanges/types.js";
 import { parseSignal } from "../signals/parser.js";
 import { readManagementLevels, type SignalImage } from "../signals/llm.js";
-import { classifyManagementAll, isTradeUpdate, type ManagementAction } from "../signals/management.js";
+import { classifyManagementAll, isTradeUpdate, isMarketCommentary, type ManagementAction } from "../signals/management.js";
 import { expandTakeProfits } from "../signals/takeprofit.js";
 import { assessRisk } from "../risk/score.js";
 import { alertBlocked, alertClosed, alertError, alertOpened, sendAlert } from "../alerts/notifier.js";
@@ -68,11 +68,23 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
 
   if (!parsed || parsed.confidence < ACT_THRESHOLD || tradeUpdate) {
     // Not a fresh entry — maybe it's one or more trade-management updates (SL
-    // move, partial, close, cancel-limit) for existing positions/orders.
-    let actions = classifyManagementAll(rawText);
+    // move, partial, close, cancel-limit) for existing positions/orders. BUT a
+    // market-commentary / pointer post ("read the previous big market update … the
+    // short setup was invalidated") is educational recap, not a command — its
+    // "invalidated"/"stopped" wording must NOT fire a close on a live position.
+    const marketCommentary = isMarketCommentary(rawText);
+    let actions = marketCommentary ? [] : classifyManagementAll(rawText);
+    if (marketCommentary) {
+      event(
+        "message",
+        `Market commentary / pointer post from ${group.name} — no management action taken`,
+        { preview },
+        { groupId: group.id },
+      );
+    }
     // With an attached chart (vision on), let the LLM read levels the text omits
     // — e.g. a stop moved to a price only drawn on the chart — and merge them in.
-    if (primary) {
+    if (primary && !marketCommentary) {
       try {
         const mv = await readManagementLevels(rawText, group.settings.instructions, imgs);
         if (mv?.isManagement && mv.confidence >= 0.5) {

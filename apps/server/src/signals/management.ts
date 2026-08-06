@@ -87,6 +87,19 @@ export function isTradeUpdate(text: string): boolean {
   return RE_TRADE_UPDATE.test(text);
 }
 
+// A MARKET-COMMENTARY / pointer post — a "market/macro/big market update", or one
+// that sends the reader to ANOTHER post ("read/see/look at the previous/pinned",
+// "answered in …") — is educational commentary, NOT a command on a live trade.
+// It often RECAPS that a past setup "was invalidated"; that narrative must not
+// fire a close. NB: a real management post is titled "Trade Update"/"#SYM Update"
+// (not "market update"), so those are deliberately NOT matched here.
+const RE_MARKET_UPDATE =
+  /\b(?:market|macro|weekly|monthly|big)\s+(?:market\s+)?update\b|\b(?:read|see|look\s+at|check)\s+(?:the\s+)?(?:previous|last|pinned|big)\b|\banswered\s+in\b/i;
+/** True when the message is market commentary / a pointer to another post. */
+export function isMarketCommentary(text: string): boolean {
+  return RE_MARKET_UPDATE.test(text);
+}
+
 /**
  * Classify ALL trade-management intents in a message. A single message may carry
  * several ("remove the limit entry and move SL to 62000" → cancel_limit +
@@ -171,4 +184,5 @@ export const MANAGEMENT_RULES: { name: string; kind: string; pattern: string; de
   { name: "trim", kind: "partial_close", pattern: RE_TRIM.source, description: "'trim' → partial close (group default %)." },
   { name: "tp_hit", kind: "tp_hit", pattern: RE_TPHIT.source, description: "TP/target reached/hit/done, 'N RR', 'done and dusted'." },
   { name: "trade_update_guard", kind: "guard", pattern: RE_TRADE_UPDATE.source, description: "Progress-update markers ('trade update', 'stop now at breakeven', 'now up X%', …) → NEVER open a new entry; handled as management/info." },
+  { name: "market_commentary_guard", kind: "guard", pattern: RE_MARKET_UPDATE.source, description: "Market/macro/'big market update' or pointer posts ('read the previous …', 'answered in …') → NO management action, even if they recap a past 'invalidated' setup." },
 ];
