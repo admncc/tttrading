@@ -115,6 +115,7 @@ export function RiskInsights() {
   const [fChannel, setFChannel] = useState(ALL);
   const [fCoin, setFCoin] = useState(ALL);
   const [fTier, setFTier] = useState(ALL);
+  const [rangeDays, setRangeDays] = useState(0); // 0 = all time
 
   const load = () => {
     api
@@ -127,15 +128,20 @@ export function RiskInsights() {
   const channelOpts = useMemo(() => [...new Set((trades ?? []).map((t) => t.channel))].sort(), [trades]);
   const coinOpts = useMemo(() => [...new Set((trades ?? []).map((t) => t.symbol))].sort(), [trades]);
 
+  const cutoff = useMemo(
+    () => (rangeDays === 0 ? "" : new Date(Date.now() - rangeDays * 86_400_000).toISOString()),
+    [rangeDays],
+  );
   const filtered = useMemo(
     () =>
       (trades ?? []).filter(
         (t) =>
           (fChannel === ALL || t.channel === fChannel) &&
           (fCoin === ALL || t.symbol === fCoin) &&
-          (fTier === ALL || t.tier === fTier),
+          (fTier === ALL || t.tier === fTier) &&
+          (rangeDays === 0 || (t.at && t.at >= cutoff)),
       ),
-    [trades, fChannel, fCoin, fTier],
+    [trades, fChannel, fCoin, fTier, rangeDays, cutoff],
   );
 
   const byChannel = useMemo(() => agg(filtered, (t) => t.channel), [filtered]);
@@ -148,7 +154,7 @@ export function RiskInsights() {
     [byChannel, filtered],
   );
 
-  const filtersActive = fChannel !== ALL || fCoin !== ALL || fTier !== ALL;
+  const filtersActive = fChannel !== ALL || fCoin !== ALL || fTier !== ALL || rangeDays !== 0;
   const sel = (label: string, value: string, set: (v: string) => void, opts: { v: string; l: string }[]) => (
     <label style={{ display: "inline-flex", flexDirection: "column", gap: 3 }}>
       <span className="muted" style={{ fontSize: 11 }}>{label}</span>
@@ -187,13 +193,28 @@ export function RiskInsights() {
               { v: "mid", l: "mid" },
               { v: "small", l: "small" },
             ])}
+            <label style={{ display: "inline-flex", flexDirection: "column", gap: 3 }}>
+              <span className="muted" style={{ fontSize: 11 }}>Range</span>
+              <div className="btn-row" style={{ gap: 4 }}>
+                {[{ d: 7, l: "7d" }, { d: 30, l: "30d" }, { d: 90, l: "90d" }, { d: 0, l: "All" }].map((o) => (
+                  <button
+                    key={o.d}
+                    className={rangeDays === o.d ? "primary" : "ghost"}
+                    onClick={() => setRangeDays(o.d)}
+                    style={{ padding: "6px 10px" }}
+                  >
+                    {o.l}
+                  </button>
+                ))}
+              </div>
+            </label>
             <div style={{ flex: 1 }} />
             <span className="muted" style={{ fontSize: 12, alignSelf: "center" }}>
               {filtered.length} trade{filtered.length === 1 ? "" : "s"} ·{" "}
               <span style={{ color: netColor(eq[eq.length - 1] ?? 0) }}>{usd(eq[eq.length - 1] ?? 0)} USDC net</span>
             </span>
             {filtersActive && (
-              <button className="ghost" onClick={() => { setFChannel(ALL); setFCoin(ALL); setFTier(ALL); }}>Clear</button>
+              <button className="ghost" onClick={() => { setFChannel(ALL); setFCoin(ALL); setFTier(ALL); setRangeDays(0); }}>Clear</button>
             )}
           </div>
 
