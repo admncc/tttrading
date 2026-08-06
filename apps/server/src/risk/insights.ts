@@ -50,6 +50,18 @@ function summarize(list: Trade[]) {
   return { n, winRate: n ? wins / n : 0, net };
 }
 
+/** Cumulative net PnL over the trades in settle order (oldest → newest) — an
+ *  equity curve for a sparkline. */
+function equitySeries(list: Trade[]): number[] {
+  const asc = [...list].sort((a, b) => {
+    const ka = a.closedAt ?? a.openedAt ?? "";
+    const kb = b.closedAt ?? b.openedAt ?? "";
+    return ka < kb ? -1 : ka > kb ? 1 : 0;
+  });
+  let cum = 0;
+  return asc.map((t) => (cum += t.realizedPnl ?? 0));
+}
+
 /**
  * Performance breakdowns for the Risk Insights page: by channel, by coin, by
  * market-cap tier, and by third-of-month — globally and drilled down per channel.
@@ -64,6 +76,7 @@ export function riskInsights() {
       return {
         name,
         ...summarize(cl),
+        equity: equitySeries(cl),
         bySymbol: bucket(cl, (t) => t.symbol.toUpperCase(), capTier),
         byTier: bucket(cl, (t) => capTier(t.symbol)),
         byPeriod: bucket(cl, (t) => periodOf(t.openedAt)),
@@ -74,6 +87,7 @@ export function riskInsights() {
   return {
     generatedAt: new Date().toISOString(),
     totalClosed: closed.length,
+    equity: equitySeries(closed),
     byChannel: bucket(closed, (t) => t.groupName),
     bySymbol: bucket(closed, (t) => t.symbol.toUpperCase(), capTier),
     byTier: bucket(closed, (t) => capTier(t.symbol)),

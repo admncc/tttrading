@@ -24,6 +24,7 @@ export interface ChannelInsight {
   n: number;
   winRate: number;
   net: number;
+  equity: number[];
   bySymbol: Bucket[];
   byTier: Bucket[];
   byPeriod: Bucket[];
@@ -230,6 +231,7 @@ export const api = {
     req<{
       generatedAt: string;
       totalClosed: number;
+      equity: number[];
       byChannel: Bucket[];
       bySymbol: Bucket[];
       byTier: Bucket[];
