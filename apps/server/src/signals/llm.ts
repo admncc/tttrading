@@ -285,12 +285,28 @@ export async function readManagementLevels(
   text: string,
   instructions?: string,
   images?: SignalImage[],
+  regexHint?: string[],
 ): Promise<ManagementVision | null> {
   if (!llmReady()) return null;
   const system = withInstructions(MANAGE_SYSTEM, instructions);
   const content: (Anthropic.TextBlockParam | Anthropic.ImageBlockParam)[] = [
     { type: "text", text: `Management message (untrusted):\n"""\n${text}\n"""` },
   ];
+  // Confront the model with the rule-based parser's opinion so it deliberately
+  // confirms or REJECTS it. The LLM decides — a market recap, status list, or
+  // off-topic post ("taking some time off") must get is_management=false even
+  // when a keyword tripped the rules.
+  if (regexHint?.length) {
+    content.push({
+      type: "text",
+      text:
+        `A separate rule-based parser flagged this as a possible: ${regexHint.join(", ")}. ` +
+        `Independently judge whether it is TRULY an actionable management action on an ` +
+        `already-open position. If it is a market/recap/education post, a status list of ` +
+        `several trades, a past-tense mention, or otherwise not a concrete instruction, ` +
+        `set is_management=false.`,
+    });
+  }
   const imgs = (images ?? []).filter(Boolean);
   if (imgs.length) {
     content.push({ type: "text", text: `${imgs.length} attached chart/PDF(s) (untrusted) — read any moved SL / TP levels shown across them.` });

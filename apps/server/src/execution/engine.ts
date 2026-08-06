@@ -10,7 +10,7 @@ import {
 import { activeHyperliquid, byName, known, resolveAllForSymbol, resolveForSymbol } from "../exchanges/registry.js";
 import type { ExchangeConnector } from "../exchanges/types.js";
 import { parseSignal } from "../signals/parser.js";
-import { readManagementLevels, type SignalImage } from "../signals/llm.js";
+import { readManagementLevels, llmReady, type SignalImage } from "../signals/llm.js";
 import { classifyManagementAll, isTradeUpdate, isMarketCommentary, type ManagementAction } from "../signals/management.js";
 import { expandTakeProfits } from "../signals/takeprofit.js";
 import { assessRisk } from "../risk/score.js";
@@ -82,11 +82,27 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
         { groupId: group.id },
       );
     }
-    // With an attached chart (vision on), let the LLM read levels the text omits
-    // — e.g. a stop moved to a price only drawn on the chart — and merge them in.
-    if (primary && !marketCommentary) {
+    // LLM-priority arbitration. In "llm" parse mode the rule-based classifier is a
+    // cross-check and the LLM decides: consult it whenever a chart is present OR
+    // the rules want to act, confronting it with the rules' verdict. On a CONFIDENT
+    // "not management" it VETOes the rules (a market recap, status list, or
+    // off-topic post that merely tripped a keyword). On agreement it also merges
+    // chart-only levels. Fail-safe: an LLM error/uncertain result keeps the rules'
+    // actions, so a timeout never silently drops a real management action.
+    const llmMode = settingsRepo.getParseMode() === "llm";
+    const consultLlm = !marketCommentary && llmReady() && (primary !== undefined || (llmMode && actions.length > 0));
+    if (consultLlm) {
       try {
-        const mv = await readManagementLevels(rawText, group.settings.instructions, imgs);
+        const mv = await readManagementLevels(rawText, group.settings.instructions, imgs, actions.map((a) => a.kind));
+        if (llmMode && actions.length > 0 && mv && mv.isManagement === false && mv.confidence >= 0.6) {
+          event(
+            "message",
+            `LLM (priority) rejected rule-based management [${actions.map((a) => a.kind).join(", ")}] as non-actionable — no action taken`,
+            { regex: actions.map((a) => a.kind), llmConfidence: mv.confidence },
+            { level: "warn", groupId: group.id },
+          );
+          actions = [];
+        }
         if (mv?.isManagement && mv.confidence >= 0.5) {
           const kinds = new Set(actions.map((a) => a.kind));
           const extra: ManagementAction[] = [];
