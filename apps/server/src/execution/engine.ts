@@ -596,6 +596,24 @@ async function applyManagement(
       } else if (action.kind === "sl_breakeven") {
         await moveStop(t, t.entryPrice, true);
       } else if (action.kind === "sl_move" && action.newStop !== undefined) {
+        let newStop = action.newStop;
+        // If the SAME message also said "to breakeven", never let an explicit
+        // price on the LOSING side of OUR entry undercut it. The provider's stated
+        // price is often THEIR entry, which differs from our market fill — clamp to
+        // our own entry so "breakeven" is a true breakeven (or better) for us.
+        const beIntent = actions.some((a) => a.kind === "sl_breakeven");
+        if (beIntent) {
+          const clamped = t.side === "long" ? Math.max(newStop, t.entryPrice) : Math.min(newStop, t.entryPrice);
+          if (clamped !== newStop) {
+            event(
+              "manage",
+              `SL move for ${t.symbol} clamped to breakeven ${t.entryPrice} (stated ${newStop} was worse than our entry)`,
+              { stated: newStop, entry: t.entryPrice, side: t.side },
+              { groupId: group.id },
+            );
+            newStop = clamped;
+          }
+        }
         // Accept a stop only on the PROTECTIVE side of the market (long below,
         // short above) — else reject, so "SL to 999999" can't force a stop-out.
         let price = t.entryPrice;
@@ -609,13 +627,13 @@ async function applyManagement(
         // ~50% of the current price. This rejects a garbage number scraped from
         // prose (e.g. "3R locked in" → newStop 3 while price is 64000), which
         // would otherwise pass the side check for a long and strip protection.
-        const plausible = action.newStop >= price * 0.5 && action.newStop <= price * 1.5;
-        const rightSide = t.side === "long" ? action.newStop < price : action.newStop > price;
-        if (plausible && rightSide) await moveStop(t, action.newStop, false);
+        const plausible = newStop >= price * 0.5 && newStop <= price * 1.5;
+        const rightSide = t.side === "long" ? newStop < price : newStop > price;
+        if (plausible && rightSide) await moveStop(t, newStop, beIntent && newStop === t.entryPrice);
         else {
           const why = !plausible ? "implausible distance" : "wrong side";
-          event("manage", `Rejected SL move for ${t.symbol}: ${action.newStop} (${why} vs ${price})`, { newStop: action.newStop, price, side: t.side }, { level: "warn", groupId: group.id });
-          results.push(`SL ${action.newStop} rejected (${why}) for ${t.symbol}`);
+          event("manage", `Rejected SL move for ${t.symbol}: ${newStop} (${why} vs ${price})`, { newStop, price, side: t.side }, { level: "warn", groupId: group.id });
+          results.push(`SL ${newStop} rejected (${why}) for ${t.symbol}`);
           continue;
         }
       } else if (action.kind === "partial_close") {
