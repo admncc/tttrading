@@ -185,7 +185,7 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
   }
 
   // Traffic-light risk assessment from the channel's history + this signal.
-  const risk = assessRisk(group.settings, parsed, tradesRepo.forGroup(group.id));
+  const risk = assessRisk(parsed, tradesRepo.forGroup(group.id), tradesRepo.closed());
   event(
     "message",
     `Risk ${risk.level.toUpperCase()} (${risk.score}/100)`,

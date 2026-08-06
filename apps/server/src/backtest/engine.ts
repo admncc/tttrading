@@ -115,7 +115,7 @@ export async function backtestGroup(
   let reparsed = 0;
   for (const s of sigs) {
     const parsed = parseWithRegex(s.rawText);
-    const risk = parsed ? assessRisk(group.settings, parsed, history) : undefined;
+    const risk = parsed ? assessRisk(parsed, history) : undefined;
     signalsRepo.update(s.id, { parsed: parsed ?? undefined, risk });
     reparsed++;
     if (risk) riskCounts[risk.level as RiskLevel]++;

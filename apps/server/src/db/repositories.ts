@@ -333,6 +333,14 @@ export const trades = {
       .all(groupId) as TradeRow[];
     return rows.map(toTrade);
   },
+  /** Closed (settled) real trades across ALL channels — the pool for the
+   *  per-symbol and per-cap-tier risk track records. Newest first. */
+  closed(limit = 1000): Trade[] {
+    const rows = db
+      .prepare("SELECT * FROM trades WHERE status = 'closed' ORDER BY opened_at DESC LIMIT ?")
+      .all(limit) as TradeRow[];
+    return rows.map(toTrade);
+  },
   /** All trades created from one signal (e.g. the legs of a scale-in), oldest first. */
   forSignal(signalId: string): Trade[] {
     const rows = db

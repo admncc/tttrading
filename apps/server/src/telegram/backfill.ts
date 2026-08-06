@@ -49,7 +49,7 @@ export async function backfillGroup(groupId: string, days = 30, maxMessages = 80
       if (receivedAt && signalsRepo.existsSimilar(groupId, receivedAt, text)) continue;
 
       const parsed = await parseSignal(text);
-      const risk = parsed ? assessRisk(group.settings, parsed, history) : undefined;
+      const risk = parsed ? assessRisk(parsed, history) : undefined;
       const signal = signalsRepo.create({
         groupId,
         groupName: group.name,
