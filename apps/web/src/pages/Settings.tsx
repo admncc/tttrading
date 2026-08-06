@@ -483,8 +483,8 @@ export function Settings() {
               onChange={(e) => void setNotifPref({ [row.key]: e.target.checked })}
               style={{ marginTop: 3 }}
             />
-            <span>
-              <div style={{ fontSize: 14 }}>{row.label}</div>
+            <span style={{ flex: 1 }}>
+              <div style={{ fontSize: 14, color: "var(--text)" }}>{row.label}</div>
               <div className="muted" style={{ fontSize: 11 }}>{row.hint}</div>
             </span>
           </label>

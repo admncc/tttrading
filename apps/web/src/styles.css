@@ -357,6 +357,15 @@ textarea {
   width: 100%;
   transition: border-color 0.12s ease, box-shadow 0.12s ease;
 }
+/* Checkboxes/radios are toggles, not text fields — don't stretch them to 100%
+   width (which otherwise pushes their label across the row). */
+input[type="checkbox"],
+input[type="radio"] {
+  width: auto;
+  padding: 0;
+  flex: 0 0 auto;
+  accent-color: var(--accent, #6366f1);
+}
 input:hover,
 select:hover,
 textarea:hover {
