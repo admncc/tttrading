@@ -52,7 +52,10 @@ function record(trades: Trade[]): { n: number; winRate: number; net: number } {
  * @param channelHistory  trades from the signal's own channel
  * @param pool            closed trades across ALL channels (for symbol + tier records)
  */
-const monthPeriod = (day: number): "early" | "mid" | "late" => (day <= 10 ? "early" : day <= 20 ? "mid" : "late");
+/** Week of the month (1–4; days 29–31 fold into week 4). */
+export function monthWeek(day: number): number {
+  return Math.min(4, Math.ceil(day / 7));
+}
 
 export function assessRisk(
   parsed: ParsedSignal,
@@ -128,20 +131,21 @@ export function assessRisk(
     reasons.push(`${tier}-cap`);
   }
 
-  // ---- 5. time-of-month effect (WEAK, sample-gated to avoid overfitting) ----
+  // ---- 5. week-of-month effect (WEAK, sample-gated to avoid overfitting) ----
   // Some providers run hotter/colder in a part of the month. Compare the channel's
-  // win rate in the CURRENT third of the month to its own overall win rate; only
+  // win rate in the CURRENT week of the month to its own overall win rate; only
   // nudge when there's real data, capped at ±8 so this noisy signal can't dominate.
+  // The gates keep it neutral early; it enriches naturally as months accumulate.
   if (n >= 8) {
-    const nowPeriod = monthPeriod(at.getUTCDate());
-    const inPeriod = chClosed.filter((t) => t.openedAt && monthPeriod(new Date(t.openedAt).getUTCDate()) === nowPeriod);
-    const pr = record(inPeriod);
+    const nowWeek = monthWeek(at.getUTCDate());
+    const inWeek = chClosed.filter((t) => t.openedAt && monthWeek(new Date(t.openedAt).getUTCDate()) === nowWeek);
+    const pr = record(inWeek);
     if (pr.n >= 5) {
       const adj = Math.round(clamp((pr.winRate - ch.winRate) * 40, -8, 8));
       if (adj !== 0) {
         score += adj;
         reasons.push(
-          `${nowPeriod}-month: ${(pr.winRate * 100).toFixed(0)}% over ${pr.n} vs ${(ch.winRate * 100).toFixed(0)}% avg`,
+          `Week ${nowWeek} of month: ${(pr.winRate * 100).toFixed(0)}% over ${pr.n} vs ${(ch.winRate * 100).toFixed(0)}% avg`,
         );
       }
     }

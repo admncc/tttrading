@@ -64,6 +64,7 @@ import {
   trades as tradesRepo,
 } from "../db/repositories.js";
 import { dashboard, analytics } from "../stats/service.js";
+import { riskInsights } from "../risk/insights.js";
 import { sanitizedBackup } from "../db/index.js";
 import { sendReport } from "../alerts/report.js";
 import { hyperliquid, hyperliquidTestnet } from "../hyperliquid/connector.js";
@@ -825,6 +826,9 @@ export async function buildServer() {
 
   /* ------------------------- stats & positions ------------------------ */
   app.get("/api/stats", async () => dashboard());
+
+  // Risk Insights: channel × coin × cap-tier × month-third performance breakdowns.
+  app.get("/api/risk-insights", async () => riskInsights());
 
   // Send a daily/weekly performance report to the alert chat now (test/manual).
   app.post<{ Querystring: { period?: string } }>("/api/report/send", async (req, reply) => {

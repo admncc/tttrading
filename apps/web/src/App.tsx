@@ -3,6 +3,7 @@ import type { DashboardStats, Group, LogEntry, Signal, Trade } from "@tttrading/
 import { api, openWs, getToken, setToken, setAuthErrorHandler } from "./api.js";
 import { Overview } from "./pages/Overview.js";
 import { Analytics } from "./pages/Analytics.js";
+import { RiskInsights } from "./pages/RiskInsights.js";
 import { Trades } from "./pages/Trades.js";
 import { Signals } from "./pages/Signals.js";
 import { Messages } from "./pages/Messages.js";
@@ -11,11 +12,12 @@ import { Logs } from "./pages/Logs.js";
 import { Settings } from "./pages/Settings.js";
 import { Login } from "./pages/Login.js";
 
-type Tab = "overview" | "analytics" | "trades" | "signals" | "messages" | "groups" | "settings" | "logs";
+type Tab = "overview" | "analytics" | "risk" | "trades" | "signals" | "messages" | "groups" | "settings" | "logs";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "overview", label: "Overview" },
   { id: "analytics", label: "Analytics" },
+  { id: "risk", label: "Risk Insights" },
   { id: "signals", label: "Signals" },
   { id: "messages", label: "Messages" },
   { id: "trades", label: "Trades" },
@@ -307,6 +309,7 @@ export function App() {
         )}
         {tab === "overview" && <Overview stats={stats} signals={signals} trades={trades} prices={prices} />}
         {tab === "analytics" && <Analytics />}
+        {tab === "risk" && <RiskInsights />}
         {tab === "signals" && (
           <Signals signals={signals} groups={groups} onChange={refresh} />
         )}

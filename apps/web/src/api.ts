@@ -10,6 +10,25 @@ import type {
   WsEvent,
 } from "@tttrading/shared";
 
+export interface Bucket {
+  key: string;
+  tier?: "large" | "mid" | "small";
+  n: number;
+  wins: number;
+  winRate: number;
+  net: number;
+  avg: number;
+}
+export interface ChannelInsight {
+  name: string;
+  n: number;
+  winRate: number;
+  net: number;
+  bySymbol: Bucket[];
+  byTier: Bucket[];
+  byPeriod: Bucket[];
+}
+
 export interface AccountInfo {
   connected: boolean;
   simulating: boolean;
@@ -207,6 +226,16 @@ export const api = {
       ready: boolean;
       checks: { key: string; ok: boolean; label: string }[];
     }>("/api/readiness"),
+  riskInsights: () =>
+    req<{
+      generatedAt: string;
+      totalClosed: number;
+      byChannel: Bucket[];
+      bySymbol: Bucket[];
+      byTier: Bucket[];
+      byPeriod: Bucket[];
+      channels: (ChannelInsight)[];
+    }>("/api/risk-insights"),
   rules: () =>
     req<{
       note: string;
