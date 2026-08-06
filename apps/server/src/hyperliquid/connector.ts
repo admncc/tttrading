@@ -49,6 +49,10 @@ export class HyperliquidConnector implements ExchangeConnector {
   private exchangeKey?: string;
   private assets = new Map<string, AssetInfo>();
   private assetsLoadedAt = 0;
+  /** Whether the last loadAssets fully enumerated the HIP-3 builder dexs. When
+   *  false the asset map is missing builder perps (e.g. GOLD), so the cache is
+   *  kept only briefly and getAsset force-reloads on a miss. */
+  private builderLoaded = false;
   /** HIP-3 builder dex names we host a routed symbol on (for position reads). */
   private builderDexNames: string[] = [];
 
@@ -142,7 +146,11 @@ export class HyperliquidConnector implements ExchangeConnector {
 
   /** Load perpetual metadata (asset index + size decimals). Cached for 5 min. */
   async loadAssets(force = false): Promise<Map<string, AssetInfo>> {
-    if (!force && this.assets.size > 0 && Date.now() - this.assetsLoadedAt < 300_000) {
+    // Serve the cache for 5 min when the builder dexs loaded fully; only ~20s when
+    // the last builder enumeration failed, so a transient outage (which would drop
+    // GOLD & other builder perps) recovers fast instead of persisting for minutes.
+    const ttl = this.builderLoaded ? 300_000 : 20_000;
+    if (!force && this.assets.size > 0 && Date.now() - this.assetsLoadedAt < ttl) {
       return this.assets;
     }
     const meta = (await this.info.meta()) as unknown as {
@@ -205,8 +213,10 @@ export class HyperliquidConnector implements ExchangeConnector {
       // so a position on a dex that later stops being "most-liquid" is still read
       // (getPositions) and priced (getAllMids), never orphaned/unclosable.
       this.builderDexNames = [...allDexNames];
+      this.builderLoaded = true;
     } catch (err) {
-      log.warn("HL builder-dex meta load failed:", err instanceof Error ? err.message : err);
+      this.builderLoaded = false;
+      log.warn("HL builder-dex meta load failed (builder perps unavailable this cycle):", err instanceof Error ? err.message : err);
     }
 
     this.assets = next;
@@ -216,7 +226,16 @@ export class HyperliquidConnector implements ExchangeConnector {
 
   async getAsset(symbol: string): Promise<AssetInfo | undefined> {
     await this.loadAssets();
-    return this.assets.get(symbol.toUpperCase());
+    const key = symbol.toUpperCase();
+    let asset = this.assets.get(key);
+    // A miss while the builder dexs failed to load last cycle is likely a stale
+    // gap (e.g. GOLD), not a genuine de-listing — force one fresh load before
+    // giving up, so a transient outage doesn't wrongly report "not listed".
+    if (!asset && !this.builderLoaded) {
+      await this.loadAssets(true);
+      asset = this.assets.get(key);
+    }
+    return asset;
   }
 
   /** Set of resting order ids (as strings) for the configured account. */
