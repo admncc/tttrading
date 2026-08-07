@@ -997,6 +997,9 @@ export async function buildServer() {
     "- GET  /diagnostic/logs?limit=&category=&level=&since=&source=  → detailed logs (with meta).",
     "                                source=ring (default, in-memory since boot) or source=db (persisted history).",
     "- GET  /diagnostic/rules      → the deterministic entry + management regex rules (what fires, and why).",
+    "- GET  /diagnostic/signals?group=&limit=  → full message history for one channel (rawText + parsed + status),",
+    "                                oldest→newest; omit group for the most recent across all channels. Read-only —",
+    "                                use it to review a channel's real conventions (incl. non-actionable market updates).",
     "- POST /diagnostic/settings   → tune MESSAGE PROCESSING only. Body shape:",
     '     { "global": { parseMode?("regex"|"llm"), autoRefine?, anthropicModel?, llmMemory? },',
     '       "group":  { id, enabled?, instructions? } }',
@@ -1124,6 +1127,34 @@ export async function buildServer() {
     if (!diagGuard(req, reply)) return reply;
     return rulesPayload();
   });
+
+  // Full message history for ONE channel (or the most recent across all), so the
+  // channel's real conventions — including all its non-actionable market updates —
+  // can be reviewed when writing/refining its per-channel instructions. Read-only.
+  app.get<{ Querystring: { group?: string; limit?: string } }>(
+    "/diagnostic/signals",
+    async (req, reply) => {
+      if (!diagGuard(req, reply)) return reply;
+      const gid = req.query.group?.trim();
+      const grp = gid ? groupsRepo.get(gid) : undefined;
+      if (gid && !grp) return reply.code(404).send({ error: `group ${gid} not found` });
+      const limit = clampLimit(req.query.limit, 500, 5000);
+      // forGroup returns the WHOLE history (oldest first); slice to the limit.
+      const rows = grp ? signalsRepo.forGroup(grp.id).slice(-limit) : signalsRepo.list(limit);
+      return {
+        group: grp ? { id: grp.id, name: grp.name, channel: grp.telegramChannel } : null,
+        count: rows.length,
+        signals: rows.map((s) => ({
+          id: s.id,
+          groupName: s.groupName,
+          receivedAt: s.receivedAt,
+          status: s.status,
+          rawText: s.rawText,
+          parsed: s.parsed ?? null,
+        })),
+      };
+    },
+  );
 
   app.post("/diagnostic/settings", async (req, reply) => {
     if (!diagGuard(req, reply)) return reply;
