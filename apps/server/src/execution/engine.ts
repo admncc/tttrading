@@ -1043,16 +1043,29 @@ async function placeEntry(
   // across the entry); any TP still on the wrong side is dropped. A stop still on
   // the wrong side after snapping is a real error → reject rather than enter.
   {
-    let ref = parsed.entry;
-    if (ref === undefined) {
-      try {
-        ref = await ex.getMidPrice(parsed.symbol);
-      } catch {
-        /* no price feed — can't normalize or side-check; let the order path handle it */
+    // Resolve the live mid up front: we use it to magnitude-correct the ENTRY
+    // itself, not just SL/TP. A limit entry mis-scaled like 3612 on a ~0.38 coin
+    // would otherwise keep its own (wrong) magnitude as the reference, rest far
+    // from market, and be dropped by the "would chase" guard — so a scale-in leg
+    // silently never gets placed. Snap the entry against the mid first, then use
+    // the corrected entry as the reference for the SL/TP magnitude + side checks.
+    let mid: number | undefined;
+    try {
+      mid = await ex.getMidPrice(parsed.symbol);
+    } catch {
+      /* no price feed — can't normalize or side-check; let the order path handle it */
+    }
+    const fixes: string[] = [];
+    if (parsed.entry !== undefined && mid && mid > 0) {
+      const e = snapMagnitude(parsed.entry, mid);
+      if (e !== parsed.entry) {
+        fixes.push(`entry ${parsed.entry}→${e}`);
+        parsed = { ...parsed, entry: e };
       }
     }
+    // Reference for SL/TP: the (corrected) entry when present, else the live mid.
+    const ref = parsed.entry ?? mid;
     if (ref && ref > 0) {
-      const fixes: string[] = [];
       const sl = parsed.stopLoss !== undefined ? snapMagnitude(parsed.stopLoss, ref) : undefined;
       if (sl !== undefined && sl !== parsed.stopLoss) fixes.push(`SL ${parsed.stopLoss}→${sl}`);
 

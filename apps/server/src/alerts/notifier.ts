@@ -18,24 +18,52 @@ export function alertClassification(groupName: string, label: string, detail?: s
   void sendAlert(`${label}${detail ? ` · ${esc(detail)}` : ""}\n<i>${esc(groupName)}</i>`);
 }
 
-/** Send a raw alert to the configured Telegram bot chat. Fire-and-forget. */
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Send a raw alert to the configured Telegram bot chat. Fire-and-forget, but
+ * RESILIENT to transient failures: a momentary network blip (fetch throws) or a
+ * 429/5xx from Telegram is retried with backoff, so a notification isn't silently
+ * lost — e.g. a trade opening while Telegram is briefly reconnecting. A 4xx other
+ * than 429 is a permanent (bad-request) error and is not retried.
+ */
 export async function sendAlert(text: string): Promise<void> {
   if (!alertsEnabled) return;
   const url = `https://api.telegram.org/bot${config.alerts.telegramBotToken}/sendMessage`;
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: config.alerts.telegramChatId,
-        text,
-        parse_mode: "HTML",
-        disable_web_page_preview: true,
-      }),
-    });
-    if (!res.ok) log.warn(`alert failed: ${res.status} ${await res.text()}`);
-  } catch (err) {
-    log.warn("alert send error:", err instanceof Error ? err.message : err);
+  const backoffMs = [500, 1500, 4000]; // 4 attempts total
+  for (let attempt = 0; attempt <= backoffMs.length; attempt++) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: config.alerts.telegramChatId,
+          text,
+          parse_mode: "HTML",
+          disable_web_page_preview: true,
+        }),
+      });
+      if (res.ok) return;
+      const body = await res.text();
+      // 429 (rate limit) and 5xx are transient → retry; other 4xx are permanent.
+      const transient = res.status === 429 || res.status >= 500;
+      if (!transient || attempt === backoffMs.length) {
+        log.warn(`alert failed: ${res.status} ${body}`);
+        return;
+      }
+      log.warn(`alert send transient ${res.status} — retry ${attempt + 1}/${backoffMs.length}`);
+    } catch (err) {
+      // Network-level failure (DNS/connect/"fetch failed") — retry unless exhausted.
+      if (attempt === backoffMs.length) {
+        log.warn("alert send error (gave up):", err instanceof Error ? err.message : err);
+        return;
+      }
+      log.warn(
+        `alert send error (retry ${attempt + 1}/${backoffMs.length}):`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+    await sleep(backoffMs[attempt]!);
   }
 }
 
