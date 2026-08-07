@@ -993,6 +993,7 @@ export async function buildServer() {
     "##            can leak into access logs / Referer on this plain-HTTP endpoint)",
     "- GET  /diagnostic            → this doc + a full system snapshot (health, settings, exchanges,",
     "                                account, positions, groups, open/recent trades, recent signals,",
+    "                                messagesByGroup (full per-channel message history, capped 500/group),",
     "                                telegram health, prices, recent logs).",
     "- GET  /diagnostic/logs?limit=&category=&level=&since=&source=  → detailed logs (with meta).",
     "                                source=ring (default, in-memory since boot) or source=db (persisted history).",
@@ -1092,6 +1093,29 @@ export async function buildServer() {
         recentClosed: allTrades.filter((t) => t.status !== "open" && t.status !== "working").slice(0, 40),
       },
       recentSignals: signalsRepo.list(60),
+      // Full per-channel message history (newest first, capped per group) right in
+      // the main snapshot — so a channel's real conventions, incl. all its
+      // non-actionable market updates, can be reviewed from the normal /diagnostic
+      // link without a second call. Deeper/older pulls: GET /diagnostic/signals.
+      messagesByGroup: groupsRepo.list().map((g) => {
+        const history = signalsRepo.forGroup(g.id);
+        return {
+          groupId: g.id,
+          name: g.name,
+          channel: g.telegramChannel,
+          total: history.length,
+          messages: history
+            .slice(-500)
+            .reverse()
+            .map((s) => ({
+              id: s.id,
+              receivedAt: s.receivedAt,
+              status: s.status,
+              rawText: s.rawText,
+              parsed: s.parsed ?? null,
+            })),
+        };
+      }),
       telegram: getListenerHealth(),
       prices: getPrices(),
       logCategories: logCategories(),
