@@ -7,6 +7,14 @@ import { RiskDot } from "../components/Risk.js";
 type StatusChip = TradeStatus | "shadow";
 const STATUS_CHIPS: StatusChip[] = ["open", "working", "closed", "failed", "canceled", "shadow"];
 
+/** PROFIT / LOSS / BE for a CLOSED trade (null when not settled with a PnL). */
+function closedOutcome(t: Trade): "profit" | "loss" | "be" | null {
+  if (t.status !== "closed" || t.realizedPnl === undefined) return null;
+  if (t.realizedPnl > 0.0001) return "profit";
+  if (t.realizedPnl < -0.0001) return "loss";
+  return "be";
+}
+
 /** Net PnL already realized from partial exits (gross banked minus banked fees). */
 function netBanked(t: Trade): number | undefined {
   if (t.bankedPnl === undefined && t.bankedFees === undefined) return undefined;
@@ -31,6 +39,7 @@ export function Trades({
 }) {
   const [statuses, setStatuses] = useState<Set<StatusChip>>(new Set(["open", "working"]));
   const [group, setGroup] = useState("all");
+  const [outcome, setOutcome] = useState<"all" | "profit" | "loss">("all");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [manageId, setManageId] = useState<string | null>(null);
   const [slInput, setSlInput] = useState("");
@@ -52,7 +61,14 @@ export function Trades({
     if (t.shadow) return statuses.has("shadow");
     return statuses.has(t.status);
   };
-  const shown = trades.filter((t) => matchStatus(t) && (group === "all" || t.groupName === group));
+  const matchOutcome = (t: Trade) => {
+    if (outcome === "all") return true;
+    if (t.realizedPnl === undefined) return false; // profit/loss only applies to settled trades
+    return outcome === "profit" ? t.realizedPnl > 0 : t.realizedPnl < 0;
+  };
+  const shown = trades.filter(
+    (t) => matchStatus(t) && matchOutcome(t) && (group === "all" || t.groupName === group),
+  );
 
   const close = async (id: string) => {
     setBusyId(id);
@@ -149,10 +165,25 @@ export function Trades({
             ))}
           </select>
         </label>
+        <div>
+          <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>Outcome (settled)</div>
+          <div className="btn-row">
+            {(["all", "profit", "loss"] as const).map((o) => (
+              <button
+                key={o}
+                className={outcome === o ? "primary" : "ghost"}
+                onClick={() => setOutcome(o)}
+                style={o !== "all" && outcome === o ? { background: o === "profit" ? "#16a34a" : "#dc2626", borderColor: "transparent", color: "#fff" } : undefined}
+              >
+                {o}
+              </button>
+            ))}
+          </div>
+        </div>
         <div style={{ flex: 1 }} />
         <span className="muted" style={{ fontSize: 12, alignSelf: "center" }}>{shown.length} shown</span>
-        {(statuses.size !== 2 || !statuses.has("open") || !statuses.has("working") || group !== "all") && (
-          <button className="ghost" onClick={() => { setStatuses(new Set(["open", "working"])); setGroup("all"); }}>Reset</button>
+        {(statuses.size !== 2 || !statuses.has("open") || !statuses.has("working") || group !== "all" || outcome !== "all") && (
+          <button className="ghost" onClick={() => { setStatuses(new Set(["open", "working"])); setGroup("all"); setOutcome("all"); }}>Reset</button>
         )}
       </div>
 
@@ -181,7 +212,15 @@ export function Trades({
             <tbody>
               {shown.map((t) => (
                 <Fragment key={t.id}>
-                <tr>
+                <tr
+                  style={
+                    closedOutcome(t) === "profit"
+                      ? { background: "rgba(34,197,94,0.09)" }
+                      : closedOutcome(t) === "loss"
+                        ? { background: "rgba(239,68,68,0.10)" }
+                        : undefined
+                  }
+                >
                   <td className="muted">{shortTime(t.openedAt)}</td>
                   <td>{t.groupName}</td>
                   <td>
@@ -271,6 +310,15 @@ export function Trades({
                   </td>
                   <td>
                     <span className={`tag ${t.status}`}>{t.status}</span>
+                    {closedOutcome(t) === "profit" && (
+                      <span className="tag" style={{ marginLeft: 6, background: "#16a34a", color: "#fff", fontWeight: 600 }}>PROFIT</span>
+                    )}
+                    {closedOutcome(t) === "loss" && (
+                      <span className="tag" style={{ marginLeft: 6, background: "#dc2626", color: "#fff", fontWeight: 600 }}>LOSS</span>
+                    )}
+                    {closedOutcome(t) === "be" && (
+                      <span className="tag" style={{ marginLeft: 6 }}>BE</span>
+                    )}
                   </td>
                   <td>
                     {!t.shadow && !t.simulated && (
