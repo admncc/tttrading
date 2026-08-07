@@ -1,10 +1,11 @@
-import { Fragment, useState } from "react";
-import type { Trade } from "@tttrading/shared";
+import { Fragment, useMemo, useState } from "react";
+import type { Trade, TradeStatus } from "@tttrading/shared";
 import { api } from "../api.js";
 import { num, pnlClass, shortTime, usd } from "../format.js";
 import { RiskDot } from "../components/Risk.js";
 
-type Filter = "all" | "working" | "open" | "closed" | "shadow";
+type StatusChip = TradeStatus | "shadow";
+const STATUS_CHIPS: StatusChip[] = ["open", "working", "closed", "failed", "canceled", "shadow"];
 
 /** Net PnL already realized from partial exits (gross banked minus banked fees). */
 function netBanked(t: Trade): number | undefined {
@@ -28,18 +29,30 @@ export function Trades({
   prices: Record<string, number>;
   onChange: () => void;
 }) {
-  const [filter, setFilter] = useState<Filter>("open");
+  const [statuses, setStatuses] = useState<Set<StatusChip>>(new Set(["open", "working"]));
+  const [group, setGroup] = useState("all");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [manageId, setManageId] = useState<string | null>(null);
   const [slInput, setSlInput] = useState("");
   const [tpInput, setTpInput] = useState("");
   const [bookInput, setBookInput] = useState("");
 
-  const shown = trades.filter((t) =>
-    filter === "shadow"
-      ? t.shadow
-      : !t.shadow && (filter === "all" ? true : t.status === filter),
-  );
+  const toggleStatus = (s: StatusChip) =>
+    setStatuses((prev) => {
+      const next = new Set(prev);
+      if (next.has(s)) next.delete(s);
+      else next.add(s);
+      return next;
+    });
+
+  const groupOpts = useMemo(() => [...new Set(trades.map((t) => t.groupName))].sort(), [trades]);
+
+  const matchStatus = (t: Trade) => {
+    if (statuses.size === 0) return !t.shadow; // no chip selected → all real trades
+    if (t.shadow) return statuses.has("shadow");
+    return statuses.has(t.status);
+  };
+  const shown = trades.filter((t) => matchStatus(t) && (group === "all" || t.groupName === group));
 
   const close = async (id: string) => {
     setBusyId(id);
@@ -114,17 +127,33 @@ export function Trades({
     <div>
       <div className="row-between">
         <h1 style={{ margin: 0 }}>Trades</h1>
-        <div className="btn-row">
-          {(["all", "working", "open", "closed", "shadow"] as const).map((f) => (
-            <button
-              key={f}
-              className={filter === f ? "primary" : "ghost"}
-              onClick={() => setFilter(f)}
-            >
-              {f}
-            </button>
-          ))}
+      </div>
+
+      <div className="panel" style={{ display: "flex", gap: 14, alignItems: "flex-end", flexWrap: "wrap" }}>
+        <div>
+          <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>Status (multi-select)</div>
+          <div className="btn-row">
+            {STATUS_CHIPS.map((s) => (
+              <button key={s} className={statuses.has(s) ? "primary" : "ghost"} onClick={() => toggleStatus(s)}>
+                {s}
+              </button>
+            ))}
+          </div>
         </div>
+        <label>
+          <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>Channel / group</div>
+          <select value={group} onChange={(e) => setGroup(e.target.value)} style={{ width: "auto", minWidth: 170 }}>
+            <option value="all">All channels</option>
+            {groupOpts.map((g) => (
+              <option key={g} value={g}>{g}</option>
+            ))}
+          </select>
+        </label>
+        <div style={{ flex: 1 }} />
+        <span className="muted" style={{ fontSize: 12, alignSelf: "center" }}>{shown.length} shown</span>
+        {(statuses.size !== 2 || !statuses.has("open") || !statuses.has("working") || group !== "all") && (
+          <button className="ghost" onClick={() => { setStatuses(new Set(["open", "working"])); setGroup("all"); }}>Reset</button>
+        )}
       </div>
 
       <div className="panel">
