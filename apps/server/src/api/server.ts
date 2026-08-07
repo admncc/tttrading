@@ -274,10 +274,13 @@ export async function buildServer() {
     alertOnSystem: settingsRepo.getAlertOnSystem(config.alerts.onError),
     alertOnTrades: settingsRepo.getAlertOnTrades(config.alerts.onFill),
     alertOnClassify: settingsRepo.getAlertOnClassify(),
-    // Diagnostic API state. The token is only returned here (this route is behind
-    // the desk password), so the operator can copy the diagnostic URL.
+    // Diagnostic API state. The token is a bearer credential for the (auth-
+    // independent) /diagnostic endpoints, so it is only handed out when the desk
+    // itself is password-protected. In open mode GET /api/settings is reachable
+    // unauthenticated, so we redact the token to keep it from leaking to anyone
+    // who can hit the read API (e.g. after DESK_PASSWORD was later cleared).
     diagnosticEnabled: settingsRepo.getDiagnosticEnabled(),
-    diagnosticToken: settingsRepo.getDiagnosticToken(),
+    diagnosticToken: authEnabled ? settingsRepo.getDiagnosticToken() : "",
   });
   app.get("/api/settings", async () => settingsPayload());
 

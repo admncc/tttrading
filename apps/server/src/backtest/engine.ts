@@ -98,7 +98,8 @@ export async function backtestGroup(
     return { groupId, groupName: "", reparsed: 0, tested: 0, skipped: 0, stats: empty, riskCounts: { green: 0, yellow: 0, red: 0 }, error: "group not found" };
   }
 
-  const history = tradesRepo.forGroup(groupId);
+  // Match the live engine: archived trades are retired from the track record.
+  const history = tradesRepo.forGroup(groupId).filter((t) => !t.archived);
   const sigs = signalsRepo.forGroup(groupId).filter((s) => s.status === "backfill");
   const riskCounts = { green: 0, yellow: 0, red: 0 };
 

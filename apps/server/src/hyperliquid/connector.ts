@@ -173,6 +173,11 @@ export class HyperliquidConnector implements ExchangeConnector {
       const dexs = await this.infoPost<({ name?: string } | null)[]>({ type: "perpDexs" });
       const best = new Map<string, { oi: number; entry: AssetInfo }>();
       const allDexNames = new Set<string>();
+      // A single builder dex blipping must NOT be treated as a full load: if any
+      // dex fails we keep builderLoaded=false so the short TTL + force-reload-on-
+      // miss path applies, instead of caching a partial map for the full 5 min
+      // and reporting that dex's perps (e.g. GOLD) as genuinely "not listed".
+      let anyDexFailed = false;
       for (let di = 0; di < dexs.length; di++) {
         const dx = dexs[di];
         if (!dx || !dx.name) continue; // index 0 = main (null)
@@ -181,6 +186,7 @@ export class HyperliquidConnector implements ExchangeConnector {
         try {
           mc = await this.infoPost({ type: "metaAndAssetCtxs", dex: dx.name });
         } catch {
+          anyDexFailed = true;
           continue;
         }
         const uni = mc[0]?.universe ?? [];
@@ -213,7 +219,10 @@ export class HyperliquidConnector implements ExchangeConnector {
       // so a position on a dex that later stops being "most-liquid" is still read
       // (getPositions) and priced (getAllMids), never orphaned/unclosable.
       this.builderDexNames = [...allDexNames];
-      this.builderLoaded = true;
+      this.builderLoaded = !anyDexFailed;
+      if (anyDexFailed) {
+        log.warn("HL builder-dex meta partially loaded — one or more dexs failed; will retry on next miss / short TTL.");
+      }
     } catch (err) {
       this.builderLoaded = false;
       log.warn("HL builder-dex meta load failed (builder perps unavailable this cycle):", err instanceof Error ? err.message : err);

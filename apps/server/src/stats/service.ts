@@ -202,6 +202,8 @@ export function analytics(opts: {
 } = {}): AnalyticsResponse {
   let list = tradesRepo.list(10000);
   if (!opts.includeShadow) list = list.filter((t) => !t.shadow);
+  // Archived trades were explicitly retired by the user from analytics.
+  list = list.filter((t) => !t.archived);
   // Window by when PnL was REALIZED (closedAt) so a trade opened before the
   // window but closed inside it is attributed correctly. Open trades (no
   // realized result yet) are always kept so current exposure still shows.

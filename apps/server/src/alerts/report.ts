@@ -31,6 +31,7 @@ export function buildReport(period: ReportPeriod): string {
     .filter(
       (t) =>
         !t.shadow &&
+        !t.archived && // archived trades are retired from reporting
         t.status === "closed" &&
         (t.closedAt ?? t.openedAt) >= from && // window by when PnL was realized
         Number.isFinite(t.realizedPnl),

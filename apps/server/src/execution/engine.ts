@@ -189,7 +189,10 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
   const risk = assessRisk(
     parsed,
     tradesRepo.forGroup(group.id).filter((t) => !t.archived),
-    tradesRepo.closed(),
+    // Match the Risk Insights page's window (closed(3000)) so the score and the
+    // page it's explained on draw the per-symbol / cap-tier record from the same
+    // pool once history grows past the default cap.
+    tradesRepo.closed(3000),
   );
   event(
     "message",
@@ -511,6 +514,23 @@ function deriveSymbol(
 }
 
 /**
+ * Every HELD coin the message actually references — by cashtag ($BTC/#BTC, any
+ * length) or by a bare ≥3-char ticker word. Used to catch multi-coin recaps:
+ * the classifier only captures the FIRST tag, so "$BTC running, $ETH closed"
+ * yields a close tagged BTC. If the text references >1 held coin we can't safely
+ * attribute a close/SL/partial to any single one, tag or no tag.
+ */
+function heldReferencedInText(held: string[], rawText: string): string[] {
+  return held.filter((c) => {
+    const clean = c.replace(/[^A-Z0-9]/g, "");
+    if (clean.length < 2) return false;
+    const tagged = new RegExp(`[$#]${clean}\\b`, "i").test(rawText);
+    const bare = clean.length >= 3 && new RegExp(`\\b${clean}\\b`, "i").test(rawText);
+    return tagged || bare;
+  });
+}
+
+/**
  * Apply one or more trade-management intents from a single message to the group's
  * matching positions/orders. Records ONE "managed" signal summarizing all of
  * them. Returns null only when the group is disabled (caller falls through).
@@ -534,13 +554,23 @@ async function applyManagement(
     const held = [...new Set([...openForGroup, ...groupWorking].map((t) => t.symbol.toUpperCase()))];
     const { sym, named } = deriveSymbol(action, held, rawText);
 
-    // A status RECAP that names several held coins ("1. BTC … SL breakeven 2. SOL
-    // active … 6. PENGU active") must never fire a position change: a single
-    // SL/close/partial can't be attributed to one of them. Skip and record why —
-    // rather than guess a symbol and act on the wrong trade.
-    if (!action.symbol && named.length > 1) {
+    // A status RECAP / multi-coin message must never fire a position change: a
+    // single SL/close/partial can't be attributed to one of several coins. This
+    // holds EVEN when the classifier tagged a symbol — it only captures the first
+    // cashtag, which may not be the coin the verb refers to ("$BTC running strong,
+    // $ETH invalidated — closed" would otherwise flatten the healthy BTC position).
+    // Guard fires for any position-affecting action whenever >1 HELD coin is
+    // referenced; the original no-tag guard still covers cancel_limit recaps.
+    const affectsPosition =
+      action.kind === "close" ||
+      action.kind === "partial_close" ||
+      action.kind === "sl_move" ||
+      action.kind === "sl_breakeven";
+    const referencedHeld = heldReferencedInText(held, rawText);
+    if ((affectsPosition && referencedHeld.length > 1) || (!action.symbol && named.length > 1)) {
+      const names = referencedHeld.length > 1 ? referencedHeld : named;
       results.push(
-        `${action.note} — message names ${named.length} open symbols (${named.join(", ")}); ambiguous recap, not acting`,
+        `${action.note} — message references ${names.length} held symbols (${names.join(", ")}); ambiguous recap, not acting`,
       );
       continue;
     }
@@ -1742,6 +1772,9 @@ export async function syncTrade(
     realizedPnl: undefined,
     closedAt: undefined,
     error: undefined,
+    // A trade that turns out to be live again must never stay filed away —
+    // otherwise it is a real position hidden from the active desk view.
+    archived: false,
     size: Math.abs(pos.size),
     entryPrice: pos.entryPrice > 0 ? pos.entryPrice : trade.entryPrice,
   });
@@ -1891,7 +1924,28 @@ export async function closeTrade(tradeId: string, exitPriceOverride?: number) {
     const fraction = n > 0 ? 1 / n : 0;
     const tpFilled = Math.min(trade.tpFilledCount ?? 0, n);
     const remainingFraction = Math.max(0, 1 - tpFilled * fraction);
-    const remainingSize = remainingFraction * trade.size;
+    // The remainder to close: a native TP fill bumps tpFilledCount WITHOUT
+    // reducing trade.size, while a manual partial reduces trade.size WITHOUT
+    // bumping tpFilledCount — so neither `trade.size` nor the 1/n reconstruction
+    // alone gives the true live remainder, and combining both (as the fraction
+    // model does) under-sizes the close and can leave a live, unprotected
+    // position behind. Trust the exchange's real position size; fall back to the
+    // fraction model only when it can't be read.
+    let remainingSize = remainingFraction * trade.size;
+    if (!trade.simulated && ex.live) {
+      try {
+        const positions = await ex.getPositions();
+        const pos = positions.find(
+          (p) =>
+            p.symbol.toUpperCase() === trade.symbol.toUpperCase() &&
+            p.size !== 0 &&
+            (trade.side === "long" ? p.size > 0 : p.size < 0),
+        );
+        remainingSize = pos ? Math.abs(pos.size) : 0; // no matching position ⇒ already flat
+      } catch {
+        /* price/position feed down — keep the fraction-model estimate */
+      }
+    }
 
     if (!trade.simulated && ex.live && remainingSize > 0) {
       // Send the reduce-only close FIRST — the resting SL/TP are only cancelled

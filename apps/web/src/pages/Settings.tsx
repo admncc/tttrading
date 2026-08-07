@@ -225,8 +225,9 @@ export function Settings() {
 
   const setNotifPref = async (patch: Partial<{ system: boolean; trades: boolean; classify: boolean }>) => {
     setNotifBusy(true);
+    const prev = notif;
     const next = { ...notif, ...patch };
-    setNotif(next);
+    setNotif(next); // optimistic
     try {
       await api.updateSettings({
         alertOnSystem: next.system,
@@ -234,6 +235,7 @@ export function Settings() {
         alertOnClassify: next.classify,
       });
     } catch (e) {
+      setNotif(prev); // save failed — roll the checkbox back so it reflects the server
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setNotifBusy(false);

@@ -67,7 +67,12 @@ export function assessRisk(
   let score = 50;
 
   // ---- 1. channel history ----
-  const chClosed = channelHistory.filter((t) => t.status === "closed");
+  // Only REAL settled trades count — shadow trades are hypothetical (blocked
+  // reds) and closed rows without a finite PnL carry no result. record() applies
+  // the same filter, so win-rate, net and profit-factor share one population.
+  const chClosed = channelHistory.filter(
+    (t) => t.status === "closed" && !t.shadow && Number.isFinite(t.realizedPnl),
+  );
   const ch = record(chClosed);
   const n = ch.n;
   if (n < MIN_SAMPLE) {
