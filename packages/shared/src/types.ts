@@ -264,6 +264,12 @@ export interface Trade {
    * signal would have done, so we can measure whether blocking it was correct.
    */
   shadow?: boolean;
+  /**
+   * User has filed this (closed) trade into the archive: it is hidden from the
+   * active Trades view and excluded from analytics/stats. Purely a UI/reporting
+   * flag — it never affects execution.
+   */
+  archived?: boolean;
   error?: string;
   openedAt: string;
   closedAt?: string;

@@ -93,7 +93,8 @@ function riskAudit(all: Trade[]): RiskAudit {
 export function dashboard(): DashboardStats {
   const all = tradesRepo.list(5000);
   // Shadow trades are hypothetical (blocked reds) — keep them out of real perf.
-  const real = all.filter((t) => !t.shadow);
+  // Archived trades were explicitly retired by the user from analytics.
+  const real = all.filter((t) => !t.shadow && !t.archived);
   const overall = computeStats(real);
 
   const byGroup: GroupPerformance[] = groups.list().map((g) => ({

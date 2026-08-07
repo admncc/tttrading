@@ -815,6 +815,25 @@ export async function buildServer() {
     return res.trade;
   });
 
+  // Archive (file away) or restore a settled trade. Archiving only hides it from
+  // the active Trades view and removes it from analytics — it never touches the
+  // position, so it is refused on anything that is still live (open/working).
+  app.post<{ Params: { id: string } }>("/api/trades/:id/archive", async (req, reply) => {
+    const parsed = z.object({ archived: z.boolean() }).safeParse(req.body ?? {});
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+    const existing = tradesRepo.get(req.params.id);
+    if (!existing) return reply.code(404).send({ error: "not found" });
+    if (parsed.data.archived && (existing.status === "open" || existing.status === "working")) {
+      return reply.code(400).send({ error: "only settled trades can be archived" });
+    }
+    const trade = tradesRepo.setArchived(req.params.id, parsed.data.archived);
+    if (!trade) return reply.code(404).send({ error: "not found" });
+    audit(req, `${parsed.data.archived ? "archived" : "restored"} ${trade.symbol} (${trade.groupName})`, { id: req.params.id, group: trade.groupName });
+    broadcast({ type: "trade", trade });
+    broadcast({ type: "stats", stats: dashboard() });
+    return trade;
+  });
+
   /* ------------------------------- logs ------------------------------- */
   app.get<{ Querystring: { limit?: string; category?: string } }>("/api/logs", async (req) => {
     return logsRepo.list(clampLimit(req.query.limit, 300, 3000), req.query.category);

@@ -100,6 +100,7 @@ interface TradeRow {
   risk: string | null;
   shadow: number | null;
   simulated: number | null;
+  archived: number | null;
   error: string | null;
   opened_at: string;
   closed_at: string | null;
@@ -138,6 +139,7 @@ function toTrade(r: TradeRow): Trade {
     risk: r.risk ? (JSON.parse(r.risk) as RiskRating) : undefined,
     shadow: r.shadow === null ? undefined : !!r.shadow,
     simulated: r.simulated === null ? undefined : !!r.simulated,
+    archived: r.archived === null ? undefined : !!r.archived,
     error: r.error ?? undefined,
     openedAt: r.opened_at,
     closedAt: r.closed_at ?? undefined,
@@ -334,10 +336,14 @@ export const trades = {
     return rows.map(toTrade);
   },
   /** Closed (settled) real trades across ALL channels — the pool for the
-   *  per-symbol and per-cap-tier risk track records. Newest first. */
+   *  per-symbol and per-cap-tier risk track records. Archived trades are the
+   *  user's way of retiring a result from analytics, so they are excluded.
+   *  Newest first. */
   closed(limit = 1000): Trade[] {
     const rows = db
-      .prepare("SELECT * FROM trades WHERE status = 'closed' ORDER BY opened_at DESC LIMIT ?")
+      .prepare(
+        "SELECT * FROM trades WHERE status = 'closed' AND COALESCE(archived,0) = 0 ORDER BY opened_at DESC LIMIT ?",
+      )
       .all(limit) as TradeRow[];
     return rows.map(toTrade);
   },
@@ -359,11 +365,11 @@ export const trades = {
       `INSERT INTO trades (id, signal_id, group_id, group_name, symbol, side, status, env, exchange,
         leverage, notional_usd, size, entry_price, signal_entry, exit_price, stop_loss, take_profits,
         realized_pnl, fees, banked_pnl, banked_fees, exchange_order_id, sl_order_id, tp_order_ids, bracket_protected,
-        tp_filled_count, sl_moved_to_breakeven, risk, shadow, simulated, error, opened_at, closed_at)
+        tp_filled_count, sl_moved_to_breakeven, risk, shadow, simulated, archived, error, opened_at, closed_at)
        VALUES (@id, @signal_id, @group_id, @group_name, @symbol, @side, @status, @env, @exchange,
         @leverage, @notional_usd, @size, @entry_price, @signal_entry, @exit_price, @stop_loss, @take_profits,
         @realized_pnl, @fees, @banked_pnl, @banked_fees, @exchange_order_id, @sl_order_id, @tp_order_ids, @bracket_protected,
-        @tp_filled_count, @sl_moved_to_breakeven, @risk, @shadow, @simulated, @error, @opened_at, @closed_at)`,
+        @tp_filled_count, @sl_moved_to_breakeven, @risk, @shadow, @simulated, @archived, @error, @opened_at, @closed_at)`,
     ).run({
       id,
       signal_id: input.signalId ?? null,
@@ -396,6 +402,7 @@ export const trades = {
       risk: input.risk ? JSON.stringify(input.risk) : null,
       shadow: input.shadow === undefined ? null : input.shadow ? 1 : 0,
       simulated: input.simulated === undefined ? null : input.simulated ? 1 : 0,
+      archived: input.archived === undefined ? null : input.archived ? 1 : 0,
       error: input.error ?? null,
       opened_at: openedAt,
       closed_at: input.closedAt ?? null,
@@ -415,7 +422,7 @@ export const trades = {
         exchange_order_id=@exchange_order_id, sl_order_id=@sl_order_id,
         tp_order_ids=@tp_order_ids, bracket_protected=@bracket_protected,
         tp_filled_count=@tp_filled_count, sl_moved_to_breakeven=@sl_moved_to_breakeven,
-        risk=@risk, shadow=@shadow, simulated=@simulated, error=@error, closed_at=@closed_at
+        risk=@risk, shadow=@shadow, simulated=@simulated, archived=@archived, error=@error, closed_at=@closed_at
        WHERE id=@id`,
     ).run({
       id,
@@ -443,9 +450,17 @@ export const trades = {
       risk: m.risk ? JSON.stringify(m.risk) : null,
       shadow: m.shadow === undefined ? null : m.shadow ? 1 : 0,
       simulated: m.simulated === undefined ? null : m.simulated ? 1 : 0,
+      archived: m.archived === undefined ? null : m.archived ? 1 : 0,
       error: m.error ?? null,
       closed_at: m.closedAt ?? null,
     });
+    return this.get(id);
+  },
+  /** File a closed trade away (or restore it). Purely a UI/reporting flag. */
+  setArchived(id: string, on: boolean): Trade | undefined {
+    const existing = this.get(id);
+    if (!existing) return undefined;
+    db.prepare("UPDATE trades SET archived=? WHERE id=?").run(on ? 1 : 0, id);
     return this.get(id);
   },
   count(): number {

@@ -185,7 +185,12 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
   }
 
   // Traffic-light risk assessment from the channel's history + this signal.
-  const risk = assessRisk(parsed, tradesRepo.forGroup(group.id), tradesRepo.closed());
+  // Archived trades were retired by the user, so keep them out of the track record.
+  const risk = assessRisk(
+    parsed,
+    tradesRepo.forGroup(group.id).filter((t) => !t.archived),
+    tradesRepo.closed(),
+  );
   event(
     "message",
     `Risk ${risk.level.toUpperCase()} (${risk.score}/100)`,

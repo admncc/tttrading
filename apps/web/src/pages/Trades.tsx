@@ -40,6 +40,7 @@ export function Trades({
   const [statuses, setStatuses] = useState<Set<StatusChip>>(new Set(["open", "working"]));
   const [group, setGroup] = useState("all");
   const [outcome, setOutcome] = useState<"all" | "profit" | "loss">("all");
+  const [view, setView] = useState<"active" | "archive">("active");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [manageId, setManageId] = useState<string | null>(null);
   const [slInput, setSlInput] = useState("");
@@ -66,9 +67,18 @@ export function Trades({
     if (t.realizedPnl === undefined) return false; // profit/loss only applies to settled trades
     return outcome === "profit" ? t.realizedPnl > 0 : t.realizedPnl < 0;
   };
-  const shown = trades.filter(
-    (t) => matchStatus(t) && matchOutcome(t) && (group === "all" || t.groupName === group),
-  );
+  const archivedCount = useMemo(() => trades.filter((t) => t.archived).length, [trades]);
+  // A settled trade can be filed away; anything still live cannot.
+  const canArchive = (t: Trade) =>
+    !t.shadow && t.status !== "open" && t.status !== "working";
+  const shown = trades.filter((t) => {
+    if (group !== "all" && t.groupName !== group) return false;
+    if (!matchOutcome(t)) return false;
+    // Archive view lists ONLY filed-away trades (status chips don't apply — they
+    // are all settled); the active view hides them and honours the status chips.
+    if (view === "archive") return !!t.archived;
+    return !t.archived && matchStatus(t);
+  });
 
   const close = async (id: string) => {
     setBusyId(id);
@@ -93,6 +103,18 @@ export function Trades({
       onChange();
     } catch (e) {
       alert(`Sync failed: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const archive = async (t: Trade, on: boolean) => {
+    setBusyId(t.id);
+    try {
+      await api.archiveTrade(t.id, on);
+      onChange();
+    } catch (e) {
+      alert(`${on ? "Archive" : "Restore"} failed: ${e instanceof Error ? e.message : e}`);
     } finally {
       setBusyId(null);
     }
@@ -143,19 +165,29 @@ export function Trades({
     <div>
       <div className="row-between">
         <h1 style={{ margin: 0 }}>Trades</h1>
+        <div className="btn-row">
+          <button className={view === "active" ? "primary" : "ghost"} onClick={() => setView("active")}>
+            Active
+          </button>
+          <button className={view === "archive" ? "primary" : "ghost"} onClick={() => setView("archive")}>
+            Archive{archivedCount ? ` (${archivedCount})` : ""}
+          </button>
+        </div>
       </div>
 
       <div className="panel" style={{ display: "flex", gap: 14, alignItems: "flex-end", flexWrap: "wrap" }}>
-        <div>
-          <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>Status (multi-select)</div>
-          <div className="btn-row">
-            {STATUS_CHIPS.map((s) => (
-              <button key={s} className={statuses.has(s) ? "primary" : "ghost"} onClick={() => toggleStatus(s)}>
-                {s}
-              </button>
-            ))}
+        {view === "active" && (
+          <div>
+            <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>Status (multi-select)</div>
+            <div className="btn-row">
+              {STATUS_CHIPS.map((s) => (
+                <button key={s} className={statuses.has(s) ? "primary" : "ghost"} onClick={() => toggleStatus(s)}>
+                  {s}
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
+        )}
         <label>
           <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>Channel / group</div>
           <select value={group} onChange={(e) => setGroup(e.target.value)} style={{ width: "auto", minWidth: 170 }}>
@@ -321,33 +353,60 @@ export function Trades({
                     )}
                   </td>
                   <td>
-                    {!t.shadow && !t.simulated && (
+                    {view === "archive" ? (
                       <div className="btn-row">
-                        {(t.status === "open" || t.status === "working") && (
-                          <>
-                            <button disabled={busyId === t.id} onClick={() => close(t.id)}>
-                              {busyId === t.id ? "…" : t.status === "working" ? "Cancel" : "Close"}
-                            </button>
-                            <button
-                              className={manageId === t.id ? "primary" : "ghost"}
-                              onClick={() => toggleManage(t)}
-                            >
-                              Manage
-                            </button>
-                          </>
-                        )}
-                        {/* Reconcile against the exchange: if the desk booked it
-                            closed but the position is still live (e.g. a false-close
-                            after a network switch), Sync reopens it. */}
                         <button
                           className="ghost"
                           disabled={busyId === t.id}
-                          title="Check the exchange — reopen if the position is still live"
-                          onClick={() => sync(t)}
+                          title="Restore this trade to the active list and analytics"
+                          onClick={() => archive(t, false)}
                         >
-                          {busyId === t.id ? "…" : "Sync"}
+                          {busyId === t.id ? "…" : "Restore"}
                         </button>
                       </div>
+                    ) : (
+                      !t.shadow && (
+                        <div className="btn-row">
+                          {(t.status === "open" || t.status === "working") && !t.simulated && (
+                            <>
+                              <button disabled={busyId === t.id} onClick={() => close(t.id)}>
+                                {busyId === t.id ? "…" : t.status === "working" ? "Cancel" : "Close"}
+                              </button>
+                              <button
+                                className={manageId === t.id ? "primary" : "ghost"}
+                                onClick={() => toggleManage(t)}
+                              >
+                                Manage
+                              </button>
+                            </>
+                          )}
+                          {/* Reconcile against the exchange: if the desk booked it
+                              closed but the position is still live (e.g. a false-close
+                              after a network switch), Sync reopens it. */}
+                          {!t.simulated && (
+                            <button
+                              className="ghost"
+                              disabled={busyId === t.id}
+                              title="Check the exchange — reopen if the position is still live"
+                              onClick={() => sync(t)}
+                            >
+                              {busyId === t.id ? "…" : "Sync"}
+                            </button>
+                          )}
+                          {/* File a settled trade away: hidden from the active list
+                              and excluded from analytics. */}
+                          {canArchive(t) && (
+                            <button
+                              className="ghost"
+                              disabled={busyId === t.id}
+                              title="Archive — hide from the active list and exclude from analytics"
+                              onClick={() => archive(t, true)}
+                            >
+                              {busyId === t.id ? "…" : "Archive"}
+                            </button>
+                          )}
+                        </div>
+                      )
                     )}
                   </td>
                 </tr>
@@ -401,7 +460,7 @@ export function Trades({
               {shown.length === 0 && (
                 <tr>
                   <td colSpan={15} className="empty">
-                    No trades.
+                    {view === "archive" ? "No archived trades." : "No trades."}
                   </td>
                 </tr>
               )}

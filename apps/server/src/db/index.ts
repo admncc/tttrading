@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS trades (
   risk TEXT,                     -- JSON RiskRating
   shadow INTEGER,
   simulated INTEGER,
+  archived INTEGER,              -- 1 once the user files a closed trade away
   error TEXT,
   opened_at TEXT NOT NULL,
   closed_at TEXT
@@ -120,6 +121,7 @@ function migrate(database: Database.Database): void {
       risk: "TEXT",
       shadow: "INTEGER",
       simulated: "INTEGER",
+      archived: "INTEGER",
       banked_pnl: "REAL",
       banked_fees: "REAL",
       exchange: "TEXT",
