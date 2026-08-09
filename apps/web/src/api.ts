@@ -327,7 +327,7 @@ export const api = {
   archiveTrade: (id: string, archived: boolean) =>
     req<Trade>(`/api/trades/${id}/archive`, { method: "POST", body: JSON.stringify({ archived }) }),
   syncTrade: (id: string) =>
-    req<{ ok: boolean; changed?: boolean; live?: boolean; venue?: string; trade?: Trade }>(
+    req<{ ok: boolean; changed?: boolean; live?: boolean; venue?: string; note?: string; trade?: Trade }>(
       `/api/trades/${id}/sync`,
       { method: "POST" },
     ),

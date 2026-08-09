@@ -1711,7 +1711,7 @@ export async function setTradeTakeProfits(
  */
 export async function syncTrade(
   tradeId: string,
-): Promise<{ ok: boolean; error?: string; changed?: boolean; live?: boolean; venue?: string; trade?: Trade }> {
+): Promise<{ ok: boolean; error?: string; changed?: boolean; live?: boolean; venue?: string; note?: string; trade?: Trade }> {
   const trade = tradesRepo.get(tradeId);
   if (!trade) return { ok: false, error: "not found" };
   if (trade.shadow || trade.simulated) return { ok: false, error: "not a real trade" };
@@ -1722,7 +1722,7 @@ export async function syncTrade(
   // on mainnet and moves the trade there so it reconciles against reality.
   const own = connectorFor(trade);
   const candidates = [own, ...known().filter((e) => e !== own)];
-  let found: { ex: ExchangeConnector; pos: { size: number; entryPrice: number } } | undefined;
+  let found: { ex: ExchangeConnector; pos: { size: number; entryPrice: number; leverage: number } } | undefined;
   let readAny = false;
   for (const ex of candidates) {
     let positions;
@@ -1755,6 +1755,19 @@ export async function syncTrade(
   const venueChanged = ex.name !== trade.exchange;
   const wasClosed = trade.status !== "open" && trade.status !== "working";
   if (!venueChanged && !wasClosed) {
+    // Already correctly open on this venue. Still reconcile the LEVERAGE from the
+    // live position: many pairs cap below the desk default, so a trade opened
+    // before we persisted the exchange's actual leverage can show the wrong
+    // (requested) value — and its margin figure with it.
+    if (pos.leverage > 0 && Math.abs(pos.leverage - trade.leverage) > 0.01) {
+      const before = trade.leverage;
+      const updated = tradesRepo.update(trade.id, { leverage: pos.leverage }) ?? trade;
+      broadcast({ type: "trade", trade: updated });
+      const note = `${trade.symbol}: leverage ${before}x → ${pos.leverage}x (from ${ex.name}).`;
+      event("exec", `Sync: ${note}`, { before, actual: pos.leverage, venue: ex.name }, { level: "info", groupId: trade.groupId, signalId: trade.signalId });
+      pushStats();
+      return { ok: true, changed: true, live: true, venue: ex.name, note, trade: updated };
+    }
     return { ok: true, changed: false, live: true, venue: ex.name, trade };
   }
   // Ownership guard: if ANOTHER open/working real trade already maps to this
@@ -1795,6 +1808,8 @@ export async function syncTrade(
     archived: false,
     size: Math.abs(pos.size),
     entryPrice: pos.entryPrice > 0 ? pos.entryPrice : trade.entryPrice,
+    // Adopt the venue's actual leverage (clamped per pair) while we're at it.
+    leverage: pos.leverage > 0 ? pos.leverage : trade.leverage,
   });
   if (updated) broadcast({ type: "trade", trade: updated });
   event(

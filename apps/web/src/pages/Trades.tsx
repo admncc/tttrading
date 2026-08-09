@@ -97,7 +97,8 @@ export function Trades({
     try {
       const res = await api.syncTrade(t.id);
       const on = res.venue ? ` on ${res.venue}` : "";
-      if (res.changed) alert(`${t.symbol}: still live${on} — reopened${res.venue && res.venue !== t.exchange ? ` and re-homed to ${res.venue}` : ""} in the desk.`);
+      if (res.note) alert(res.note); // precise reconciliation message (e.g. leverage adopted)
+      else if (res.changed) alert(`${t.symbol}: still live${on} — reopened${res.venue && res.venue !== t.exchange ? ` and re-homed to ${res.venue}` : ""} in the desk.`);
       else if (res.live) alert(`${t.symbol}: position confirmed live${on}.`);
       else alert(`${t.symbol}: no matching position on any connected venue — leaving as is.`);
       onChange();
