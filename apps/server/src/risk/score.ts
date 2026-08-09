@@ -44,7 +44,10 @@ function record(trades: Trade[]): { n: number; winRate: number; net: number } {
  *  3. the SYMBOL's own track record here (how has this exact coin performed?) —
  *     a DOMINANT factor, so a coin that keeps losing is penalised hard,
  *  4. the coin's market-cap TIER (large caps steadier; small caps riskier),
- *     both as an inherent baseline and via that tier's realised track record.
+ *     both as an inherent baseline and via that tier's realised track record,
+ *  5. the ORDER SIDE (is this provider more reliable long or short?),
+ *  6. a weak week-of-month effect (sample-gated, enriches over months),
+ *  7. a weak day-of-week effect (e.g. weekend vs. Monday; sample-gated).
  * Stop-loss presence and leverage are intentionally NOT scored: signals here
  * always carry a stop, and leverage is our own setting — neither says anything
  * about how risky the trade itself is. Every adjustment logs a transparent reason.
@@ -56,6 +59,9 @@ function record(trades: Trade[]): { n: number; winRate: number; net: number } {
 export function monthWeek(day: number): number {
   return Math.min(4, Math.ceil(day / 7));
 }
+
+/** Short weekday name for a UTC day index (0=Sun … 6=Sat). */
+const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 export function assessRisk(
   parsed: ParsedSignal,
@@ -136,7 +142,26 @@ export function assessRisk(
     reasons.push(`${tier}-cap`);
   }
 
-  // ---- 5. week-of-month effect (WEAK, sample-gated to avoid overfitting) ----
+  // ---- 5. order side (long vs short): is this provider better at THIS side? ----
+  // Compare the channel's win rate on the CURRENT signal's side to its overall
+  // win rate. Sample-gated, so it stays neutral until enough same-side trades
+  // exist; over months this surfaces whether the trader is more reliable long
+  // or short and nudges the score accordingly (capped ±10 so it can't dominate).
+  if (n >= MIN_SAMPLE) {
+    const sideRec = record(chClosed.filter((t) => t.side === parsed.side));
+    if (sideRec.n >= 5) {
+      const conf = Math.min(1, sideRec.n / 10);
+      const adj = Math.round(clamp((sideRec.winRate - ch.winRate) * 45, -10, 10) * conf);
+      if (adj !== 0) score += adj;
+      reasons.push(
+        `${parsed.side} record: ${(sideRec.winRate * 100).toFixed(0)}% over ${sideRec.n} vs ${(ch.winRate * 100).toFixed(0)}% avg`,
+      );
+    } else if (sideRec.n > 0) {
+      reasons.push(`${parsed.side}: only ${sideRec.n} prior ${parsed.side} trade${sideRec.n === 1 ? "" : "s"} — thin history`);
+    }
+  }
+
+  // ---- 6. week-of-month effect (WEAK, sample-gated to avoid overfitting) ----
   // Some providers run hotter/colder in a part of the month. Compare the channel's
   // win rate in the CURRENT week of the month to its own overall win rate; only
   // nudge when there's real data, capped at ±8 so this noisy signal can't dominate.
@@ -151,6 +176,26 @@ export function assessRisk(
         score += adj;
         reasons.push(
           `Week ${nowWeek} of month: ${(pr.winRate * 100).toFixed(0)}% over ${pr.n} vs ${(ch.winRate * 100).toFixed(0)}% avg`,
+        );
+      }
+    }
+  }
+
+  // ---- 7. day-of-week effect (WEAK, sample-gated) ----
+  // Some providers are sharper on certain weekdays (e.g. weekend vs. Monday).
+  // Compare the channel's win rate on the CURRENT signal's weekday to its overall
+  // rate; gated + capped ±8, so it stays neutral until enough same-day trades
+  // accumulate and can never dominate the score.
+  if (n >= 8) {
+    const nowDow = at.getUTCDay();
+    const inDow = chClosed.filter((t) => t.openedAt && new Date(t.openedAt).getUTCDay() === nowDow);
+    const pr = record(inDow);
+    if (pr.n >= 5) {
+      const adj = Math.round(clamp((pr.winRate - ch.winRate) * 40, -8, 8));
+      if (adj !== 0) {
+        score += adj;
+        reasons.push(
+          `${DOW[nowDow]}: ${(pr.winRate * 100).toFixed(0)}% over ${pr.n} vs ${(ch.winRate * 100).toFixed(0)}% avg`,
         );
       }
     }

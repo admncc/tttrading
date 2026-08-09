@@ -15,8 +15,10 @@ export interface InsightTrade {
   symbol: string;
   tier: CapTier;
   channel: string;
+  side: "long" | "short";
   net: number;
   at: string;
+  openedAt: string;
 }
 
 export interface AccountInfo {

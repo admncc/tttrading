@@ -15,6 +15,14 @@ function weekLabel(at: string): string {
   return `Week ${w} (${{ 1: "1–7", 2: "8–14", 3: "15–21", 4: "22–31" }[w]})`;
 }
 
+const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const WD_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+/** Weekday name from an ISO entry time (UTC). */
+function weekdayName(iso: string): string {
+  if (!iso) return "";
+  return DOW[new Date(iso).getUTCDay()] ?? "";
+}
+
 function agg(trades: InsightTrade[], keyOf: (t: InsightTrade) => string, tierOf?: (t: InsightTrade) => CapTier): Bucket[] {
   const m = new Map<string, { n: number; wins: number; net: number; tier?: CapTier }>();
   for (const t of trades) {
@@ -115,6 +123,7 @@ export function RiskInsights() {
   const [fChannel, setFChannel] = useState(ALL);
   const [fCoin, setFCoin] = useState(ALL);
   const [fTier, setFTier] = useState(ALL);
+  const [fSide, setFSide] = useState(ALL);
   const [rangeDays, setRangeDays] = useState(0); // 0 = all time
 
   const load = () => {
@@ -139,14 +148,20 @@ export function RiskInsights() {
           (fChannel === ALL || t.channel === fChannel) &&
           (fCoin === ALL || t.symbol === fCoin) &&
           (fTier === ALL || t.tier === fTier) &&
+          (fSide === ALL || t.side === fSide) &&
           (rangeDays === 0 || (t.at && t.at >= cutoff)),
       ),
-    [trades, fChannel, fCoin, fTier, rangeDays, cutoff],
+    [trades, fChannel, fCoin, fTier, fSide, rangeDays, cutoff],
   );
 
   const byChannel = useMemo(() => agg(filtered, (t) => t.channel), [filtered]);
   const bySymbol = useMemo(() => agg(filtered, (t) => t.symbol, (t) => t.tier), [filtered]);
   const byTier = useMemo(() => agg(filtered, (t) => t.tier), [filtered]);
+  const bySide = useMemo(() => agg(filtered, (t) => t.side), [filtered]);
+  const byWeekday = useMemo(
+    () => agg(filtered, (t) => weekdayName(t.openedAt)).sort((a, b) => WD_ORDER.indexOf(a.key) - WD_ORDER.indexOf(b.key)),
+    [filtered],
+  );
   const byWeek = useMemo(() => agg(filtered, (t) => weekLabel(t.at)).sort((a, b) => a.key.localeCompare(b.key)), [filtered]);
   const eq = useMemo(() => equity(filtered), [filtered]);
   const channelSparks = useMemo(
@@ -154,7 +169,7 @@ export function RiskInsights() {
     [byChannel, filtered],
   );
 
-  const filtersActive = fChannel !== ALL || fCoin !== ALL || fTier !== ALL || rangeDays !== 0;
+  const filtersActive = fChannel !== ALL || fCoin !== ALL || fTier !== ALL || fSide !== ALL || rangeDays !== 0;
   const sel = (label: string, value: string, set: (v: string) => void, opts: { v: string; l: string }[]) => (
     <label style={{ display: "inline-flex", flexDirection: "column", gap: 3 }}>
       <span className="muted" style={{ fontSize: 11 }}>{label}</span>
@@ -171,8 +186,8 @@ export function RiskInsights() {
         <button className="ghost" onClick={load}>Refresh</button>
       </div>
       <p className="muted" style={{ marginTop: 4, maxWidth: 760 }}>
-        How performance breaks down by channel, coin, market-cap tier and week of the month — the same signals that
-        feed the traffic-light risk score. From settled (closed) trades{trades ? ` · ${trades.length} total` : ""}.
+        How performance breaks down by channel, coin, market-cap tier, order side (long/short), weekday and week of
+        the month — the same signals that feed the traffic-light risk score. From settled (closed) trades{trades ? ` · ${trades.length} total` : ""}.
         Sharper as data accumulates over the months.
       </p>
 
@@ -192,6 +207,11 @@ export function RiskInsights() {
               { v: "large", l: "large" },
               { v: "mid", l: "mid" },
               { v: "small", l: "small" },
+            ])}
+            {sel("Side", fSide, setFSide, [
+              { v: ALL, l: "Long + Short" },
+              { v: "long", l: "long" },
+              { v: "short", l: "short" },
             ])}
             <label style={{ display: "inline-flex", flexDirection: "column", gap: 3 }}>
               <span className="muted" style={{ fontSize: 11 }}>Range</span>
@@ -214,7 +234,7 @@ export function RiskInsights() {
               <span style={{ color: netColor(eq[eq.length - 1] ?? 0) }}>{usd(eq[eq.length - 1] ?? 0)} USDC net</span>
             </span>
             {filtersActive && (
-              <button className="ghost" onClick={() => { setFChannel(ALL); setFCoin(ALL); setFTier(ALL); setRangeDays(0); }}>Clear</button>
+              <button className="ghost" onClick={() => { setFChannel(ALL); setFCoin(ALL); setFTier(ALL); setFSide(ALL); setRangeDays(0); }}>Clear</button>
             )}
           </div>
 
@@ -238,6 +258,8 @@ export function RiskInsights() {
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 12, marginTop: 8 }}>
                 <Card title="By coin"><BucketTable rows={bySymbol} label="Coin" showTier /></Card>
                 <Card title="By market-cap tier"><BucketTable rows={byTier} label="Tier" /></Card>
+                <Card title="By side (long / short)"><BucketTable rows={bySide} label="Side" /></Card>
+                <Card title="By weekday (entry day)"><BucketTable rows={byWeekday} label="Weekday" /></Card>
                 <Card title="By week of month"><BucketTable rows={byWeek} label="Week" /></Card>
               </div>
             </>
