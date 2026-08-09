@@ -230,7 +230,7 @@ export function Trades({
                 <th>Symbol</th>
                 <th>Side</th>
                 <th>Lev</th>
-                <th>Notional</th>
+                <th>Notional / Margin</th>
                 <th>Size</th>
                 <th>Entry</th>
                 <th>SL / TP</th>
@@ -283,7 +283,39 @@ export function Trades({
                     <span className={`tag ${t.side}`}>{t.side}</span>
                   </td>
                   <td>{t.leverage}x</td>
-                  <td>{usd(t.notionalUsd, 0)}</td>
+                  {(() => {
+                    // notionalUsd stays the ORIGINAL at entry; a partial TP reduces
+                    // t.size, so the remaining position value = size × entry. Margin
+                    // is notional / leverage. Show "orig → remaining" once a partial
+                    // has trimmed an OPEN position.
+                    const remNotional = t.size * t.entryPrice;
+                    const lev = t.leverage > 0 ? t.leverage : 1;
+                    const marginOrig = t.notionalUsd / lev;
+                    const marginRem = remNotional / lev;
+                    const trimmed = t.status === "open" && remNotional < t.notionalUsd * 0.995;
+                    return (
+                      <td>
+                        <div>
+                          {usd(t.notionalUsd, 0)}
+                          {trimmed && (
+                            <span className="muted" title="Notional after partial TP">
+                              {" → "}
+                              {usd(remNotional, 0)}
+                            </span>
+                          )}
+                        </div>
+                        <div className="muted" style={{ fontSize: 11 }}>
+                          margin {usd(marginOrig, 0)}
+                          {trimmed && (
+                            <span title="Margin after partial TP">
+                              {" → "}
+                              {usd(marginRem, 0)}
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                    );
+                  })()}
                   <td>{num(t.size)}</td>
                   <td>{num(t.entryPrice)}</td>
                   <td>

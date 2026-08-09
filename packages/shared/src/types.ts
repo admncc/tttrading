@@ -283,6 +283,13 @@ export interface PerformanceStats {
   losses: number;
   winRate: number; // 0..1
   realizedPnl: number;
+  /**
+   * Profit already LOCKED IN from partial take-profit exits on trades that are
+   * still OPEN (net of fees). It is real, booked money, so it is included in
+   * `realizedPnl` — this field breaks it out so the UI can label how much of the
+   * realized total is riding on positions that haven't fully closed yet.
+   */
+  bankedOpenPnl: number;
   totalNotional: number;
   avgPnl: number;
   bestTrade: number;

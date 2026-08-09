@@ -103,7 +103,10 @@ export function Overview({
     const mark = prices[t.symbol.toUpperCase()];
     if (mark && mark > 0) {
       const dir = t.side === "long" ? 1 : -1;
-      openUpnl += (mark - t.entryPrice) * dir * t.size + ((t.bankedPnl ?? 0) - (t.bankedFees ?? 0));
+      // uPnL is the UNREALIZED mark-to-market on the remaining size only. Profit
+      // already banked from partials is now counted as realized (o.realizedPnl),
+      // so it must NOT be added here too, or it would be double-counted.
+      openUpnl += (mark - t.entryPrice) * dir * t.size;
       marked++;
     }
   }
@@ -132,6 +135,13 @@ export function Overview({
 
       <div className="kpi-grid">
         <Kpi label="Realized PnL" value={usd(o.realizedPnl)} cls={pnlClass(o.realizedPnl)} />
+        {o.bankedOpenPnl !== 0 && (
+          <Kpi
+            label="Banked (open partials)"
+            value={usd(o.bankedOpenPnl)}
+            cls={pnlClass(o.bankedOpenPnl)}
+          />
+        )}
         <Kpi label="Win Rate" value={pct(o.winRate)} />
         <Kpi label="Trades" value={String(o.trades)} />
         <Kpi label="Open" value={String(o.openTrades)} />

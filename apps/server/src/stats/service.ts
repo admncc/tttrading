@@ -20,6 +20,7 @@ function emptyStats(): PerformanceStats {
     losses: 0,
     winRate: 0,
     realizedPnl: 0,
+    bankedOpenPnl: 0,
     totalNotional: 0,
     avgPnl: 0,
     bestTrade: 0,
@@ -32,6 +33,8 @@ export function computeStats(list: Trade[]): PerformanceStats {
   const s = emptyStats();
   let grossProfit = 0;
   let grossLoss = 0;
+  let closedRealized = 0; // realized from fully-closed trades (drives avg/PF/win)
+  let bankedOpen = 0; // profit already booked from partials on still-OPEN trades
   const closedPnls: number[] = [];
 
   for (const t of list) {
@@ -41,11 +44,14 @@ export function computeStats(list: Trade[]): PerformanceStats {
     s.totalNotional += t.notionalUsd;
     if (t.status === "open") {
       s.openTrades++;
+      // A partial take-profit on an open trade banks real, locked-in money —
+      // count it as realized right away instead of hiding it until full close.
+      bankedOpen += (t.bankedPnl ?? 0) - (t.bankedFees ?? 0);
       continue;
     }
     if (!Number.isFinite(t.realizedPnl)) continue;
     const pnl = t.realizedPnl as number;
-    s.realizedPnl += pnl;
+    closedRealized += pnl;
     closedPnls.push(pnl);
     if (pnl >= 0) {
       s.wins++;
@@ -58,10 +64,14 @@ export function computeStats(list: Trade[]): PerformanceStats {
 
   const closedCount = s.wins + s.losses;
   s.winRate = closedCount > 0 ? s.wins / closedCount : 0;
-  s.avgPnl = closedCount > 0 ? s.realizedPnl / closedCount : 0;
+  // Per-trade figures stay closed-only so a half-booked open trade can't skew them.
+  s.avgPnl = closedCount > 0 ? closedRealized / closedCount : 0;
   s.bestTrade = closedPnls.length ? Math.max(...closedPnls) : 0;
   s.worstTrade = closedPnls.length ? Math.min(...closedPnls) : 0;
   s.profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? Infinity : 0;
+  s.bankedOpenPnl = Number(bankedOpen.toFixed(2));
+  // Headline realized = fully-closed results + profit already banked from partials.
+  s.realizedPnl = Number((closedRealized + bankedOpen).toFixed(2));
   return s;
 }
 
