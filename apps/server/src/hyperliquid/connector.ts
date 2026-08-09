@@ -431,19 +431,23 @@ export class HyperliquidConnector implements ExchangeConnector {
     return usdc ? Number(usdc.total ?? 0) : 0;
   }
 
+  /** Set leverage on the venue and return the value ACTUALLY applied (the
+   *  request clamped to the asset's max and floored to an integer). */
   private async setLeverage(
     asset: AssetInfo,
     leverage: number,
     marginMode: "cross" | "isolated",
-  ): Promise<void> {
-    if (!this.exchange) return;
-    // Round DOWN to an integer so actual leverage never exceeds what was asked.
+  ): Promise<number> {
+    // Round DOWN to an integer so actual leverage never exceeds what was asked,
+    // and never above the pair's max (many pairs cap below the desk default).
     const capped = Math.max(1, Math.floor(Math.min(leverage, asset.maxLeverage)));
+    if (!this.exchange) return capped;
     await this.exchange.updateLeverage({
       asset: asset.index,
       isCross: marginMode === "cross",
       leverage: capped,
     });
+    return capped;
   }
 
   /** Place a market order (implemented as an aggressive IOC limit). */
@@ -496,7 +500,10 @@ export class HyperliquidConnector implements ExchangeConnector {
     // already-real position); it can never open a new live position in test mode.
     const forceReal = !!req.force && !!req.reduceOnly;
     if (!this.exchange || (this.simulating() && !forceReal)) {
-      return { ok: true, filledPrice: mid, size, simulated: true };
+      const effectiveLeverage = req.reduceOnly
+        ? undefined
+        : Math.max(1, Math.floor(Math.min(req.leverage, asset.maxLeverage)));
+      return { ok: true, filledPrice: mid, size, simulated: true, effectiveLeverage };
     }
 
     try {
@@ -504,8 +511,9 @@ export class HyperliquidConnector implements ExchangeConnector {
       // reduces an existing position — changing the leverage type on an open
       // position is rejected by Hyperliquid ("Cannot switch leverage type with
       // open position"), and there's nothing to configure for a close anyway.
+      let effectiveLeverage: number | undefined;
       if (!req.reduceOnly) {
-        await this.setLeverage(asset, req.leverage, req.marginMode);
+        effectiveLeverage = await this.setLeverage(asset, req.leverage, req.marginMode);
       }
       const result = (await this.exchange.order({
         orders: [
@@ -533,6 +541,7 @@ export class HyperliquidConnector implements ExchangeConnector {
         size: filledSize,
         orderId: parsed.orderId,
         simulated: false,
+        effectiveLeverage,
       };
     } catch (err) {
       return {
@@ -564,6 +573,7 @@ export class HyperliquidConnector implements ExchangeConnector {
     filledPrice?: number;
     size: number;
     simulated: boolean;
+    effectiveLeverage?: number;
     error?: string;
   }> {
     this.ensureExchange();
@@ -585,10 +595,13 @@ export class HyperliquidConnector implements ExchangeConnector {
       return { ok: false, size: 0, simulated: sim, error: `Order value ${(size * limitPx).toFixed(2)} below Hyperliquid's $10 minimum` };
     }
 
-    if (sim) return { ok: true, status: "resting", size, simulated: true };
+    if (sim) {
+      const effectiveLeverage = Math.max(1, Math.floor(Math.min(req.leverage, asset.maxLeverage)));
+      return { ok: true, status: "resting", size, simulated: true, effectiveLeverage };
+    }
 
     try {
-      await this.setLeverage(asset, req.leverage, req.marginMode);
+      const effectiveLeverage = await this.setLeverage(asset, req.leverage, req.marginMode);
       const res = (await this.exchange!.order({
         orders: [
           { a: asset.index, b: req.side === "long", p: String(limitPx), s: String(size), r: false, t: { limit: { tif: "Gtc" } } },
@@ -598,7 +611,7 @@ export class HyperliquidConnector implements ExchangeConnector {
       const statuses = res.response?.data?.statuses ?? [];
       for (const s of statuses) {
         if ("resting" in s) {
-          return { ok: true, status: "resting", orderId: String((s as { resting: { oid: number } }).resting.oid), size, simulated: false };
+          return { ok: true, status: "resting", orderId: String((s as { resting: { oid: number } }).resting.oid), size, simulated: false, effectiveLeverage };
         }
         if ("filled" in s) {
           const fp = Number(s.filled.avgPx);
@@ -614,7 +627,7 @@ export class HyperliquidConnector implements ExchangeConnector {
               /* best-effort */
             }
           }
-          return { ok: true, status: "filled", orderId: String(s.filled.oid), filledPrice: fp, size: filledSize, simulated: false };
+          return { ok: true, status: "filled", orderId: String(s.filled.oid), filledPrice: fp, size: filledSize, simulated: false, effectiveLeverage };
         }
         if ("error" in s) return { ok: false, size: 0, simulated: false, error: s.error };
       }

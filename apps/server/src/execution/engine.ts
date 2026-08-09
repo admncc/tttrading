@@ -1239,6 +1239,7 @@ async function placeEntry(
     filledSize: result.size,
     orderId: result.orderId,
     simulated: result.simulated,
+    effectiveLeverage: result.effectiveLeverage,
   });
 }
 
@@ -1327,7 +1328,7 @@ async function recordFilledEntry(
   risk: RiskRating | undefined,
   notionalUsd: number,
   ex: ExchangeConnector,
-  fill: { filledPrice: number; filledSize: number; orderId?: string; simulated: boolean },
+  fill: { filledPrice: number; filledSize: number; orderId?: string; simulated: boolean; effectiveLeverage?: number },
 ): Promise<Signal> {
   const entryRef = parsed.entry ?? fill.filledPrice;
   const takeProfits = expandTakeProfits(parsed.takeProfits, entryRef, parsed.side, {
@@ -1366,7 +1367,9 @@ async function recordFilledEntry(
     status: "open",
     env: config.tradingEnv,
     exchange: ex.name,
-    leverage: group.settings.leverage,
+    // Store the leverage the venue ACTUALLY applied (clamped to the pair's max),
+    // not the desk default — so margin figures match the exchange.
+    leverage: fill.effectiveLeverage ?? group.settings.leverage,
     notionalUsd,
     size: fill.filledSize,
     entryPrice: fill.filledPrice,
@@ -1471,6 +1474,7 @@ async function executeLimit(
       filledSize: res.size,
       orderId: res.orderId,
       simulated: res.simulated,
+      effectiveLeverage: res.effectiveLeverage,
     });
   }
 
@@ -1488,7 +1492,8 @@ async function executeLimit(
     status: "working",
     env: config.tradingEnv,
     exchange: ex.name,
-    leverage: group.settings.leverage,
+    // Leverage the venue will apply once this rests/fills (clamped to pair max).
+    leverage: res.effectiveLeverage ?? group.settings.leverage,
     notionalUsd,
     size: res.size,
     entryPrice: parsed.entry!, // planned entry until filled

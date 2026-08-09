@@ -51,6 +51,13 @@ export interface OrderResult {
   size: number;
   orderId?: string;
   simulated: boolean;
+  /**
+   * The leverage the venue ACTUALLY applied — the requested leverage clamped to
+   * the asset's max (many pairs cap below the desk default, e.g. 5x/4x). Persist
+   * this on the trade so margin figures match the exchange. Undefined when the
+   * order didn't set leverage (reduce-only) or the venue doesn't report it.
+   */
+  effectiveLeverage?: number;
   error?: string;
 }
 
@@ -70,6 +77,8 @@ export interface LimitOrderResult {
   filledPrice?: number;
   size: number;
   simulated: boolean;
+  /** Leverage the venue actually applied (requested clamped to the asset max). */
+  effectiveLeverage?: number;
   error?: string;
 }
 
