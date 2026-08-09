@@ -22,6 +22,54 @@ function weekdayName(iso: string): string {
   if (!iso) return "";
   return DOW[new Date(iso).getUTCDay()] ?? "";
 }
+function weekShort(iso: string): string {
+  if (!iso) return "";
+  return `W${Math.min(4, Math.ceil(new Date(iso).getUTCDate() / 7))}`;
+}
+
+/* ---- Spotlight: the best-performing FACTOR COMBINATION per trader ---------- */
+interface Combo { label: string; n: number; winRate: number; net: number }
+// The factor dimensions a combination can mix. tier(1) and coin(2) are mutually
+// redundant (coin implies tier) so combos containing both are skipped.
+const SPOT_DIMS: ((t: InsightTrade) => string)[] = [
+  (t) => t.side, // 0
+  (t) => `${t.tier}-cap`, // 1
+  (t) => t.symbol, // 2
+  (t) => weekdayName(t.openedAt), // 3
+  (t) => weekShort(t.at), // 4
+];
+const SPOT_SUBSETS: number[][] = (() => {
+  const out: number[][] = [];
+  for (let mask = 1; mask < 1 << SPOT_DIMS.length; mask++) {
+    const s: number[] = [];
+    for (let i = 0; i < SPOT_DIMS.length; i++) if (mask & (1 << i)) s.push(i);
+    if (s.length > 3) continue; // up to 3 factors per combination
+    if (s.includes(1) && s.includes(2)) continue; // tier+coin is redundant
+    out.push(s);
+  }
+  return out;
+})();
+/** Top winning factor combinations for one trader's trades (net-ranked, gated). */
+function bestCombos(trades: InsightTrade[], topN = 3, minN = 3): Combo[] {
+  const m = new Map<string, { n: number; wins: number; net: number; label: string }>();
+  for (const t of trades) {
+    for (const sub of SPOT_SUBSETS) {
+      const toks = sub.map((i) => SPOT_DIMS[i]!(t));
+      if (toks.some((x) => !x)) continue;
+      const key = sub.join(",") + "::" + toks.join("|");
+      const e = m.get(key) ?? { n: 0, wins: 0, net: 0, label: toks.join(" · ") };
+      e.n += 1;
+      if (t.net >= 0) e.wins += 1;
+      e.net += t.net;
+      m.set(key, e);
+    }
+  }
+  return [...m.values()]
+    .filter((e) => e.n >= minN && e.wins / e.n >= 0.5)
+    .map((e) => ({ label: e.label, n: e.n, winRate: e.wins / e.n, net: e.net }))
+    .sort((a, b) => b.net - a.net || b.winRate - a.winRate)
+    .slice(0, topN);
+}
 
 function agg(trades: InsightTrade[], keyOf: (t: InsightTrade) => string, tierOf?: (t: InsightTrade) => CapTier): Bucket[] {
   const m = new Map<string, { n: number; wins: number; net: number; tier?: CapTier }>();
@@ -164,6 +212,17 @@ export function RiskInsights() {
   );
   const byWeek = useMemo(() => agg(filtered, (t) => weekLabel(t.at)).sort((a, b) => a.key.localeCompare(b.key)), [filtered]);
   const eq = useMemo(() => equity(filtered), [filtered]);
+  const spotlight = useMemo(() => {
+    const byCh = new Map<string, InsightTrade[]>();
+    for (const t of filtered) {
+      const a = byCh.get(t.channel) ?? [];
+      a.push(t);
+      byCh.set(t.channel, a);
+    }
+    return [...byCh.entries()]
+      .map(([channel, ts]) => ({ channel, n: ts.length, combos: bestCombos(ts) }))
+      .sort((a, b) => (b.combos[0]?.net ?? -Infinity) - (a.combos[0]?.net ?? -Infinity));
+  }, [filtered]);
   const channelSparks = useMemo(
     () => Object.fromEntries(byChannel.map((r) => [r.key, equity(filtered.filter((t) => t.channel === r.key))])),
     [byChannel, filtered],
@@ -250,7 +309,39 @@ export function RiskInsights() {
                 <div style={{ marginTop: 8 }}><Sparkline data={eq} height={64} full /></div>
               </div>
 
-              <h2 style={{ marginBottom: 4 }}>Channels</h2>
+              <h2 style={{ marginBottom: 4 }}>Spotlight — best factor combination per trader</h2>
+              <p className="muted" style={{ marginTop: 0, fontSize: 12, maxWidth: 760 }}>
+                The most profitable mix of factors (side · cap-tier / coin · weekday · week) in each channel's settled
+                trades — at least 3 trades and a winning record. Sharpens as history grows.
+              </p>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
+                {spotlight.map((s) => (
+                  <Card key={s.channel} title={s.channel}>
+                    {s.combos.length === 0 ? (
+                      <div className="muted" style={{ fontSize: 12 }}>No standout combination yet — thin data.</div>
+                    ) : (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        {s.combos.map((c, i) => (
+                          <div key={c.label} style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
+                            <span style={{ fontWeight: i === 0 ? 600 : 400 }}>
+                              {i === 0 ? "🏆 " : "• "}
+                              {c.label}
+                            </span>
+                            <span style={{ whiteSpace: "nowrap", fontSize: 12 }}>
+                              <span style={{ color: wrColor(c.winRate) }}>{pct(c.winRate)}</span>
+                              <span className="muted"> · </span>
+                              <span style={{ color: netColor(c.net) }}>{usd(c.net)}</span>
+                              <span className="muted"> · {c.n}×</span>
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </Card>
+                ))}
+              </div>
+
+              <h2 style={{ marginBottom: 4, marginTop: 8 }}>Channels</h2>
               <div className="panel" style={{ overflowX: "auto" }}>
                 <BucketTable rows={byChannel} label="Channel" sparks={channelSparks} />
               </div>
