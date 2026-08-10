@@ -80,10 +80,12 @@ export function Trades({
     return !t.archived && matchStatus(t);
   });
 
-  const close = async (id: string) => {
-    setBusyId(id);
+  const close = async (t: Trade) => {
+    const action = t.status === "working" ? "Cancel working order" : "Close position at market";
+    if (!confirm(`${action}?\n\n${t.side.toUpperCase()} ${t.symbol} · ${t.groupName}`)) return;
+    setBusyId(t.id);
     try {
-      await api.closeTrade(id);
+      await api.closeTrade(t.id);
       onChange();
     } catch (e) {
       alert(`Close failed: ${e instanceof Error ? e.message : e}`);
@@ -110,6 +112,7 @@ export function Trades({
   };
 
   const archive = async (t: Trade, on: boolean) => {
+    if (!confirm(`${on ? "Archive" : "Restore"} ${t.symbol} (${t.groupName})?`)) return;
     setBusyId(t.id);
     try {
       await api.archiveTrade(t.id, on);
@@ -147,6 +150,7 @@ export function Trades({
   const setStop = (t: Trade) => {
     const p = Number(slInput);
     if (!(p > 0)) return alert("Enter a valid stop price.");
+    if (!confirm(`Set ${t.symbol} stop-loss to ${p}?\n\n${t.side.toUpperCase()} · ${t.groupName}`)) return;
     void run(t.id, () => api.setTradeStop(t.id, p), "Set SL");
   };
   const setTps = (t: Trade) => {
@@ -154,11 +158,13 @@ export function Trades({
       .split(/[,\s]+/)
       .map((s) => Number(s))
       .filter((n) => Number.isFinite(n) && n > 0);
+    if (!confirm(`Replace ${t.symbol} take-profits with [${prices.join(", ")}]?\n\n${t.side.toUpperCase()} · ${t.groupName}`)) return;
     void run(t.id, () => api.setTradeTakeProfits(t.id, prices), "Set TPs");
   };
   const book = (t: Trade) => {
     const pct = Number(bookInput);
     if (!(pct > 0 && pct < 100)) return alert("Enter a percent between 0 and 100.");
+    if (!confirm(`Book ${pct}% of ${t.symbol} at market?\n\n${t.side.toUpperCase()} · ${t.groupName}`)) return;
     void run(t.id, () => api.bookPartial(t.id, pct / 100), "Book");
   };
 
@@ -402,7 +408,7 @@ export function Trades({
                         <div className="btn-row">
                           {(t.status === "open" || t.status === "working") && !t.simulated && (
                             <>
-                              <button disabled={busyId === t.id} onClick={() => close(t.id)}>
+                              <button disabled={busyId === t.id} onClick={() => close(t)}>
                                 {busyId === t.id ? "…" : t.status === "working" ? "Cancel" : "Close"}
                               </button>
                               <button
