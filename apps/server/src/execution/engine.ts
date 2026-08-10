@@ -13,7 +13,7 @@ import { parseSignal } from "../signals/parser.js";
 import { readManagementLevels, llmReady, type SignalImage } from "../signals/llm.js";
 import { classifyManagementAll, isTradeUpdate, isMarketCommentary, type ManagementAction } from "../signals/management.js";
 import { expandTakeProfits } from "../signals/takeprofit.js";
-import { assessRisk } from "../risk/score.js";
+import { assessRisk, tierSlippage } from "../risk/score.js";
 import { alertBlocked, alertClassification, alertClosed, alertError, alertOpened, sendAlert } from "../alerts/notifier.js";
 import { broadcast } from "../ws/hub.js";
 import { pushStats } from "../stats/service.js";
@@ -299,7 +299,7 @@ async function moveStop(trade: Trade, newStop: number, breakeven: boolean): Prom
       size: trade.size,
       stopLoss: newStop,
       takeProfits: [],
-      slippage: 0.01,
+      slippage: tierSlippage(trade.symbol),
       marginMode: groupsRepo.get(trade.groupId)?.settings.marginMode,
       force: true,
     });
@@ -402,7 +402,7 @@ async function partialClose(tradeInput: Trade, rawFraction: number): Promise<voi
         notionalUsd: exitPx * intendedSize, // size off current price, not entry
         leverage: trade.leverage,
         marginMode: "cross",
-        maxSlippage: 0.01,
+        maxSlippage: tierSlippage(trade.symbol),
         reduceOnly: true,
         force: true, // real position → always hit the exchange, even in test mode
       });
@@ -450,7 +450,7 @@ async function partialClose(tradeInput: Trade, rawFraction: number): Promise<voi
             size: remaining,
             stopLoss: trade.stopLoss,
             takeProfits: unfilledTps,
-            slippage: 0.01,
+            slippage: tierSlippage(trade.symbol),
             marginMode: groupsRepo.get(trade.groupId)?.settings.marginMode,
             force: true,
           });
@@ -1211,7 +1211,7 @@ async function placeEntry(
     notionalUsd: tradeSizeUsd,
     leverage,
     marginMode,
-    maxSlippage,
+    maxSlippage: tierSlippage(parsed.symbol),
   });
 
   if (!result.ok) {
@@ -1351,7 +1351,7 @@ async function recordFilledEntry(
     size: fill.filledSize,
     stopLoss,
     takeProfits,
-    slippage: group.settings.maxSlippage,
+    slippage: tierSlippage(parsed.symbol),
     marginMode: group.settings.marginMode,
   });
   if (bracket.error) {
@@ -1550,7 +1550,7 @@ export async function promoteWorkingToOpen(
       }
     }
     const gset = groupsRepo.get(t.groupId)?.settings;
-    const slippage = gset?.maxSlippage ?? 0.01;
+    const slippage = tierSlippage(t.symbol);
     const bracket = await ex.placeBracketOrders({
       symbol: t.symbol,
       side: t.side,
@@ -1672,7 +1672,7 @@ export async function setTradeTakeProfits(
       side: trade.side,
       size: trade.size,
       takeProfits: tps,
-      slippage: 0.01,
+      slippage: tierSlippage(trade.symbol),
       marginMode: groupsRepo.get(trade.groupId)?.settings.marginMode,
       force: true,
     });
@@ -1874,7 +1874,7 @@ export async function placeTestOrder(params: {
     notionalUsd: sizeUsd,
     leverage,
     marginMode: "cross",
-    maxSlippage: 0.01,
+    maxSlippage: tierSlippage(symbol),
   });
   if (!result.ok) {
     event(
@@ -1990,7 +1990,7 @@ export async function closeTrade(tradeId: string, exitPriceOverride?: number) {
         notionalUsd: exitPrice * remainingSize,
         leverage: trade.leverage,
         marginMode: "cross",
-        maxSlippage: 0.01,
+        maxSlippage: tierSlippage(trade.symbol),
         reduceOnly: true, // never flip into an opposite position
         force: true, // real position → close on the exchange even in test mode
       });

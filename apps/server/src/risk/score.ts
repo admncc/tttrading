@@ -27,6 +27,17 @@ export function capTier(symbol: string): CapTier {
   return "small";
 }
 
+/**
+ * Execution slippage tolerance (fraction) for market/stop/bracket orders, by cap
+ * tier. Small caps are illiquid, so a triggered stop can fill far from its price
+ * on a 4-figure notional — keep them TIGHT (0.1%); mid/large caps are deep enough
+ * to allow a looser 0.5% so their stops reliably fill on a fast move.
+ * Trade-off: a tight bound can leave a small-cap stop UNfilled in a violent move.
+ */
+export function tierSlippage(symbol: string): number {
+  return capTier(symbol) === "small" ? 0.001 : 0.005;
+}
+
 /** Win-rate + net PnL of a set of settled trades (already filtered to closed). */
 function record(trades: Trade[]): { n: number; winRate: number; net: number } {
   const settled = trades.filter((t) => Number.isFinite(t.realizedPnl) && !t.shadow);
