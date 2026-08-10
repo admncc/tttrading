@@ -278,8 +278,9 @@ function GroupForm({
           <label>Entry slippage tolerance</label>
           <div className="muted" style={{ fontSize: 11, lineHeight: 1.5 }}>
             Automatic per cap-tier — <b>small 0.1%</b>, <b>mid/large 0.5%</b>. Applies to ENTRIES only
-            (how far past the signal price we still enter + the entry fill bound). Stop-losses, TPs and
-            closes are never slippage-capped — they always fill so a position is never left unprotected.
+            (how far past the signal price we still enter + the entry fill bound). Protective stop-losses,
+            TPs and closes always fill (wide tolerance). A <b>SL-to-break-even</b> is placed as a limit at
+            entry, so it never slips into a loss (it may stay unfilled if price gaps violently through).
           </div>
         </div>
         <div className="field">

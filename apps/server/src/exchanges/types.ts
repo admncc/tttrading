@@ -91,6 +91,14 @@ export interface BracketParams {
   slippage: number;
   /** Position margin mode — some venues (MEXC) need it on the SL/TP orders too. */
   marginMode?: "cross" | "isolated";
+  /**
+   * Place the STOP as a stop-LIMIT at the exact stop price (fills at that price
+   * or better, never worse) instead of a stop-market. Used for break-even stops
+   * so a "SL to break-even" cannot slip into a loss — at the cost that a violent
+   * gap through the level may leave it unfilled. Venues that don't support it
+   * fall back to a market stop.
+   */
+  slLimit?: boolean;
   /** Force real placement even in test mode (managing an already-real position). */
   force?: boolean;
 }

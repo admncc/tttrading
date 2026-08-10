@@ -649,11 +649,13 @@ export class HyperliquidConnector implements ExchangeConnector {
     stopLoss?: number;
     takeProfits?: number[];
     slippage: number;
+    /** Place the stop as a stop-LIMIT at the exact stop price (break-even stops). */
+    slLimit?: boolean;
     /** Force real placement even in test mode (managing an already-real position). */
     force?: boolean;
   }): Promise<BracketResult> {
     this.ensureExchange();
-    const { symbol, side, size, stopLoss, takeProfits, slippage, force } = params;
+    const { symbol, side, size, stopLoss, takeProfits, slippage, slLimit, force } = params;
     const tps = takeProfits ?? [];
     if (stopLoss === undefined && tps.length === 0) {
       return { tpOrderIds: [], protectedOnExchange: false };
@@ -683,13 +685,18 @@ export class HyperliquidConnector implements ExchangeConnector {
       roundPx(triggerPx * (closeIsBuy ? 1 + slippage : 1 - slippage), asset.szDecimals);
 
     if (stopLoss !== undefined) {
+      // A break-even stop is a stop-LIMIT at the exact stop price: it fills at
+      // that price or better and can never slip into a loss (a violent gap may
+      // leave it unfilled — the accepted trade-off). A normal protective stop is
+      // a stop-MARKET with a slippage-bounded worst price so it always fills.
+      const slPx = slLimit ? roundPx(stopLoss, asset.szDecimals) : worstPx(stopLoss);
       orders.push({
         a: asset.index,
         b: closeIsBuy,
-        p: String(worstPx(stopLoss)),
+        p: String(slPx),
         s: String(roundSize(size, asset.szDecimals)),
         r: true,
-        t: { trigger: { isMarket: true, triggerPx: String(roundPx(stopLoss, asset.szDecimals)), tpsl: "sl" } },
+        t: { trigger: { isMarket: !slLimit, triggerPx: String(roundPx(stopLoss, asset.szDecimals)), tpsl: "sl" } },
       });
       kinds.push("sl");
     }

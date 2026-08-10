@@ -299,7 +299,10 @@ async function moveStop(trade: Trade, newStop: number, breakeven: boolean): Prom
       size: trade.size,
       stopLoss: newStop,
       takeProfits: [],
-      slippage: PROTECTIVE_SLIPPAGE, // a stop must always fill
+      // Break-even → stop-LIMIT at the exact entry (never slips into a loss).
+      // A protective/explicit stop stays a market stop that always fills.
+      slippage: PROTECTIVE_SLIPPAGE,
+      slLimit: breakeven,
       marginMode: groupsRepo.get(trade.groupId)?.settings.marginMode,
       force: true,
     });

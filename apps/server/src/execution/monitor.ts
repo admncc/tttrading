@@ -500,6 +500,7 @@ async function moveSlToBreakeven(
     stopLoss: trade.entryPrice, // break-even
     takeProfits: [],
     slippage,
+    slLimit: true, // break-even → stop-limit at entry; never slip into a loss
     marginMode: groupsRepo.get(trade.groupId)?.settings.marginMode,
     force: true, // real position — place even when the global test switch is on
   });
