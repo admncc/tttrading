@@ -28,15 +28,24 @@ export function capTier(symbol: string): CapTier {
 }
 
 /**
- * Execution slippage tolerance (fraction) for market/stop/bracket orders, by cap
- * tier. Small caps are illiquid, so a triggered stop can fill far from its price
- * on a 4-figure notional — keep them TIGHT (0.1%); mid/large caps are deep enough
- * to allow a looser 0.5% so their stops reliably fill on a fast move.
- * Trade-off: a tight bound can leave a small-cap stop UNfilled in a violent move.
+ * ENTRY slippage tolerance (fraction) by cap tier — how far past the signal price
+ * we still enter, and the fill bound on the entry order itself. Small caps are
+ * illiquid and move fast, so we don't chase them (0.1%); mid/large caps get 0.5%.
+ * This applies to ENTRIES ONLY. Protective/exit orders (stop-loss, take-profit,
+ * partial/full closes) must always execute, so they use PROTECTIVE_SLIPPAGE
+ * instead — a stop is never allowed to go unfilled to save a few bps.
  */
 export function tierSlippage(symbol: string): number {
   return capTier(symbol) === "small" ? 0.001 : 0.005;
 }
+
+/**
+ * Fill tolerance for orders that MUST execute — stop-loss, take-profit, and
+ * partial/full closes. Wide on purpose: protecting or exiting a position always
+ * beats saving slippage, so a stop can never fail to fill on a fast move and
+ * leave the position naked. (Trigger price is unchanged; only the fill bound.)
+ */
+export const PROTECTIVE_SLIPPAGE = 0.05;
 
 /** Win-rate + net PnL of a set of settled trades (already filtered to closed). */
 function record(trades: Trade[]): { n: number; winRate: number; net: number } {

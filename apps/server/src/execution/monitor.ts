@@ -6,7 +6,7 @@ import type { FillLite } from "../hyperliquid/connector.js";
 import { known as knownExchanges, byName } from "../exchanges/registry.js";
 import type { ExchangeConnector, Position } from "../exchanges/types.js";
 import { closing, promoteWorkingToOpen, cancelWorkingTrade } from "./engine.js";
-import { tierSlippage } from "../risk/score.js";
+import { PROTECTIVE_SLIPPAGE } from "../risk/score.js";
 import { alertClosed } from "../alerts/notifier.js";
 import { broadcast } from "../ws/hub.js";
 import { pushStats } from "../stats/service.js";
@@ -469,7 +469,7 @@ async function reconcileTrade(
   const group = groupsRepo.get(trade.groupId);
   const beAfter = group?.settings.breakevenAfterTp ?? 0;
   if (beAfter > 0 && tpFilled >= beAfter && !trade.slMovedToBreakeven && trade.slOrderId) {
-    await moveSlToBreakeven(ex, trade, closedSize, tierSlippage(trade.symbol));
+    await moveSlToBreakeven(ex, trade, closedSize, PROTECTIVE_SLIPPAGE);
     changed = true;
   }
 
