@@ -67,6 +67,12 @@ const RE_PARTIAL_B = /\b(\d{1,3})\s*%\s*(?:out|off|pos|position|booked)\b/i;
 // also counts.
 const RE_PARTIAL_WORD =
   /\b(?:book(?:ed|ing)?|took|tak(?:e|ing|en)|lock(?:ed|ing)?\s*in|secur\w*|scal\w*\s*out|clos(?:e|ed|ing)?)\b[^.\n]{0,30}\b(?:partials?|some|half|tp\s*\d+)\b/i;
+// Booking gains/profits in prose without a % ("booking more gains", "took some
+// profit", "securing profits here", "banking gains"). A partial ACTION verb
+// followed by gains/profit — but NOT when a price follows ("take profit at
+// 64000", "TP: 0.67"), which is a target/info line, not a booking instruction.
+const RE_PARTIAL_GAINS =
+  /\b(?:book(?:ed|ing)?|took|tak(?:e|ing|en)|lock(?:ed|ing)?\s*in|secur\w*|bank(?:ed|ing)?)\b[^.\n%]{0,20}?\b(?:gains?|profits?)\b(?!\s*(?:at|@|:|near|around|of|=|target|tp)?\s*[\d$])/i;
 const RE_TRIM = /\btrim(?:med|ming)?\b/i;
 // "TP1 hit", "target reached", "area 1 reached", "4RR", "done and dusted".
 const RE_TPHIT =
@@ -139,7 +145,7 @@ export function classifyManagementAll(text: string): ManagementAction[] {
   }
   // No explicit %, but the trader clearly booked a partial in prose → book the
   // group's default fraction (fraction left undefined; the engine fills it in).
-  if (!partial && (RE_PARTIAL_WORD.test(text) || RE_TRIM.test(text))) {
+  if (!partial && (RE_PARTIAL_WORD.test(text) || RE_TRIM.test(text) || RE_PARTIAL_GAINS.test(text))) {
     add({ kind: "partial_close", symbol, alsoBreakeven: isBreakeven(text), note: "book partial (default %)" });
     partial = true;
   }
@@ -181,6 +187,7 @@ export const MANAGEMENT_RULES: { name: string; kind: string; pattern: string; de
   { name: "partial_pct_a", kind: "partial_close", pattern: RE_PARTIAL_A.source, description: "book / take / lock in / secure / close  X%." },
   { name: "partial_pct_b", kind: "partial_close", pattern: RE_PARTIAL_B.source, description: "X% out / off / pos / booked." },
   { name: "partial_word", kind: "partial_close", pattern: RE_PARTIAL_WORD.source, description: "Prose partial with no % (booked/took/secured partial|some|half|TPn)." },
+  { name: "partial_gains", kind: "partial_close", pattern: RE_PARTIAL_GAINS.source, description: "Booking gains/profits in prose w/o % (\"booking more gains\", \"took some profit\") → books the group default %; skips 'take profit at <price>' targets." },
   { name: "trim", kind: "partial_close", pattern: RE_TRIM.source, description: "'trim' → partial close (group default %)." },
   { name: "tp_hit", kind: "tp_hit", pattern: RE_TPHIT.source, description: "TP/target reached/hit/done, 'N RR', 'done and dusted'." },
   { name: "trade_update_guard", kind: "guard", pattern: RE_TRADE_UPDATE.source, description: "Progress-update markers ('trade update', 'stop now at breakeven', 'now up X%', …) → NEVER open a new entry; handled as management/info." },
