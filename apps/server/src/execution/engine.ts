@@ -1033,7 +1033,7 @@ async function placeEntry(
   ex: ExchangeConnector,
   leg?: LegCtx,
 ): Promise<Signal> {
-  const { leverage, marginMode, maxSlippage } = group.settings;
+  const { leverage, marginMode } = group.settings;
 
   // Decimal-typo safety net + wrong-side stop guard — run BEFORE sizing so
   // risk-per-trade uses the corrected stop distance. Snap the SL and every TP to
@@ -1186,17 +1186,18 @@ async function placeEntry(
       /* no price feed — can't judge, fall through and let the order try */
     }
     if (mid && mid > 0) {
+      const entryTol = tierSlippage(parsed.symbol); // per cap-tier: small 0.1%, mid/large 0.5%
       const past =
         parsed.side === "long"
-          ? mid > parsed.entry * (1 + maxSlippage)
-          : mid < parsed.entry * (1 - maxSlippage);
+          ? mid > parsed.entry * (1 + entryTol)
+          : mid < parsed.entry * (1 - entryTol);
       if (past) {
         const reason = `entry missed: price ${mid} already past entry ${parsed.entry}`;
         const failed = signalsRepo.update(signal.id, { status: "failed", error: reason })!;
         event(
           "exec",
           `SKIP ${parsed.side} ${parsed.symbol}: ${reason}`,
-          { mid, entry: parsed.entry, side: parsed.side, maxSlippage },
+          { mid, entry: parsed.entry, side: parsed.side, entryTol },
           { level: "warn", groupId: group.id, signalId: signal.id },
         );
         broadcast({ type: "signal", signal: failed });
@@ -1421,7 +1422,7 @@ async function executeLimit(
   try {
     const mid = await ex.getMidPrice(parsed.symbol);
     if (mid && mid > 0) {
-      const tol = group.settings.maxSlippage;
+      const tol = tierSlippage(parsed.symbol); // per cap-tier: small 0.1%, mid/large 0.5%
       const crossesFar =
         parsed.side === "long" ? entry > mid * (1 + tol) : entry < mid * (1 - tol);
       if (crossesFar) {

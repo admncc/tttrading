@@ -275,18 +275,11 @@ function GroupForm({
           </select>
         </div>
         <div className="field">
-          <label>Entry tolerance (%)</label>
-          <input
-            type="number"
-            step={0.1}
-            min={0}
-            value={g.settings.maxSlippage * 100}
-            onChange={(e) => setS({ maxSlippage: Number(e.target.value) / 100 })}
-          />
-          <span className="muted" style={{ fontSize: 11 }}>
-            How far past the signal price we still enter (market skip / limit-chase guard).
-            Fill &amp; stop slippage is automatic per cap-tier: small 0.1%, mid/large 0.5%.
-          </span>
+          <label>Slippage &amp; entry tolerance</label>
+          <div className="muted" style={{ fontSize: 11, lineHeight: 1.5 }}>
+            Automatic per cap-tier — <b>small 0.1%</b>, <b>mid/large 0.5%</b>. Governs both how far
+            past the signal price we still enter, and the fill tolerance on entries, stops and closes.
+          </div>
         </div>
         <div className="field">
           <label>Split single TP into levels?</label>
@@ -659,7 +652,7 @@ export function Groups({ groups, onChange }: { groups: Group[]; onChange: () => 
             <div className="muted">
               {g.settings.leverage}x · {g.settings.tradeSizeUsd.toLocaleString()} USDC ·{" "}
               {g.settings.executionMode} · {g.settings.marginMode} ·{" "}
-              {(g.settings.maxSlippage * 100).toFixed(1)}% entry tol. ·{" "}
+              slippage auto (tier) ·{" "}
               {g.settings.autoSplitSingleTp ? `split→${g.settings.tpLevels} TP` : "TP as-is"}
               {g.settings.breakevenAfterTp > 0 && ` · BE after TP${g.settings.breakevenAfterTp}`}
               {g.settings.blockRedTrades && " · blocks red"}
