@@ -343,6 +343,110 @@ export async function readManagementLevels(
   }
 }
 
+/** One-line human summary of a management view, for the reconsideration prompt. */
+function describeMv(m: ManagementVision): string {
+  if (!m.isManagement) return "NOT a management action (is_management=false)";
+  const p: string[] = [];
+  if (m.closed) p.push("FULL close");
+  if (m.partialPercent && m.partialPercent > 0) p.push(`book ${m.partialPercent}%`);
+  if (m.breakeven) p.push("SL to break-even");
+  if (m.newStop !== undefined) p.push(`SL to ${m.newStop}`);
+  if (m.symbol) p.push(`on ${m.symbol}`);
+  return p.length ? p.join(" + ") : "management, but no concrete action";
+}
+
+const RECONSIDER_MANAGE_TOOL: Anthropic.Tool = {
+  name: "final_management",
+  description: "Your FINAL management decision after weighing the deterministic rules against your own reading.",
+  input_schema: {
+    type: "object",
+    properties: {
+      reasoning: { type: "string", description: "1–2 sentences: where do you and the rules differ, which reading is correct, and why?" },
+      is_management: { type: "boolean", description: "Final: true if this is an actionable management update on an open position." },
+      symbol: { type: "string", description: "Base ticker if identifiable." },
+      new_stop_loss: { type: "number", description: "New stop-loss PRICE if moved to a level. Omit otherwise." },
+      move_to_breakeven: { type: "boolean", description: "True if the stop moved to entry / break-even." },
+      closed: { type: "boolean", description: "True if the WHOLE position was closed/stopped/invalidated." },
+      partial_percent: { type: "number", description: "Percent booked ONLY if a specific fraction is stated (e.g. 50). Omit for a full close or when unknown." },
+      confidence: { type: "number", description: "0..1 confidence in this FINAL decision." },
+    },
+    required: ["reasoning", "is_management", "confidence"],
+  },
+};
+
+/**
+ * Second-pass "reconsideration" when the LLM's first read disagreed with the
+ * deterministic rules (LLM-first mode). The model is shown BOTH conclusions and
+ * asked to deliberate and commit to a final decision — so a genuine divergence
+ * is resolved by thinking, not by a fixed veto/merge rule.
+ */
+export async function reconsiderManagement(
+  text: string,
+  instructions: string | undefined,
+  images: SignalImage[] | undefined,
+  ruleSummary: string,
+  first: ManagementVision,
+): Promise<ManagementVision | null> {
+  if (!llmReady()) return null;
+  const system = withInstructions(
+    MANAGE_SYSTEM +
+      `\n\nYou are RECONSIDERING: your first read disagreed with the deterministic ` +
+      `rules. Weigh both and commit to a FINAL, correct decision. Key distinctions: ` +
+      `"close/exit/stop X" is a FULL close (set closed=true, NOT a partial); a ` +
+      `partial_percent is only for an explicitly stated fraction ("book 50%"); ` +
+      `"up/down Y%" is P&L, never a booking size; a status recap listing several ` +
+      `coins is not actionable (is_management=false).`,
+    instructions,
+  );
+  const content: (Anthropic.TextBlockParam | Anthropic.ImageBlockParam)[] = [
+    { type: "text", text: `Management message (untrusted):\n"""\n${text}\n"""` },
+    {
+      type: "text",
+      text:
+        `The deterministic RULES concluded: ${ruleSummary || "no action"}.\n` +
+        `Your FIRST read concluded: ${describeMv(first)}.\n` +
+        `These DISAGREE. Re-examine the message (and any chart) carefully and give your FINAL decision.`,
+    },
+  ];
+  const imgs = (images ?? []).filter(Boolean);
+  if (imgs.length) {
+    content.push({ type: "text", text: `${imgs.length} attached chart/PDF(s) (untrusted) — read any moved SL / TP levels.` });
+    for (const im of imgs) content.push(attachmentBlock(im));
+  }
+  try {
+    const res = await getClient().messages.create({
+      model: effectiveModel(),
+      max_tokens: 500,
+      system,
+      tools: [RECONSIDER_MANAGE_TOOL],
+      tool_choice: { type: "tool", name: "final_management" },
+      messages: [{ role: "user", content }],
+    });
+    const toolUse = res.content.find((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
+    if (!toolUse) return null;
+    const inp = toolUse.input as {
+      reasoning?: unknown; is_management?: boolean; symbol?: unknown; new_stop_loss?: unknown;
+      move_to_breakeven?: unknown; closed?: unknown; partial_percent?: unknown; confidence?: unknown;
+    };
+    const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+    if (typeof inp.reasoning === "string" && inp.reasoning.trim()) {
+      log.info(`LLM management reconsider: ${inp.reasoning.trim().slice(0, 200)}`);
+    }
+    return {
+      isManagement: inp.is_management === true,
+      symbol: typeof inp.symbol === "string" && inp.symbol.trim() ? inp.symbol.trim().toUpperCase() : undefined,
+      newStop: num(inp.new_stop_loss),
+      breakeven: inp.move_to_breakeven === true,
+      closed: inp.closed === true,
+      partialPercent: num(inp.partial_percent),
+      confidence: Math.max(0, Math.min(1, num(inp.confidence) ?? 0.6)),
+    };
+  } catch (err) {
+    log.error("LLM management reconsider failed:", err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
 /* --------------------- channel-instruction refinement ------------------- */
 
 const INSTRUCTIONS_TOOL: Anthropic.Tool = {

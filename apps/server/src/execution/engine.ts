@@ -10,7 +10,7 @@ import {
 import { activeHyperliquid, byName, known, resolveAllForSymbol, resolveForSymbol } from "../exchanges/registry.js";
 import type { ExchangeConnector } from "../exchanges/types.js";
 import { parseSignal } from "../signals/parser.js";
-import { readManagementLevels, llmReady, type SignalImage } from "../signals/llm.js";
+import { readManagementLevels, reconsiderManagement, llmReady, type SignalImage } from "../signals/llm.js";
 import { classifyManagementAll, isTradeUpdate, isMarketCommentary, type ManagementAction } from "../signals/management.js";
 import { expandTakeProfits } from "../signals/takeprofit.js";
 import { assessRisk, tierSlippage, PROTECTIVE_SLIPPAGE } from "../risk/score.js";
@@ -93,7 +93,37 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
     const consultLlm = !marketCommentary && llmReady() && (primary !== undefined || (llmMode && actions.length > 0));
     if (consultLlm) {
       try {
-        const mv = await readManagementLevels(rawText, group.settings.instructions, imgs, actions.map((a) => a.kind));
+        let mv = await readManagementLevels(rawText, group.settings.instructions, imgs, actions.map((a) => a.kind));
+        // LLM-first "think again" loop: the rules are only a CHECK. When the LLM's
+        // decision diverges from the rules, deliberate once more (confronting the
+        // model with both conclusions) and take the reconsidered result as final —
+        // instead of resolving the divergence with a fixed veto/merge rule.
+        if (llmMode && mv) {
+          const MODELLED = ["close", "partial_close", "sl_move", "sl_breakeven"];
+          const rk = new Set<string>(actions.map((a) => a.kind).filter((k) => MODELLED.includes(k)));
+          const lk = new Set<string>();
+          if (mv.closed) lk.add("close");
+          if (mv.partialPercent && mv.partialPercent > 0) lk.add("partial_close");
+          if (mv.newStop !== undefined) lk.add("sl_move");
+          if (mv.breakeven) lk.add("sl_breakeven");
+          const setsDiffer = [...rk].some((k) => !lk.has(k)) || [...lk].some((k) => !rk.has(k));
+          const vetoDiverges = mv.isManagement === false && rk.size > 0;
+          if ((setsDiffer || vetoDiverges) && (rk.size > 0 || lk.size > 0)) {
+            const ruleSummary = actions
+              .map((a) => a.kind + (a.fraction !== undefined ? ` ${Math.round(a.fraction * 100)}%` : "") + (a.newStop !== undefined ? ` @${a.newStop}` : ""))
+              .join(", ");
+            const mv2 = await reconsiderManagement(rawText, group.settings.instructions, imgs, ruleSummary, mv);
+            if (mv2) {
+              event(
+                "message",
+                `LLM reconsidered (rules:[${[...rk].join(",") || "none"}] vs LLM:[${mv.isManagement ? [...lk].join(",") || "mgmt" : "not-mgmt"}]) — final ${mv2.isManagement ? "action" : "no-action"}`,
+                { rules: [...rk], llmFirst: [...lk], final: { isManagement: mv2.isManagement, closed: mv2.closed, partialPercent: mv2.partialPercent, newStop: mv2.newStop, breakeven: mv2.breakeven, symbol: mv2.symbol } },
+                { level: "info", groupId: group.id },
+              );
+              mv = mv2;
+            }
+          }
+        }
         if (llmMode && actions.length > 0 && mv && mv.isManagement === false && mv.confidence >= 0.6) {
           event(
             "message",
