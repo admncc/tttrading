@@ -58,8 +58,13 @@ function isBreakeven(text: string): boolean {
 const RE_SLMOVE =
   /\b(?:mov\w+|adjust\w*|trail\w*|reduc\w*\s+risk)\b[^.\n]{0,40}\b(sl|stop\s*loss|stop|invalidation)\b[^0-9\n]{0,20}([0-9][0-9.,]*)(?!\s*[rRxX%])/i;
 // "book 50%", "take 20% profit", "50% out".
-const RE_PARTIAL_A = /\b(?:book(?:ing)?|tak(?:e|ing)|lock(?:ing)?\s*in|secur\w*|clos(?:e|ed|ing)?)\b[^%\n]{0,25}?(\d{1,3})\s*%/i;
-const RE_PARTIAL_B = /\b(\d{1,3})\s*%\s*(?:out|off|pos|position|booked)\b/i;
+const RE_PARTIAL_A = /\b(?:book(?:ing)?|tak(?:e|ing)|lock(?:ing)?\s*in|secur\w*|clos(?:e|ed|ing)?)\b[^%\n]{0,25}?(\d{1,3}(?:\.\d+)?)\s*%/i;
+const RE_PARTIAL_B = /\b(\d{1,3}(?:\.\d+)?)\s*%\s*(?:out|off|pos|position|booked)\b/i;
+// A percentage that describes P&L ("down 2.5%", "up 4%", "now 30% in profit") is
+// NOT a booking size. If the matched partial phrase carries a P&L word, the % is
+// a result, not an instruction — so "close OP long here down 2.5%" is a FULL
+// close, not a 2.5% partial.
+const RE_PNL_WORD = /\b(?:up|down|now|currently|already|gain(?:ed|s)?|profit|loss|green|red|running)\b/i;
 // Partial WITHOUT a percentage ("booked partial profits", "manual TP1", "took
 // some off", "lock in some profits", "secured half"). Requires a partial
 // QUALIFIER (partial/some/half/TPn) — NOT bare "profit", so "take profit at
@@ -132,7 +137,12 @@ export function classifyManagementAll(text: string): ManagementAction[] {
 
   const pm = text.match(RE_PARTIAL_A) ?? text.match(RE_PARTIAL_B);
   let partial = false;
-  if (pm) {
+  // Ignore a percentage that is really a P&L reference (e.g. "close … down 2.5%")
+  // — the matched phrase carrying up/down/profit/loss means the % is a result,
+  // not a booking size. A genuine "book 50%" / "closed 50%" has no such word.
+  if (pm && RE_PNL_WORD.test(pm[0])) {
+    // treated as no partial → a bare close (if present) will close in full
+  } else if (pm) {
     const pct = Number(pm[1]);
     if (Number.isFinite(pct) && pct >= 100) {
       // "closed 100%" / "book 100%" is a FULL close, not a partial (and the close

@@ -509,7 +509,12 @@ function deriveSymbol(
   // managed position (the single-position fallback in applyManagement handles that).
   const named = held.filter((c) => {
     const clean = c.replace(/[^A-Z0-9]/g, "");
-    return clean.length >= 3 && new RegExp(`\\b${clean}\\b`, "i").test(rawText);
+    if (clean.length >= 3) return new RegExp(`\\b${clean}\\b`, "i").test(rawText);
+    // 2-char tickers (OP, ME, ID…) match ONLY as an exact UPPERCASE standalone
+    // token, so ordinary lowercase words ("for me", "the id") can't select a
+    // position — but an explicit "close OP long here" still resolves.
+    if (clean.length === 2) return new RegExp(`\\b${clean}\\b`).test(rawText);
+    return false;
   });
   // Only resolve to a symbol when the text names EXACTLY one held coin. Naming
   // several (a status recap) is ambiguous — the caller must not guess one.
@@ -528,7 +533,11 @@ function heldReferencedInText(held: string[], rawText: string): string[] {
     const clean = c.replace(/[^A-Z0-9]/g, "");
     if (clean.length < 2) return false;
     const tagged = new RegExp(`[$#]${clean}\\b`, "i").test(rawText);
-    const bare = clean.length >= 3 && new RegExp(`\\b${clean}\\b`, "i").test(rawText);
+    // ≥3-char tickers match case-insensitively; 2-char only as exact uppercase.
+    const bare =
+      clean.length >= 3
+        ? new RegExp(`\\b${clean}\\b`, "i").test(rawText)
+        : new RegExp(`\\b${clean}\\b`).test(rawText);
     return tagged || bare;
   });
 }
