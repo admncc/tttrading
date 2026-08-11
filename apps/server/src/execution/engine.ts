@@ -105,6 +105,25 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
         }
         if (mv?.isManagement && mv.confidence >= 0.5) {
           const kinds = new Set(actions.map((a) => a.kind));
+          // LLM PRIORITY on close-vs-partial: if the LLM confidently reads a FULL
+          // close and sees NO partial, drop a partial the rules over-read from a
+          // P&L % ("close OP long here down 2.5%") — otherwise only ~5% books
+          // while the position stays open. The LLM's reading wins, as intended.
+          if (
+            mv.confidence >= 0.6 &&
+            mv.closed &&
+            !(mv.partialPercent && mv.partialPercent > 0) &&
+            kinds.has("partial_close")
+          ) {
+            actions = actions.filter((a) => a.kind !== "partial_close");
+            kinds.delete("partial_close");
+            event(
+              "message",
+              `LLM (priority) override: FULL close — dropped rule partial_close (P&L % misread)`,
+              { llmConfidence: mv.confidence, symbol: mv.symbol },
+              { level: "warn", groupId: group.id },
+            );
+          }
           const extra: ManagementAction[] = [];
           if (mv.closed && !kinds.has("close")) extra.push({ kind: "close", symbol: mv.symbol, note: "chart: closed" });
           // The stop-move / partial / break-even extras require an EXPLICIT
