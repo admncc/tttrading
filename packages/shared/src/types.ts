@@ -282,8 +282,26 @@ export interface Trade {
  * each provider's calls from a professional trader's view and track whether our
  * read beats theirs before any active use.
  */
-export interface SecondOpinionTA {
+export interface SecondOpinionTFrame {
   interval: string;
+  trend: "up" | "down" | "sideways";
+  ema20: number;
+  ema50: number;
+  ema200: number;
+  atr: number;
+  support: number;
+  resistance: number;
+  rsi: number;
+}
+/** Our OWN independent plan for the trade — for comparison vs the provider's. */
+export interface SecondOpinionSuggestion {
+  stopLoss: number;
+  takeProfit: number;
+  rr: number;
+  note: string;
+}
+export interface SecondOpinionTA {
+  interval: string; // primary timeframe
   price: number; // price at analysis time
   trend: "up" | "down" | "sideways";
   emaFast: number;
@@ -297,6 +315,16 @@ export interface SecondOpinionTA {
   rrClaimed?: number; // to the provider's TP1
   rrRealistic?: number; // to the nearest opposing swing (support/resistance)
   entryLocation?: string; // e.g. "long into resistance", "short into support"
+  // --- richer context (collected from the start for comparison) ---
+  rsi?: number; // primary-timeframe RSI(14)
+  rangePosition?: number; // 0..1 where price sits in the recent high-low range
+  volumeTrendPct?: number; // last-bar volume vs recent average, % (+ = rising)
+  funding?: number; // current funding rate (perp crowding)
+  openInterest?: number; // notional OI
+  premiumBps?: number; // (mark - oracle) / oracle, in bps
+  frames?: SecondOpinionTFrame[]; // multi-timeframe snapshot (15m/1h/4h/1d)
+  mtfAlignment?: string; // e.g. "3/4 timeframes up"
+  suggestion?: SecondOpinionSuggestion; // our own SL/TP vs the provider's
 }
 export interface SecondOpinionVerdict {
   stance: "positive" | "negative";
@@ -315,6 +343,9 @@ export interface SecondOpinionOutcome {
   slHit?: boolean;
   firstHit?: "tp" | "sl" | "none";
   resolved: boolean;
+  hoursToFirstHit?: number; // hours from signal to the first TP/SL touch
+  maxR?: number; // best favorable excursion in R multiples (using the provider's risk)
+  allTpHit?: boolean; // every listed take-profit was reached
 }
 export interface SecondOpinion {
   id: string;

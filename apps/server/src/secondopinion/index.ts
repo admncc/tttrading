@@ -1,11 +1,17 @@
-import type { Group, ParsedSignal, SecondOpinion, SecondOpinionTA, SecondOpinionVerdict } from "@tttrading/shared";
+import type {
+  Group, ParsedSignal, SecondOpinion, SecondOpinionSuggestion, SecondOpinionTA, SecondOpinionTFrame, SecondOpinionVerdict,
+} from "@tttrading/shared";
 import { log } from "../logger.js";
 import { activeHyperliquid } from "../exchanges/registry.js";
 import { secondOpinions as repo } from "../db/repositories.js";
 import { proAnalystReview, type SignalImage } from "../signals/llm.js";
 import { broadcast } from "../ws/hub.js";
 
-type Candle = { t: number; o: number; h: number; l: number; c: number };
+type Candle = { t: number; o: number; h: number; l: number; c: number; v: number };
+
+const TF_MS: Record<string, number> = { "15m": 900_000, "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000 };
+const FRAMES = ["15m", "1h", "4h", "1d"];
+const BARS = 320; // per timeframe — enough for EMA200
 
 /* ------------------------------ TA helpers ------------------------------ */
 
@@ -16,7 +22,6 @@ function ema(values: number[], period: number): number {
   for (let i = 1; i < values.length; i++) e = values[i]! * k + e * (1 - k);
   return e;
 }
-
 function atr(candles: Candle[], period = 14): number {
   if (candles.length < 2) return 0;
   const trs: number[] = [];
@@ -24,11 +29,19 @@ function atr(candles: Candle[], period = 14): number {
     const c = candles[i]!, p = candles[i - 1]!;
     trs.push(Math.max(c.h - c.l, Math.abs(c.h - p.c), Math.abs(c.l - p.c)));
   }
-  const slice = trs.slice(-period);
-  return slice.reduce((s, x) => s + x, 0) / (slice.length || 1);
+  const s = trs.slice(-period);
+  return s.reduce((a, x) => a + x, 0) / (s.length || 1);
 }
-
-/** Pivot swing highs/lows (a bar that is the extreme of a ±window). */
+function rsi(closes: number[], period = 14): number {
+  if (closes.length <= period) return 50;
+  let gain = 0, loss = 0;
+  for (let i = closes.length - period; i < closes.length; i++) {
+    const d = closes[i]! - closes[i - 1]!;
+    if (d >= 0) gain += d; else loss -= d;
+  }
+  const rs = loss === 0 ? 100 : gain / loss;
+  return 100 - 100 / (1 + rs);
+}
 function pivots(candles: Candle[], w = 3): { highs: number[]; lows: number[] } {
   const highs: number[] = [], lows: number[] = [];
   for (let i = w; i < candles.length - w; i++) {
@@ -42,38 +55,67 @@ function pivots(candles: Candle[], w = 3): { highs: number[]; lows: number[] } {
   }
   return { highs, lows };
 }
+function levels(candles: Candle[], price: number): { support: number; resistance: number } {
+  const { highs, lows } = pivots(candles, 3);
+  const resAbove = highs.filter((h) => h > price).sort((a, b) => a - b);
+  const supBelow = lows.filter((l) => l < price).sort((a, b) => b - a);
+  return {
+    resistance: resAbove[0] ?? Math.max(...candles.map((c) => c.h)),
+    support: supBelow[0] ?? Math.min(...candles.map((c) => c.l)),
+  };
+}
+function trendOf(closes: number[], price: number): "up" | "down" | "sideways" {
+  const f = ema(closes, 20), m = ema(closes, 50), s = ema(closes, Math.min(200, closes.length));
+  if (f > m && m > s && price > s) return "up";
+  if (f < m && m < s && price < s) return "down";
+  return "sideways";
+}
+const r6 = (n: number) => Number(n.toPrecision(6));
 
-function computeTA(candles: Candle[], parsed: ParsedSignal, interval: string): SecondOpinionTA | undefined {
+function computeFrame(interval: string, candles: Candle[]): SecondOpinionTFrame | undefined {
   if (candles.length < 30) return undefined;
   const closes = candles.map((c) => c.c);
   const price = closes[closes.length - 1]!;
-  const emaFast = ema(closes, 20);
-  const emaMid = ema(closes, 50);
-  const emaSlow = ema(closes, Math.min(200, closes.length));
-  const a = atr(candles, 14);
-  const { highs, lows } = pivots(candles, 3);
-  const resAbove = highs.filter((h) => h > price).sort((x, y) => x - y);
-  const supBelow = lows.filter((l) => l < price).sort((x, y) => y - x);
-  const resistance = resAbove[0] ?? Math.max(...candles.map((c) => c.h));
-  const support = supBelow[0] ?? Math.min(...candles.map((c) => c.l));
+  const { support, resistance } = levels(candles, price);
+  return {
+    interval,
+    trend: trendOf(closes, price),
+    ema20: r6(ema(closes, 20)),
+    ema50: r6(ema(closes, 50)),
+    ema200: r6(ema(closes, Math.min(200, closes.length))),
+    atr: r6(atr(candles, 14)),
+    support: r6(support),
+    resistance: r6(resistance),
+    rsi: Math.round(rsi(closes, 14)),
+  };
+}
 
-  let trend: SecondOpinionTA["trend"] = "sideways";
-  if (emaFast > emaMid && emaMid > emaSlow && price > emaSlow) trend = "up";
-  else if (emaFast < emaMid && emaMid < emaSlow && price < emaSlow) trend = "down";
+function buildTA(
+  parsed: ParsedSignal,
+  primary: Candle[],
+  frames: SecondOpinionTFrame[],
+  ctx: { funding?: number; openInterest?: number; premiumBps?: number },
+): SecondOpinionTA | undefined {
+  if (primary.length < 30) return undefined;
+  const closes = primary.map((c) => c.c);
+  const price = closes[closes.length - 1]!;
+  const emaFast = ema(closes, 20), emaMid = ema(closes, 50), emaSlow = ema(closes, Math.min(200, closes.length));
+  const a = atr(primary, 14);
+  const { support, resistance } = levels(primary, price);
+  const trend = trendOf(closes, price);
 
+  const long = parsed.side === "long";
   const entry = parsed.entry ?? price;
   const sl = parsed.stopLoss;
   const tp1 = parsed.takeProfits?.[0];
-  const long = parsed.side === "long";
   const risk = sl !== undefined ? Math.abs(entry - sl) : undefined;
   const rrClaimed = risk && risk > 0 && tp1 !== undefined ? Math.abs(tp1 - entry) / risk : undefined;
-  const rewardRealistic = long ? resistance - entry : entry - support;
-  const rrRealistic = risk && risk > 0 && rewardRealistic > 0 ? rewardRealistic / risk : undefined;
+  const rewardReal = long ? resistance - entry : entry - support;
+  const rrRealistic = risk && risk > 0 && rewardReal > 0 ? rewardReal / risk : undefined;
   const slAtrMultiple = risk && a > 0 ? risk / a : undefined;
 
-  // Entry location vs the nearest opposing structure (within ~0.6 ATR = "into").
-  let entryLocation: string | undefined;
   const near = (x: number, y: number) => a > 0 && Math.abs(x - y) <= 0.6 * a;
+  let entryLocation: string | undefined;
   if (long) {
     if (near(entry, resistance) || entry >= resistance) entryLocation = "long into resistance (poor location)";
     else if (near(entry, support)) entryLocation = "long off support (good location)";
@@ -82,56 +124,103 @@ function computeTA(candles: Candle[], parsed: ParsedSignal, interval: string): S
     else if (near(entry, resistance)) entryLocation = "short off resistance (good location)";
   }
 
-  const r = (n: number) => Number(n.toPrecision(6));
+  // Range position & volume trend on the primary timeframe.
+  const look = primary.slice(-100);
+  const hi = Math.max(...look.map((c) => c.h)), lo = Math.min(...look.map((c) => c.l));
+  const rangePosition = hi > lo ? (price - lo) / (hi - lo) : 0.5;
+  const vols = primary.slice(-20).map((c) => c.v);
+  const avgVol = vols.reduce((s, x) => s + x, 0) / (vols.length || 1);
+  const lastVol = primary[primary.length - 1]!.v;
+  const volumeTrendPct = avgVol > 0 ? (lastVol / avgVol - 1) * 100 : 0;
+
+  // Our OWN plan: SL just beyond structure (0.5 ATR), TP at the nearest opposing level.
+  let suggestion: SecondOpinionSuggestion | undefined;
+  if (a > 0) {
+    const ourSL = long ? support - 0.5 * a : resistance + 0.5 * a;
+    const ourTP = long ? resistance : support;
+    const ourRisk = Math.abs(entry - ourSL);
+    const ourReward = long ? ourTP - entry : entry - ourTP;
+    if (ourRisk > 0 && ourReward > 0) {
+      suggestion = {
+        stopLoss: r6(ourSL),
+        takeProfit: r6(ourTP),
+        rr: r6(ourReward / ourRisk),
+        note: `Ours: SL ${r6(ourSL)} (beyond structure), TP ${r6(ourTP)} (next level) → R/R ${(ourReward / ourRisk).toFixed(2)}`,
+      };
+    }
+  }
+
+  const aligned = frames.filter((f) => (long ? f.trend === "up" : f.trend === "down")).length;
+  const mtfAlignment = frames.length ? `${aligned}/${frames.length} timeframes aligned with the trade` : undefined;
+
   return {
-    interval,
-    price: r(price),
+    interval: "1h",
+    price: r6(price),
     trend,
-    emaFast: r(emaFast),
-    emaMid: r(emaMid),
-    emaSlow: r(emaSlow),
-    atr: r(a),
-    atrPct: r(a / price),
-    support: r(support),
-    resistance: r(resistance),
-    slAtrMultiple: slAtrMultiple !== undefined ? r(slAtrMultiple) : undefined,
-    rrClaimed: rrClaimed !== undefined ? r(rrClaimed) : undefined,
-    rrRealistic: rrRealistic !== undefined ? r(rrRealistic) : undefined,
+    emaFast: r6(emaFast),
+    emaMid: r6(emaMid),
+    emaSlow: r6(emaSlow),
+    atr: r6(a),
+    atrPct: r6(a / price),
+    support: r6(support),
+    resistance: r6(resistance),
+    slAtrMultiple: slAtrMultiple !== undefined ? r6(slAtrMultiple) : undefined,
+    rrClaimed: rrClaimed !== undefined ? r6(rrClaimed) : undefined,
+    rrRealistic: rrRealistic !== undefined ? r6(rrRealistic) : undefined,
     entryLocation,
+    rsi: Math.round(rsi(closes, 14)),
+    rangePosition: r6(rangePosition),
+    volumeTrendPct: r6(volumeTrendPct),
+    funding: ctx.funding,
+    openInterest: ctx.openInterest !== undefined ? r6(ctx.openInterest) : undefined,
+    premiumBps: ctx.premiumBps !== undefined ? r6(ctx.premiumBps) : undefined,
+    frames,
+    mtfAlignment,
+    suggestion,
   };
 }
 
-/** Rules-only verdict when the LLM is unavailable. */
 function heuristicVerdict(parsed: ParsedSignal, ta?: SecondOpinionTA): SecondOpinionVerdict {
   let score = 50;
   const red: string[] = [], good: string[] = [];
   if (ta) {
-    const aligned = (parsed.side === "long" && ta.trend === "up") || (parsed.side === "short" && ta.trend === "down");
-    if (aligned) { score += 15; good.push(`trend-aligned (${ta.trend})`); }
-    else if (ta.trend !== "sideways") { score -= 15; red.push(`against the ${ta.trend}trend`); }
-    if (ta.rrRealistic !== undefined) {
-      if (ta.rrRealistic >= 2) { score += 15; good.push(`good R/R to next level (${ta.rrRealistic.toFixed(1)})`); }
-      else if (ta.rrRealistic < 1) { score -= 15; red.push(`poor realistic R/R (${ta.rrRealistic.toFixed(1)})`); }
+    const long = parsed.side === "long";
+    const alignedFrames = (ta.frames ?? []).filter((f) => (long ? f.trend === "up" : f.trend === "down")).length;
+    const totalFrames = ta.frames?.length ?? 0;
+    if (totalFrames) {
+      if (alignedFrames >= Math.ceil(totalFrames * 0.75)) { score += 18; good.push(ta.mtfAlignment ?? "multi-timeframe aligned"); }
+      else if (alignedFrames <= Math.floor(totalFrames * 0.25)) { score -= 18; red.push(`against most timeframes (${ta.mtfAlignment})`); }
     }
-    if (ta.slAtrMultiple !== undefined && ta.slAtrMultiple < 1) { score -= 10; red.push(`SL inside 1x ATR (${ta.slAtrMultiple.toFixed(2)}) — wick-out risk`); }
+    if (ta.rrRealistic !== undefined) {
+      if (ta.rrRealistic >= 2) { score += 14; good.push(`good R/R to next level (${ta.rrRealistic.toFixed(1)})`); }
+      else if (ta.rrRealistic < 1) { score -= 14; red.push(`poor realistic R/R (${ta.rrRealistic.toFixed(1)})`); }
+    }
+    if (ta.slAtrMultiple !== undefined && ta.slAtrMultiple < 1) { score -= 10; red.push(`SL inside 1x ATR (${ta.slAtrMultiple.toFixed(2)})`); }
     if (ta.entryLocation?.includes("poor")) { score -= 10; red.push(ta.entryLocation); }
     if (ta.entryLocation?.includes("good")) { score += 8; good.push(ta.entryLocation); }
+    if (ta.rsi !== undefined) {
+      if (long && ta.rsi >= 72) { score -= 8; red.push(`overbought RSI ${ta.rsi}`); }
+      if (!long && ta.rsi <= 28) { score -= 8; red.push(`oversold RSI ${ta.rsi}`); }
+    }
+    if (ta.funding !== undefined) {
+      const crowded = long ? ta.funding > 0.0003 : ta.funding < -0.0003;
+      if (crowded) { score -= 6; red.push(`crowded funding (${(ta.funding * 100).toFixed(3)}%)`); }
+    }
   }
   score = Math.max(0, Math.min(100, Math.round(score)));
   return {
     stance: score >= 50 ? "positive" : "negative",
     score,
-    summary: ta ? `Heuristic read: ${good.concat(red).join("; ") || "neutral setup"}.` : "No candle data — no technical read.",
+    summary: ta ? `Heuristic: ${good.concat(red).join("; ") || "neutral setup"}.` : "No candle data — no technical read.",
     redFlags: red,
     strengths: good,
     source: "heuristic",
-    confidence: ta ? 0.4 : 0.2,
+    confidence: ta ? 0.45 : 0.2,
   };
 }
 
 /* --------------------------- generation (A) ----------------------------- */
 
-/** Build an independent Second Opinion for one signal. Observe-only; never trades. */
 export async function generateSecondOpinion(
   group: Group,
   parsed: ParsedSignal,
@@ -140,34 +229,43 @@ export async function generateSecondOpinion(
 ): Promise<void> {
   try {
     const symbol = parsed.symbol.toUpperCase();
-    let candles: Candle[] = [];
-    try {
-      const end = Date.now();
-      const start = end - 30 * 86_400_000; // ~30 days of 1h candles
-      candles = await activeHyperliquid().getCandles(symbol, "1h", start, end);
-    } catch (err) {
-      log.warn(`second-opinion: no candles for ${symbol}: ${err instanceof Error ? err.message : err}`);
-    }
-    const ta = computeTA(candles, parsed, "1h");
+    const hl = activeHyperliquid();
+    const now = Date.now();
 
+    const byTf: Record<string, Candle[]> = {};
+    await Promise.all(
+      FRAMES.map(async (tf) => {
+        try {
+          byTf[tf] = await hl.getCandles(symbol, tf, now - BARS * (TF_MS[tf] ?? 3_600_000), now);
+        } catch {
+          byTf[tf] = [];
+        }
+      }),
+    );
+    const ctx = await hl.getMarketContext(symbol).catch(() => ({}));
+
+    const frames = FRAMES.map((tf) => computeFrame(tf, byTf[tf] ?? [])).filter((f): f is SecondOpinionTFrame => !!f);
+    const ta = buildTA(parsed, byTf["1h"] ?? [], frames, ctx);
+
+    const frameLine = frames.map((f) => `${f.interval}:${f.trend}(rsi ${f.rsi})`).join(", ");
     const brief =
       `Signal from channel "${group.name}": ${parsed.side.toUpperCase()} ${symbol}\n` +
-      `Entry: ${parsed.entry ?? "CMP"} · SL: ${parsed.stopLoss ?? "none"} · TPs: ${parsed.takeProfits?.join(", ") ?? "none"}\n\n` +
+      `Provider plan — Entry: ${parsed.entry ?? "CMP"} · SL: ${parsed.stopLoss ?? "none"} · TPs: ${parsed.takeProfits?.join(", ") ?? "none"}\n\n` +
       (ta
-        ? `Objective indicators (1h candles):\n` +
-          `- price ${ta.price}, trend ${ta.trend} (EMA20 ${ta.emaFast} / EMA50 ${ta.emaMid} / EMA200 ${ta.emaSlow})\n` +
-          `- ATR ${ta.atr} (${(ta.atrPct * 100).toFixed(2)}% of price)\n` +
-          `- nearest support ${ta.support}, nearest resistance ${ta.resistance}\n` +
-          `- SL distance = ${ta.slAtrMultiple?.toFixed(2) ?? "?"}x ATR\n` +
-          `- R/R claimed to TP1: ${ta.rrClaimed?.toFixed(2) ?? "?"}; realistic R/R to next level: ${ta.rrRealistic?.toFixed(2) ?? "?"}\n` +
-          `- entry location: ${ta.entryLocation ?? "n/a"}\n`
-        : `No candle data available for objective indicators — judge from the chart image if present.\n`) +
-      `\nGive your independent professional assessment of THIS setup.`;
+        ? `Objective indicators:\n` +
+          `- multi-timeframe trend: ${frameLine} — ${ta.mtfAlignment}\n` +
+          `- 1h price ${ta.price}, EMA20/50/200 ${ta.emaFast}/${ta.emaMid}/${ta.emaSlow}, RSI ${ta.rsi}\n` +
+          `- ATR ${ta.atr} (${(ta.atrPct * 100).toFixed(2)}%); SL distance = ${ta.slAtrMultiple?.toFixed(2) ?? "?"}x ATR\n` +
+          `- support ${ta.support} / resistance ${ta.resistance}; range position ${(ta.rangePosition! * 100).toFixed(0)}%\n` +
+          `- R/R claimed to TP1 ${ta.rrClaimed?.toFixed(2) ?? "?"} vs realistic to next level ${ta.rrRealistic?.toFixed(2) ?? "?"}\n` +
+          `- entry location: ${ta.entryLocation ?? "n/a"}; volume vs avg ${ta.volumeTrendPct?.toFixed(0)}%\n` +
+          (ta.funding !== undefined ? `- funding ${(ta.funding * 100).toFixed(4)}%, premium ${ta.premiumBps?.toFixed(1)} bps, OI ${ta.openInterest?.toFixed(0)}\n` : "") +
+          (ta.suggestion ? `- OUR independent plan: ${ta.suggestion.note}\n` : "")
+        : `No candle data — judge from the chart image if present.\n`) +
+      `\nGive your independent professional assessment of THIS setup and whether the provider's levels are sound.`;
 
     const review = await proAnalystReview(brief, group.settings.instructions, images);
-    const verdict: SecondOpinionVerdict = review
-      ? { ...review, source: "llm" }
-      : heuristicVerdict(parsed, ta);
+    const verdict: SecondOpinionVerdict = review ? { ...review, source: "llm" } : heuristicVerdict(parsed, ta);
 
     const op = repo.create({
       signalId,
@@ -191,7 +289,6 @@ export async function generateSecondOpinion(
 /* ------------------------ claim verification (B) ------------------------ */
 
 async function verifyOne(op: SecondOpinion): Promise<void> {
-  const entry = op.entry;
   const createdMs = new Date(op.createdAt).getTime();
   const ageMs = Date.now() - createdMs;
   let candles: Candle[] = [];
@@ -201,47 +298,53 @@ async function verifyOne(op: SecondOpinion): Promise<void> {
     return;
   }
   if (candles.length === 0) return;
-  const base = entry ?? candles[0]!.o;
+  const base = op.entry ?? candles[0]!.o;
   if (!(base > 0)) return;
   const long = op.side === "long";
-  const tp1 = op.takeProfits?.[0];
+  const tps = op.takeProfits ?? [];
+  const tp1 = tps[0];
   const sl = op.stopLoss;
+  const risk = sl !== undefined ? Math.abs(base - sl) : undefined;
 
   let maxHigh = -Infinity, minLow = Infinity;
   let firstHit: "tp" | "sl" | "none" = "none";
+  let hitMs: number | undefined;
   for (const c of candles) {
     maxHigh = Math.max(maxHigh, c.h);
     minLow = Math.min(minLow, c.l);
     if (firstHit === "none") {
       const tpTouched = tp1 !== undefined && (long ? c.h >= tp1 : c.l <= tp1);
       const slTouched = sl !== undefined && (long ? c.l <= sl : c.h >= sl);
-      // If a single candle spans both, assume SL first (conservative).
-      if (slTouched) firstHit = "sl";
-      else if (tpTouched) firstHit = "tp";
+      if (slTouched) { firstHit = "sl"; hitMs = c.t; }
+      else if (tpTouched) { firstHit = "tp"; hitMs = c.t; }
     }
   }
-  const mfePct = long ? (maxHigh - base) / base : (base - minLow) / base;
-  const maePct = long ? (base - minLow) / base : (maxHigh - base) / base;
+  const mfe = long ? maxHigh - base : base - minLow;
+  const mfePct = (mfe / base) * 100;
+  const maePct = ((long ? base - minLow : maxHigh - base) / base) * 100;
   const tp1Hit = tp1 !== undefined ? (long ? maxHigh >= tp1 : minLow <= tp1) : undefined;
   const slHit = sl !== undefined ? (long ? minLow <= sl : maxHigh >= sl) : undefined;
+  const allTpHit = tps.length > 0 ? tps.every((t) => (long ? maxHigh >= t : minLow <= t)) : undefined;
+  const maxR = risk && risk > 0 ? mfe / risk : undefined;
   const resolved = firstHit !== "none" || ageMs > 14 * 86_400_000;
 
   repo.setOutcome(op.id, {
     checkedAt: new Date().toISOString(),
-    mfePct: Number((mfePct * 100).toFixed(2)),
-    maePct: Number((maePct * 100).toFixed(2)),
+    mfePct: Number(mfePct.toFixed(2)),
+    maePct: Number(maePct.toFixed(2)),
     tp1Hit,
     slHit,
     firstHit,
     resolved,
+    hoursToFirstHit: hitMs ? Number(((hitMs - createdMs) / 3_600_000).toFixed(1)) : undefined,
+    maxR: maxR !== undefined ? Number(maxR.toFixed(2)) : undefined,
+    allTpHit,
   });
 }
 
-/** Refresh outcomes for unresolved opinions from the last ~14 days. */
 export async function verifySecondOpinions(): Promise<void> {
   const since = new Date(Date.now() - 14 * 86_400_000).toISOString();
-  const open = repo.unresolvedSince(since);
-  for (const op of open) {
+  for (const op of repo.unresolvedSince(since)) {
     try {
       await verifyOne(op);
     } catch (err) {

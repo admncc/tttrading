@@ -746,26 +746,66 @@ export class HyperliquidConnector implements ExchangeConnector {
     }
   }
 
-  /** Historical OHLC candles for a symbol, oldest first. */
+  /** Historical OHLCV candles for a symbol, oldest first. */
   async getCandles(
     symbol: string,
     interval: string,
     startMs: number,
     endMs: number,
-  ): Promise<{ t: number; o: number; h: number; l: number; c: number }[]> {
+  ): Promise<{ t: number; o: number; h: number; l: number; c: number; v: number }[]> {
     const raw = (await this.info.candleSnapshot({
       coin: symbol.toUpperCase(),
       interval: interval as Parameters<typeof this.info.candleSnapshot>[0]["interval"],
       startTime: startMs,
       endTime: endMs,
-    })) as unknown as { t: number; o: string; h: string; l: string; c: string }[];
+    })) as unknown as { t: number; o: string; h: string; l: string; c: string; v?: string }[];
     return raw.map((k) => ({
       t: k.t,
       o: Number(k.o),
       h: Number(k.h),
       l: Number(k.l),
       c: Number(k.c),
+      v: Number(k.v ?? 0),
     }));
+  }
+
+  /**
+   * Perp market context for a symbol: funding rate, open interest, mark/oracle
+   * (premium). Reads the routed dex's metaAndAssetCtxs. Best-effort — returns
+   * undefined fields it can't resolve.
+   */
+  async getMarketContext(
+    symbol: string,
+  ): Promise<{ funding?: number; openInterest?: number; markPx?: number; oraclePx?: number; premiumBps?: number }> {
+    const bare = symbol.toUpperCase();
+    const asset = await this.getAsset(bare).catch(() => undefined);
+    const dex = asset?.dex; // builder dex namespace, if any
+    try {
+      const [meta, ctxs] = (await this.infoPost({
+        type: "metaAndAssetCtxs",
+        ...(dex ? { dex } : {}),
+      })) as [
+        { universe: { name: string }[] },
+        { funding?: string; openInterest?: string; markPx?: string; oraclePx?: string }[],
+      ];
+      const idx = (meta?.universe ?? []).findIndex(
+        (u) => (u.name.split(":").pop() ?? u.name).toUpperCase() === bare,
+      );
+      if (idx < 0) return {};
+      const c = ctxs?.[idx] ?? {};
+      const mark = Number(c.markPx);
+      const oracle = Number(c.oraclePx);
+      const premiumBps = mark > 0 && oracle > 0 ? ((mark - oracle) / oracle) * 10_000 : undefined;
+      return {
+        funding: c.funding !== undefined ? Number(c.funding) : undefined,
+        openInterest: c.openInterest !== undefined ? Number(c.openInterest) * (mark || 1) : undefined,
+        markPx: Number.isFinite(mark) ? mark : undefined,
+        oraclePx: Number.isFinite(oracle) ? oracle : undefined,
+        premiumBps: premiumBps !== undefined && Number.isFinite(premiumBps) ? premiumBps : undefined,
+      };
+    } catch {
+      return {};
+    }
   }
 
   /** Recent fills for the configured account (most recent first). */

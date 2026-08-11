@@ -158,12 +158,42 @@ export function SecondOpinion() {
                             {r.verdict?.redFlags?.length ? <div style={{ color: "#ef4444" }}>⚠ {r.verdict.redFlags.join(" · ")}</div> : null}
                             {r.verdict?.strengths?.length ? <div style={{ color: "#22c55e" }}>✓ {r.verdict.strengths.join(" · ")}</div> : null}
                             {r.ta ? (
-                              <div className="muted" style={{ fontSize: 12 }}>
-                                entry {r.entry ?? "CMP"} · SL {r.stopLoss ?? "—"} · TP {r.takeProfits?.join("/") ?? "—"} ·
-                                {" "}price {r.ta.price} · ATR {r.ta.atr} ({(r.ta.atrPct * 100).toFixed(2)}%) ·
-                                {" "}support {r.ta.support} · resistance {r.ta.resistance} ·
-                                {" "}SL={r.ta.slAtrMultiple?.toFixed(2) ?? "?"}×ATR · {r.ta.entryLocation ?? ""}
-                              </div>
+                              <>
+                                {r.ta.frames?.length ? (
+                                  <div className="muted" style={{ fontSize: 12 }}>
+                                    <b>MTF:</b>{" "}
+                                    {r.ta.frames.map((f) => `${f.interval} ${f.trend}(rsi ${f.rsi})`).join(" · ")}
+                                    {r.ta.mtfAlignment ? ` — ${r.ta.mtfAlignment}` : ""}
+                                  </div>
+                                ) : null}
+                                <div className="muted" style={{ fontSize: 12 }}>
+                                  price {r.ta.price} · ATR {r.ta.atr} ({(r.ta.atrPct * 100).toFixed(2)}%) · RSI {r.ta.rsi ?? "?"} ·
+                                  {" "}range {r.ta.rangePosition !== undefined ? `${Math.round(r.ta.rangePosition * 100)}%` : "?"} ·
+                                  {" "}support {r.ta.support} · resistance {r.ta.resistance} ·
+                                  {" "}SL={r.ta.slAtrMultiple?.toFixed(2) ?? "?"}×ATR · {r.ta.entryLocation ?? ""}
+                                </div>
+                                {r.ta.funding !== undefined ? (
+                                  <div className="muted" style={{ fontSize: 12 }}>
+                                    funding {(r.ta.funding * 100).toFixed(4)}% · premium {r.ta.premiumBps?.toFixed(1) ?? "?"} bps ·
+                                    {" "}OI {r.ta.openInterest ? Math.round(r.ta.openInterest).toLocaleString() : "?"} ·
+                                    {" "}vol vs avg {r.ta.volumeTrendPct?.toFixed(0) ?? "?"}%
+                                  </div>
+                                ) : null}
+                                <div style={{ fontSize: 12 }}>
+                                  <b>Provider:</b> <span className="muted">entry {r.entry ?? "CMP"} · SL {r.stopLoss ?? "—"} · TP {r.takeProfits?.join("/") ?? "—"} (R/R {r.ta.rrClaimed?.toFixed(1) ?? "?"})</span>
+                                  {r.ta.suggestion ? (
+                                    <> {" · "}<b>Ours:</b> <span className="muted">SL {r.ta.suggestion.stopLoss} · TP {r.ta.suggestion.takeProfit} (R/R {r.ta.suggestion.rr.toFixed(1)})</span></>
+                                  ) : null}
+                                </div>
+                                {r.outcome ? (
+                                  <div className="muted" style={{ fontSize: 12 }}>
+                                    <b>Outcome:</b> firstHit {r.outcome.firstHit ?? "—"}
+                                    {r.outcome.hoursToFirstHit !== undefined ? ` after ${r.outcome.hoursToFirstHit}h` : ""} ·
+                                    {" "}MFE {r.outcome.mfePct}% / MAE {r.outcome.maePct}% ·
+                                    {" "}maxR {r.outcome.maxR ?? "?"} · allTP {r.outcome.allTpHit ? "yes" : "no"}
+                                  </div>
+                                ) : null}
+                              </>
                             ) : <div className="muted">No candle data.</div>}
                           </div>
                         </td>
