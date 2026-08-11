@@ -130,6 +130,12 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
           // symbol from the chart — without one they'd fall back to the sole open
           // position and could act on the wrong coin the chart actually showed.
           if (mv.symbol) {
+            // Stamp the LLM's coin onto any rule action that couldn't resolve one
+            // itself. Without this, a symbol-less action falls back to the sole
+            // open position and can hit the WRONG coin — e.g. a "book Tp on CRV"
+            // message (CRV not held) once booked a partial of PENGU. With the LLM
+            // symbol attached it targets CRV → finds no CRV position → no action.
+            for (const a of actions) if (!a.symbol) a.symbol = mv.symbol;
             if (mv.newStop !== undefined && !kinds.has("sl_move"))
               extra.push({ kind: "sl_move", symbol: mv.symbol, newStop: mv.newStop, note: `chart: SL to ${mv.newStop}` });
             if (mv.breakeven && !kinds.has("sl_breakeven") && !kinds.has("partial_close"))
