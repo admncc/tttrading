@@ -153,7 +153,20 @@ export function SecondOpinion() {
                     {open === r.id && (
                       <tr key={r.id + "d"}>
                         <td colSpan={9} style={{ background: "rgba(255,255,255,0.02)" }}>
-                          <div style={{ padding: "6px 4px", display: "grid", gap: 8 }}>
+                          <div
+                            style={{
+                              padding: "8px 6px",
+                              display: "grid",
+                              gap: 6,
+                              whiteSpace: "normal",
+                              overflowWrap: "anywhere",
+                              wordBreak: "break-word",
+                              maxWidth: "min(1180px, 88vw)",
+                              lineHeight: 1.5,
+                              position: "sticky",
+                              left: 8,
+                            }}
+                          >
                             <div><b>Verdict:</b> {r.verdict?.summary || "—"}</div>
                             {r.verdict?.redFlags?.length ? <div style={{ color: "#ef4444" }}>⚠ {r.verdict.redFlags.join(" · ")}</div> : null}
                             {r.verdict?.strengths?.length ? <div style={{ color: "#22c55e" }}>✓ {r.verdict.strengths.join(" · ")}</div> : null}
