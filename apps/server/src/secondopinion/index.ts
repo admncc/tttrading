@@ -114,6 +114,14 @@ function buildTA(
   const rrRealistic = risk && risk > 0 && rewardReal > 0 ? rewardReal / risk : undefined;
   const slAtrMultiple = risk && a > 0 ? risk / a : undefined;
 
+  // Stale-entry check: a limit entry far from the live market means price has
+  // moved past the intended fill — the signal is stale / mismatched (e.g. a long
+  // limit well below a market that has already run away, or a chase far above it).
+  const entryVsPricePct = parsed.entry !== undefined ? ((parsed.entry - price) / price) * 100 : undefined;
+  const entryAtrDist = parsed.entry !== undefined && a > 0 ? Math.abs(parsed.entry - price) / a : undefined;
+  const entryStale =
+    entryVsPricePct !== undefined && (Math.abs(entryVsPricePct) > 3 || (entryAtrDist !== undefined && entryAtrDist > 2));
+
   const near = (x: number, y: number) => a > 0 && Math.abs(x - y) <= 0.6 * a;
   let entryLocation: string | undefined;
   if (long) {
@@ -168,6 +176,8 @@ function buildTA(
     rrClaimed: rrClaimed !== undefined ? r6(rrClaimed) : undefined,
     rrRealistic: rrRealistic !== undefined ? r6(rrRealistic) : undefined,
     entryLocation,
+    entryVsPricePct: entryVsPricePct !== undefined ? r6(entryVsPricePct) : undefined,
+    entryStale,
     rsi: Math.round(rsi(closes, 14)),
     rangePosition: r6(rangePosition),
     volumeTrendPct: r6(volumeTrendPct),
@@ -198,6 +208,10 @@ function heuristicVerdict(parsed: ParsedSignal, ta?: SecondOpinionTA): SecondOpi
     if (ta.slAtrMultiple !== undefined && ta.slAtrMultiple < 1) { score -= 10; red.push(`SL inside 1x ATR (${ta.slAtrMultiple.toFixed(2)})`); }
     if (ta.entryLocation?.includes("poor")) { score -= 10; red.push(ta.entryLocation); }
     if (ta.entryLocation?.includes("good")) { score += 8; good.push(ta.entryLocation); }
+    if (ta.entryStale) {
+      score -= 12;
+      red.push(`stale/mismatched entry — ${ta.entryVsPricePct! > 0 ? "+" : ""}${ta.entryVsPricePct?.toFixed(1)}% from live price`);
+    }
     if (ta.rsi !== undefined) {
       if (long && ta.rsi >= 72) { score -= 8; red.push(`overbought RSI ${ta.rsi}`); }
       if (!long && ta.rsi <= 28) { score -= 8; red.push(`oversold RSI ${ta.rsi}`); }
@@ -258,6 +272,7 @@ export async function generateSecondOpinion(
       "review",
       ta
         ? `Data: candles [${FRAMES.map((tf) => `${tf}:${byTf[tf]?.length ?? 0}`).join(" ")}] · MTF ${ta.mtfAlignment} · trend ${ta.trend} · RSI ${ta.rsi} · SL ${ta.slAtrMultiple?.toFixed(2)}xATR · R/R ${ta.rrClaimed?.toFixed(1) ?? "?"}→${ta.rrRealistic?.toFixed(1) ?? "?"}` +
+            (ta.entryStale ? ` · ⚠ STALE entry (${ta.entryVsPricePct! > 0 ? "+" : ""}${ta.entryVsPricePct?.toFixed(1)}% vs live)` : "") +
             (ta.funding !== undefined ? ` · funding ${(ta.funding * 100).toFixed(4)}%` : "")
         : `Data: no usable candles for ${symbol} — judging from chart/heuristic only`,
       { candleCounts: Object.fromEntries(FRAMES.map((tf) => [tf, byTf[tf]?.length ?? 0])), marketContext: ctx, ta },
@@ -276,6 +291,9 @@ export async function generateSecondOpinion(
           `- support ${ta.support} / resistance ${ta.resistance}; range position ${(ta.rangePosition! * 100).toFixed(0)}%\n` +
           `- R/R claimed to TP1 ${ta.rrClaimed?.toFixed(2) ?? "?"} vs realistic to next level ${ta.rrRealistic?.toFixed(2) ?? "?"}\n` +
           `- entry location: ${ta.entryLocation ?? "n/a"}; volume vs avg ${ta.volumeTrendPct?.toFixed(0)}%\n` +
+          (ta.entryVsPricePct !== undefined
+            ? `- provider entry is ${ta.entryVsPricePct > 0 ? "+" : ""}${ta.entryVsPricePct.toFixed(2)}% vs live price${ta.entryStale ? " → STALE/MISMATCHED (market has moved past the intended fill)" : ""}\n`
+            : "") +
           (ta.funding !== undefined ? `- funding ${(ta.funding * 100).toFixed(4)}%, premium ${ta.premiumBps?.toFixed(1)} bps, OI ${ta.openInterest?.toFixed(0)}\n` : "") +
           (ta.suggestion ? `- OUR independent plan: ${ta.suggestion.note}\n` : "")
         : `No candle data — judge from the chart image if present.\n`) +
@@ -371,7 +389,8 @@ async function verifyOne(op: SecondOpinion): Promise<void> {
   // Log the moment a call RESOLVES (once), so the full lifecycle is traceable.
   if (!op.outcome?.resolved && resolved) {
     const called = op.verdict?.stance;
-    const good = firstHit === "tp";
+    // Favorable = provider TP hit first OR the trade reached at least 1R in its favor.
+    const good = firstHit === "tp" || (maxR ?? 0) >= 1;
     const rightWrong = called ? (good === (called === "positive") ? "our call RIGHT" : "our call WRONG") : "no stance";
     event(
       "review",

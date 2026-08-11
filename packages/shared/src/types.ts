@@ -315,6 +315,8 @@ export interface SecondOpinionTA {
   rrClaimed?: number; // to the provider's TP1
   rrRealistic?: number; // to the nearest opposing swing (support/resistance)
   entryLocation?: string; // e.g. "long into resistance", "short into support"
+  entryVsPricePct?: number; // signed % of the provider entry vs live price (+ = above market)
+  entryStale?: boolean; // limit entry sits far (>~3% or >2x ATR) from the live market → stale/mismatched
   // --- richer context (collected from the start for comparison) ---
   rsi?: number; // primary-timeframe RSI(14)
   rangePosition?: number; // 0..1 where price sits in the recent high-low range

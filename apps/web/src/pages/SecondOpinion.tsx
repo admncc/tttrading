@@ -48,7 +48,8 @@ export function SecondOpinion() {
       if (r.verdict?.stance === "positive") e.ourPos += 1;
       if (r.outcome?.resolved) {
         e.resolved += 1;
-        const good = r.outcome.firstHit === "tp";
+        // Favorable = provider TP hit first OR the trade reached at least 1R in its favor.
+        const good = r.outcome.firstHit === "tp" || (r.outcome.maxR ?? 0) >= 1;
         const ourPositive = r.verdict?.stance === "positive";
         if (good === ourPositive) e.agreed += 1; // we called it right
       }
@@ -74,7 +75,10 @@ export function SecondOpinion() {
       {/* Scorecard: are WE right vs the outcome? */}
       {scorecard.length > 0 && (
         <div className="panel" style={{ overflowX: "auto" }}>
-          <h3 style={{ margin: "0 0 8px" }}>Our accuracy vs. outcome (resolved calls)</h3>
+          <h3 style={{ margin: "0 0 4px" }}>Our accuracy vs. outcome (resolved calls)</h3>
+          <p className="muted" style={{ margin: "0 0 8px", fontSize: 11 }}>
+            A call counts as right when our stance matched the outcome — favorable = provider TP hit first <b>or</b> the trade reached ≥1R in its favor.
+          </p>
           <table>
             <thead><tr><th>Channel</th><th>Signals</th><th>Resolved</th><th>We positive</th><th>We called right</th></tr></thead>
             <tbody>
@@ -184,6 +188,12 @@ export function SecondOpinion() {
                                   {" "}range {r.ta.rangePosition !== undefined ? `${Math.round(r.ta.rangePosition * 100)}%` : "?"} ·
                                   {" "}support {r.ta.support} · resistance {r.ta.resistance} ·
                                   {" "}SL={r.ta.slAtrMultiple?.toFixed(2) ?? "?"}×ATR · {r.ta.entryLocation ?? ""}
+                                  {r.ta.entryVsPricePct !== undefined ? (
+                                    <span style={{ color: r.ta.entryStale ? "#ef4444" : undefined }}>
+                                      {" · "}entry {r.ta.entryVsPricePct > 0 ? "+" : ""}{r.ta.entryVsPricePct.toFixed(2)}% vs live
+                                      {r.ta.entryStale ? " ⚠ stale" : ""}
+                                    </span>
+                                  ) : null}
                                 </div>
                                 {r.ta.funding !== undefined ? (
                                   <div className="muted" style={{ fontSize: 12 }}>
