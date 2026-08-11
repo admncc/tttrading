@@ -94,6 +94,32 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
     if (consultLlm) {
       try {
         let mv = await readManagementLevels(rawText, group.settings.instructions, imgs, actions.map((a) => a.kind));
+        // Readable one-liner for a management view, for the deliberation logs.
+        const mvDesc = (m: typeof mv): string => {
+          if (!m) return "n/a";
+          if (!m.isManagement) return "no-action (not management)";
+          const p = [
+            m.closed ? "full-close" : "",
+            m.partialPercent && m.partialPercent > 0 ? `partial ${m.partialPercent}%` : "",
+            m.breakeven ? "SL→breakeven" : "",
+            m.newStop !== undefined ? `SL→${m.newStop}` : "",
+            m.symbol ? `on ${m.symbol}` : "",
+          ].filter(Boolean);
+          return p.length ? p.join(" + ") : "management (no concrete action)";
+        };
+        const ruleSummary = actions
+          .map((a) => a.kind + (a.fraction !== undefined ? ` ${Math.round(a.fraction * 100)}%` : "") + (a.newStop !== undefined ? ` @${a.newStop}` : ""))
+          .join(", ");
+        // Always record what the LLM read vs what the rules flagged (LLM-first
+        // transparency), so the deliberation is fully visible in the logs.
+        if (mv) {
+          event(
+            "manage",
+            `LLM read: ${mvDesc(mv)} · conf ${mv.confidence.toFixed(2)} · rules flagged: [${ruleSummary || "none"}]`,
+            { llmRead: { isManagement: mv.isManagement, closed: mv.closed, partialPercent: mv.partialPercent, newStop: mv.newStop, breakeven: mv.breakeven, symbol: mv.symbol, confidence: mv.confidence }, rules: actions.map((a) => a.kind) },
+            { level: "info", groupId: group.id },
+          );
+        }
         // LLM-first "think again" loop: the rules are only a CHECK. When the LLM's
         // decision diverges from the rules, deliberate once more (confronting the
         // model with both conclusions) and take the reconsidered result as final —
@@ -109,18 +135,30 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
           const setsDiffer = [...rk].some((k) => !lk.has(k)) || [...lk].some((k) => !rk.has(k));
           const vetoDiverges = mv.isManagement === false && rk.size > 0;
           if ((setsDiffer || vetoDiverges) && (rk.size > 0 || lk.size > 0)) {
-            const ruleSummary = actions
-              .map((a) => a.kind + (a.fraction !== undefined ? ` ${Math.round(a.fraction * 100)}%` : "") + (a.newStop !== undefined ? ` @${a.newStop}` : ""))
-              .join(", ");
-            const mv2 = await reconsiderManagement(rawText, group.settings.instructions, imgs, ruleSummary, mv);
+            const first = mv;
+            event(
+              "manage",
+              `Disagreement → reconsidering: rules=[${ruleSummary || "none"}] vs LLM=[${mvDesc(first)}] — asking the LLM to think again`,
+              { rules: ruleSummary, llmFirst: mvDesc(first) },
+              { level: "warn", groupId: group.id },
+            );
+            const mv2 = await reconsiderManagement(rawText, group.settings.instructions, imgs, ruleSummary, first);
             if (mv2) {
               event(
-                "message",
-                `LLM reconsidered (rules:[${[...rk].join(",") || "none"}] vs LLM:[${mv.isManagement ? [...lk].join(",") || "mgmt" : "not-mgmt"}]) — final ${mv2.isManagement ? "action" : "no-action"}`,
-                { rules: [...rk], llmFirst: [...lk], final: { isManagement: mv2.isManagement, closed: mv2.closed, partialPercent: mv2.partialPercent, newStop: mv2.newStop, breakeven: mv2.breakeven, symbol: mv2.symbol } },
+                "manage",
+                `LLM reconsidered → FINAL: ${mvDesc(mv2)} (conf ${mv2.confidence.toFixed(2)})` +
+                  (mv2.reasoning ? ` — reasoning: ${mv2.reasoning}` : ""),
+                {
+                  rules: ruleSummary,
+                  llmFirst: { desc: mvDesc(first), ...first },
+                  final: { desc: mvDesc(mv2), isManagement: mv2.isManagement, closed: mv2.closed, partialPercent: mv2.partialPercent, newStop: mv2.newStop, breakeven: mv2.breakeven, symbol: mv2.symbol, confidence: mv2.confidence },
+                  reasoning: mv2.reasoning,
+                },
                 { level: "info", groupId: group.id },
               );
               mv = mv2;
+            } else {
+              event("manage", `Reconsider failed (LLM error) — keeping first read: ${mvDesc(first)}`, {}, { level: "warn", groupId: group.id });
             }
           }
         }

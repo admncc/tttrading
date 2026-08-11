@@ -278,6 +278,8 @@ export interface ManagementVision {
   closed?: boolean;
   partialPercent?: number;
   confidence: number;
+  /** Only set by the reconsideration pass: the model's one-line rationale. */
+  reasoning?: string;
 }
 
 /** Read a management update (optionally from a chart image). Null on error/off. */
@@ -429,9 +431,6 @@ export async function reconsiderManagement(
       move_to_breakeven?: unknown; closed?: unknown; partial_percent?: unknown; confidence?: unknown;
     };
     const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
-    if (typeof inp.reasoning === "string" && inp.reasoning.trim()) {
-      log.info(`LLM management reconsider: ${inp.reasoning.trim().slice(0, 200)}`);
-    }
     return {
       isManagement: inp.is_management === true,
       symbol: typeof inp.symbol === "string" && inp.symbol.trim() ? inp.symbol.trim().toUpperCase() : undefined,
@@ -440,6 +439,7 @@ export async function reconsiderManagement(
       closed: inp.closed === true,
       partialPercent: num(inp.partial_percent),
       confidence: Math.max(0, Math.min(1, num(inp.confidence) ?? 0.6)),
+      reasoning: typeof inp.reasoning === "string" && inp.reasoning.trim() ? inp.reasoning.trim() : undefined,
     };
   } catch (err) {
     log.error("LLM management reconsider failed:", err instanceof Error ? err.message : err);
