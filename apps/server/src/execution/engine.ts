@@ -17,6 +17,7 @@ import { assessRisk, tierSlippage, PROTECTIVE_SLIPPAGE } from "../risk/score.js"
 import { alertBlocked, alertClassification, alertClosed, alertError, alertOpened, sendAlert } from "../alerts/notifier.js";
 import { broadcast } from "../ws/hub.js";
 import { pushStats } from "../stats/service.js";
+import { generateSecondOpinion } from "../secondopinion/index.js";
 
 /** Minimum confidence required to act on a parsed signal. */
 const ACT_THRESHOLD = 0.6;
@@ -268,6 +269,12 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
     `${parsed.symbol} · entry ${parsed.entry ?? "CMP"}` +
       `${parsed.stopLoss !== undefined ? ` · SL ${parsed.stopLoss}` : ""}` +
       `${parsed.takeProfits?.length ? ` · TP ${parsed.takeProfits.join("/")}` : ""}`,
+  );
+
+  // Second Opinion (observe-only): independently weigh this signal from a pro
+  // trader / chart-analyst view. Fire-and-forget — it NEVER affects execution.
+  void generateSecondOpinion(group, parsed, imgs).catch((e) =>
+    log.warn("second-opinion:", e instanceof Error ? e.message : e),
   );
 
   if (!group.enabled) {

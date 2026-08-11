@@ -5,10 +5,13 @@ import type {
   Group,
   GroupInput,
   LogEntry,
+  SecondOpinion,
   Signal,
   Trade,
   WsEvent,
 } from "@tttrading/shared";
+
+export type { SecondOpinion } from "@tttrading/shared";
 
 export type CapTier = "large" | "mid" | "small";
 export interface InsightTrade {
@@ -333,6 +336,8 @@ export const api = {
       `/api/trades/${id}/sync`,
       { method: "POST" },
     ),
+
+  secondOpinions: (limit = 500) => req<SecondOpinion[]>(`/api/second-opinions?limit=${limit}`),
 
   stats: () => req<DashboardStats>("/api/stats"),
 

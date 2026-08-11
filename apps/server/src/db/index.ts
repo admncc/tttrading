@@ -88,6 +88,25 @@ CREATE TABLE IF NOT EXISTS logs (
 CREATE INDEX IF NOT EXISTS idx_logs_ts ON logs(ts);
 CREATE INDEX IF NOT EXISTS idx_logs_category ON logs(category);
 
+-- Second Opinion: independent, observe-only assessment per trading signal.
+CREATE TABLE IF NOT EXISTS second_opinions (
+  id TEXT PRIMARY KEY,
+  signal_id TEXT,
+  group_id TEXT NOT NULL,
+  group_name TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  side TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  entry REAL,
+  stop_loss REAL,
+  take_profits TEXT,   -- JSON number[]
+  ta TEXT,             -- JSON SecondOpinionTA
+  verdict TEXT,        -- JSON SecondOpinionVerdict
+  outcome TEXT         -- JSON SecondOpinionOutcome (filled in over time)
+);
+CREATE INDEX IF NOT EXISTS idx_secondop_group ON second_opinions(group_id);
+CREATE INDEX IF NOT EXISTS idx_secondop_created ON second_opinions(created_at);
+
 -- Chart images attached to incoming messages, keyed by their signal record.
 CREATE TABLE IF NOT EXISTS message_images (
   signal_id TEXT PRIMARY KEY,

@@ -12,6 +12,7 @@ import { startMonitor, stopMonitor } from "./execution/monitor.js";
 import { startReports, stopReports } from "./alerts/report.js";
 import { startAutoRefine, stopAutoRefine } from "./signals/autorefine.js";
 import { startPriceTicker, stopPriceTicker } from "./market/ticker.js";
+import { startSecondOpinionTracker, stopSecondOpinionTracker } from "./secondopinion/index.js";
 import { broadcast } from "./ws/hub.js";
 
 async function main(): Promise<void> {
@@ -46,6 +47,7 @@ async function main(): Promise<void> {
   startReports();
   startAutoRefine();
   startPriceTicker();
+  startSecondOpinionTracker();
 
   log.info(`Alerts ${alertsEnabled ? "enabled (Telegram bot)" : "disabled"}.`);
   log.info(`LLM signal fallback ${llmReady() ? "enabled" : "disabled (regex only)"}.`);
@@ -60,6 +62,7 @@ async function main(): Promise<void> {
     stopReports();
     stopAutoRefine();
     stopPriceTicker();
+    stopSecondOpinionTracker();
     await stopTelegram();
     await app.close();
     process.exit(0);

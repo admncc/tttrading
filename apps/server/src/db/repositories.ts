@@ -6,6 +6,10 @@ import type {
   LogEntry,
   ParsedSignal,
   RiskRating,
+  SecondOpinion,
+  SecondOpinionOutcome,
+  SecondOpinionTA,
+  SecondOpinionVerdict,
   Signal,
   SignalStatus,
   Trade,
@@ -814,5 +818,101 @@ export const settings = {
       .prepare("SELECT key FROM app_settings WHERE key LIKE 'ex:%'")
       .all() as { key: string }[];
     return rows.map((r) => r.key);
+  },
+};
+
+/* --------------------------- second opinions --------------------------- */
+
+interface SecondOpinionRow {
+  id: string;
+  signal_id: string | null;
+  group_id: string;
+  group_name: string;
+  symbol: string;
+  side: string;
+  created_at: string;
+  entry: number | null;
+  stop_loss: number | null;
+  take_profits: string | null;
+  ta: string | null;
+  verdict: string | null;
+  outcome: string | null;
+}
+
+function toSecondOpinion(r: SecondOpinionRow): SecondOpinion {
+  return {
+    id: r.id,
+    signalId: r.signal_id ?? undefined,
+    groupId: r.group_id,
+    groupName: r.group_name,
+    symbol: r.symbol,
+    side: r.side as SecondOpinion["side"],
+    createdAt: r.created_at,
+    entry: r.entry ?? undefined,
+    stopLoss: r.stop_loss ?? undefined,
+    takeProfits: r.take_profits ? (JSON.parse(r.take_profits) as number[]) : undefined,
+    ta: r.ta ? (JSON.parse(r.ta) as SecondOpinionTA) : undefined,
+    verdict: r.verdict ? (JSON.parse(r.verdict) as SecondOpinionVerdict) : undefined,
+    outcome: r.outcome ? (JSON.parse(r.outcome) as SecondOpinionOutcome) : undefined,
+  };
+}
+
+export const secondOpinions = {
+  create(input: Omit<SecondOpinion, "id" | "createdAt"> & { createdAt?: string }): SecondOpinion {
+    const id = nanoid();
+    const createdAt = input.createdAt ?? now();
+    db.prepare(
+      `INSERT INTO second_opinions (id, signal_id, group_id, group_name, symbol, side, created_at,
+        entry, stop_loss, take_profits, ta, verdict, outcome)
+       VALUES (@id, @signal_id, @group_id, @group_name, @symbol, @side, @created_at,
+        @entry, @stop_loss, @take_profits, @ta, @verdict, @outcome)`,
+    ).run({
+      id,
+      signal_id: input.signalId ?? null,
+      group_id: input.groupId,
+      group_name: input.groupName,
+      symbol: input.symbol,
+      side: input.side,
+      created_at: createdAt,
+      entry: input.entry ?? null,
+      stop_loss: input.stopLoss ?? null,
+      take_profits: input.takeProfits ? JSON.stringify(input.takeProfits) : null,
+      ta: input.ta ? JSON.stringify(input.ta) : null,
+      verdict: input.verdict ? JSON.stringify(input.verdict) : null,
+      outcome: input.outcome ? JSON.stringify(input.outcome) : null,
+    });
+    return this.get(id)!;
+  },
+  get(id: string): SecondOpinion | undefined {
+    const row = db.prepare("SELECT * FROM second_opinions WHERE id = ?").get(id) as
+      | SecondOpinionRow
+      | undefined;
+    return row ? toSecondOpinion(row) : undefined;
+  },
+  list(limit = 500): SecondOpinion[] {
+    const rows = db
+      .prepare("SELECT * FROM second_opinions ORDER BY created_at DESC LIMIT ?")
+      .all(limit) as SecondOpinionRow[];
+    return rows.map(toSecondOpinion);
+  },
+  forGroup(groupId: string, limit = 500): SecondOpinion[] {
+    const rows = db
+      .prepare("SELECT * FROM second_opinions WHERE group_id = ? ORDER BY created_at DESC LIMIT ?")
+      .all(groupId, limit) as SecondOpinionRow[];
+    return rows.map(toSecondOpinion);
+  },
+  /** Opinions created since `iso` whose outcome is not yet resolved (for tracking). */
+  unresolvedSince(iso: string): SecondOpinion[] {
+    const rows = db
+      .prepare("SELECT * FROM second_opinions WHERE created_at >= ? ORDER BY created_at ASC")
+      .all(iso) as SecondOpinionRow[];
+    return rows.map(toSecondOpinion).filter((o) => !o.outcome?.resolved);
+  },
+  setOutcome(id: string, outcome: SecondOpinionOutcome): void {
+    db.prepare("UPDATE second_opinions SET outcome = ? WHERE id = ?").run(JSON.stringify(outcome), id);
+  },
+  count(): number {
+    const r = db.prepare("SELECT COUNT(*) AS c FROM second_opinions").get() as { c: number };
+    return r.c;
   },
 };

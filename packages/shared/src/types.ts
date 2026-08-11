@@ -275,6 +275,63 @@ export interface Trade {
   closedAt?: string;
 }
 
+/**
+ * Second Opinion: an INDEPENDENT, observe-only assessment of ONE trading signal
+ * — objective chart-analysis (A) plus, over time, verification of how the call
+ * actually played out (B). It never places or manages orders; it exists to weigh
+ * each provider's calls from a professional trader's view and track whether our
+ * read beats theirs before any active use.
+ */
+export interface SecondOpinionTA {
+  interval: string;
+  price: number; // price at analysis time
+  trend: "up" | "down" | "sideways";
+  emaFast: number;
+  emaMid: number;
+  emaSlow: number;
+  atr: number;
+  atrPct: number; // atr / price
+  support: number;
+  resistance: number;
+  slAtrMultiple?: number; // |entry - SL| / atr — <1 ≈ inside the noise
+  rrClaimed?: number; // to the provider's TP1
+  rrRealistic?: number; // to the nearest opposing swing (support/resistance)
+  entryLocation?: string; // e.g. "long into resistance", "short into support"
+}
+export interface SecondOpinionVerdict {
+  stance: "positive" | "negative";
+  score: number; // 0..100 — our confidence the setup is technically sound
+  summary: string;
+  redFlags: string[];
+  strengths: string[];
+  source: "llm" | "heuristic";
+  confidence: number; // 0..1
+}
+export interface SecondOpinionOutcome {
+  checkedAt: string;
+  mfePct: number; // max favorable excursion since the signal (%)
+  maePct: number; // max adverse excursion (%)
+  tp1Hit?: boolean;
+  slHit?: boolean;
+  firstHit?: "tp" | "sl" | "none";
+  resolved: boolean;
+}
+export interface SecondOpinion {
+  id: string;
+  signalId?: string;
+  groupId: string;
+  groupName: string;
+  symbol: string;
+  side: TradeSide;
+  createdAt: string;
+  entry?: number;
+  stopLoss?: number;
+  takeProfits?: number[];
+  ta?: SecondOpinionTA;
+  verdict?: SecondOpinionVerdict;
+  outcome?: SecondOpinionOutcome;
+}
+
 /** Aggregated performance figures. */
 export interface PerformanceStats {
   trades: number;
@@ -417,7 +474,8 @@ export type WsEvent =
   | { type: "settings"; settings: GlobalSettings }
   | { type: "stats"; stats: DashboardStats }
   | { type: "log"; entry: LogEntry }
-  | { type: "prices"; prices: Record<string, number> };
+  | { type: "prices"; prices: Record<string, number> }
+  | { type: "secondOpinion"; secondOpinion: SecondOpinion };
 
 /** Payload to create/update a group from the desk. */
 export interface GroupInput {

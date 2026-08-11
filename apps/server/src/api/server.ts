@@ -59,6 +59,7 @@ import {
   groups as groupsRepo,
   logs as logsRepo,
   messageImages as messageImagesRepo,
+  secondOpinions as secondOpinionsRepo,
   settings as settingsRepo,
   signals as signalsRepo,
   trades as tradesRepo,
@@ -852,6 +853,12 @@ export async function buildServer() {
   // Risk Insights: channel × coin × cap-tier × month-third performance breakdowns.
   app.get("/api/risk-insights", async () => riskInsights());
 
+  // Second Opinion: independent, observe-only assessment per signal.
+  app.get<{ Querystring: { limit?: string; group?: string } }>("/api/second-opinions", async (req) => {
+    const limit = clampLimit(req.query.limit, 500, 3000);
+    return req.query.group ? secondOpinionsRepo.forGroup(req.query.group, limit) : secondOpinionsRepo.list(limit);
+  });
+
   // Send a daily/weekly performance report to the alert chat now (test/manual).
   app.post<{ Querystring: { period?: string } }>("/api/report/send", async (req, reply) => {
     const period = req.query.period === "weekly" ? "weekly" : "daily";
@@ -998,6 +1005,8 @@ export async function buildServer() {
     "- GET  /diagnostic/logs?limit=&category=&level=&since=&source=  → detailed logs (with meta).",
     "                                source=ring (default, in-memory since boot) or source=db (persisted history).",
     "- GET  /diagnostic/rules      → the deterministic entry + management regex rules (what fires, and why).",
+    "- GET  /diagnostic/second-opinions?group=&limit=  → independent per-signal assessments (observe-only):",
+    "                                objective TA, our positive/negative stance vs the trader, and the tracked outcome.",
     "- GET  /diagnostic/signals?group=&limit=  → full message history for one channel (rawText + parsed + status),",
     "                                oldest→newest; omit group for the most recent across all channels. Read-only —",
     "                                use it to review a channel's real conventions (incl. non-actionable market updates).",
@@ -1093,6 +1102,8 @@ export async function buildServer() {
         recentClosed: allTrades.filter((t) => t.status !== "open" && t.status !== "working").slice(0, 40),
       },
       recentSignals: signalsRepo.list(60),
+      // Independent per-signal assessments (observe-only) — full access here.
+      secondOpinions: secondOpinionsRepo.list(120),
       // Full per-channel message history (newest first, capped per group) right in
       // the main snapshot — so a channel's real conventions, incl. all its
       // non-actionable market updates, can be reviewed from the normal /diagnostic
@@ -1151,6 +1162,17 @@ export async function buildServer() {
     if (!diagGuard(req, reply)) return reply;
     return rulesPayload();
   });
+
+  // Second Opinion — full read access for diagnosis/tuning.
+  app.get<{ Querystring: { group?: string; limit?: string } }>(
+    "/diagnostic/second-opinions",
+    async (req, reply) => {
+      if (!diagGuard(req, reply)) return reply;
+      const limit = clampLimit(req.query.limit, 1000, 5000);
+      const list = req.query.group ? secondOpinionsRepo.forGroup(req.query.group, limit) : secondOpinionsRepo.list(limit);
+      return { count: list.length, secondOpinions: list };
+    },
+  );
 
   // Full message history for ONE channel (or the most recent across all), so the
   // channel's real conventions — including all its non-actionable market updates —
