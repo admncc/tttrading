@@ -1,7 +1,7 @@
 import type {
   Group, ParsedSignal, SecondOpinion, SecondOpinionSuggestion, SecondOpinionTA, SecondOpinionTFrame, SecondOpinionVerdict,
 } from "@tttrading/shared";
-import { log } from "../logger.js";
+import { log, event } from "../logger.js";
 import { activeHyperliquid } from "../exchanges/registry.js";
 import { secondOpinions as repo } from "../db/repositories.js";
 import { proAnalystReview, type SignalImage } from "../signals/llm.js";
@@ -232,6 +232,13 @@ export async function generateSecondOpinion(
     const hl = activeHyperliquid();
     const now = Date.now();
 
+    event(
+      "review",
+      `Second Opinion: analyzing ${parsed.side.toUpperCase()} ${symbol} (${group.name})`,
+      { symbol, side: parsed.side, entry: parsed.entry, stopLoss: parsed.stopLoss, takeProfits: parsed.takeProfits, hasChart: (images?.length ?? 0) > 0 },
+      { level: "info", groupId: group.id, signalId },
+    );
+
     const byTf: Record<string, Candle[]> = {};
     await Promise.all(
       FRAMES.map(async (tf) => {
@@ -246,6 +253,16 @@ export async function generateSecondOpinion(
 
     const frames = FRAMES.map((tf) => computeFrame(tf, byTf[tf] ?? [])).filter((f): f is SecondOpinionTFrame => !!f);
     const ta = buildTA(parsed, byTf["1h"] ?? [], frames, ctx);
+
+    event(
+      "review",
+      ta
+        ? `Data: candles [${FRAMES.map((tf) => `${tf}:${byTf[tf]?.length ?? 0}`).join(" ")}] · MTF ${ta.mtfAlignment} · trend ${ta.trend} · RSI ${ta.rsi} · SL ${ta.slAtrMultiple?.toFixed(2)}xATR · R/R ${ta.rrClaimed?.toFixed(1) ?? "?"}→${ta.rrRealistic?.toFixed(1) ?? "?"}` +
+            (ta.funding !== undefined ? ` · funding ${(ta.funding * 100).toFixed(4)}%` : "")
+        : `Data: no usable candles for ${symbol} — judging from chart/heuristic only`,
+      { candleCounts: Object.fromEntries(FRAMES.map((tf) => [tf, byTf[tf]?.length ?? 0])), marketContext: ctx, ta },
+      { level: "info", groupId: group.id, signalId },
+    );
 
     const frameLine = frames.map((f) => `${f.interval}:${f.trend}(rsi ${f.rsi})`).join(", ");
     const brief =
@@ -280,7 +297,15 @@ export async function generateSecondOpinion(
       verdict,
     });
     broadcast({ type: "secondOpinion", secondOpinion: op });
-    log.info(`Second Opinion ${symbol} ${parsed.side}: ${verdict.stance} (${verdict.score}/100, ${verdict.source})`);
+    event(
+      "review",
+      `Verdict ${symbol} ${parsed.side.toUpperCase()}: ${verdict.stance.toUpperCase()} ${verdict.score}/100 (${verdict.source}, conf ${verdict.confidence.toFixed(2)}) — ${verdict.summary}` +
+        (verdict.redFlags.length ? ` · ⚠ ${verdict.redFlags.join("; ")}` : "") +
+        (verdict.strengths.length ? ` · ✓ ${verdict.strengths.join("; ")}` : "") +
+        (ta?.suggestion ? ` · ${ta.suggestion.note}` : ""),
+      { verdict, providerLevels: { entry: parsed.entry, stopLoss: parsed.stopLoss, takeProfits: parsed.takeProfits }, ourLevels: ta?.suggestion },
+      { level: verdict.stance === "negative" ? "warn" : "info", groupId: group.id, signalId },
+    );
   } catch (err) {
     log.warn("second-opinion generation failed:", err instanceof Error ? err.message : err);
   }
@@ -327,8 +352,9 @@ async function verifyOne(op: SecondOpinion): Promise<void> {
   const allTpHit = tps.length > 0 ? tps.every((t) => (long ? maxHigh >= t : minLow <= t)) : undefined;
   const maxR = risk && risk > 0 ? mfe / risk : undefined;
   const resolved = firstHit !== "none" || ageMs > 14 * 86_400_000;
+  const hoursToFirstHit = hitMs ? Number(((hitMs - createdMs) / 3_600_000).toFixed(1)) : undefined;
 
-  repo.setOutcome(op.id, {
+  const outcome = {
     checkedAt: new Date().toISOString(),
     mfePct: Number(mfePct.toFixed(2)),
     maePct: Number(maePct.toFixed(2)),
@@ -336,10 +362,26 @@ async function verifyOne(op: SecondOpinion): Promise<void> {
     slHit,
     firstHit,
     resolved,
-    hoursToFirstHit: hitMs ? Number(((hitMs - createdMs) / 3_600_000).toFixed(1)) : undefined,
+    hoursToFirstHit,
     maxR: maxR !== undefined ? Number(maxR.toFixed(2)) : undefined,
     allTpHit,
-  });
+  };
+  repo.setOutcome(op.id, outcome);
+
+  // Log the moment a call RESOLVES (once), so the full lifecycle is traceable.
+  if (!op.outcome?.resolved && resolved) {
+    const called = op.verdict?.stance;
+    const good = firstHit === "tp";
+    const rightWrong = called ? (good === (called === "positive") ? "our call RIGHT" : "our call WRONG") : "no stance";
+    event(
+      "review",
+      `Outcome ${op.symbol} ${op.side.toUpperCase()}: ${firstHit === "tp" ? "TP hit first" : firstHit === "sl" ? "SL hit first" : "no hit (timeout)"}` +
+        (hoursToFirstHit !== undefined ? ` after ${hoursToFirstHit}h` : "") +
+        ` · MFE ${outcome.mfePct}% / MAE ${outcome.maePct}% · maxR ${outcome.maxR ?? "?"} · ${rightWrong} (we were ${called ?? "—"})`,
+      { outcome, ourStance: called },
+      { level: "info", groupId: op.groupId, signalId: op.signalId },
+    );
+  }
 }
 
 export async function verifySecondOpinions(): Promise<void> {
