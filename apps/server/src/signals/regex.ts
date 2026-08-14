@@ -243,6 +243,7 @@ export function parseWithRegex(text: string): ParsedSignal | null {
     stopLoss,
     takeProfits: takeProfits.length ? takeProfits : undefined,
     leverageHint,
+    spot: /\bspot\b/i.test(text),
     confidence,
     source: "regex",
   };

@@ -178,6 +178,12 @@ export interface ParsedSignal {
   stopLoss?: number;
   takeProfits?: number[];
   leverageHint?: number; // leverage suggested in the message, if any
+  /**
+   * The provider is buying/selling on the SPOT market (e.g. "buying Bitcoin
+   * Spot"). Spot has no leverage, stop-loss or take-profit structure, so we
+   * never place an order for it — it is parsed and recorded, then skipped.
+   */
+  spot?: boolean;
   confidence: number; // 0..1
   source: SignalSource;
 }

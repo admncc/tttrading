@@ -87,6 +87,11 @@ const EXTRACT_TOOL: Anthropic.Tool = {
       stop_loss: { type: "number" },
       take_profits: { type: "array", items: { type: "number" } },
       leverage: { type: "number", description: "Suggested leverage, if stated." },
+      spot: {
+        type: "boolean",
+        description:
+          "True if the provider is buying/selling on the SPOT market rather than a perpetual/futures/leveraged position — e.g. 'buying Bitcoin spot', 'spot buy', 'adding spot', 'DCA spot'. Default false; a normal leveraged long/short is NOT spot.",
+      },
       confidence: {
         type: "number",
         description: "0..1 confidence that the extraction is correct.",
@@ -125,6 +130,9 @@ If the message lists SEVERAL entry zones to scale/add into (e.g. a first entry a
 CMP plus a second/limit entry higher or lower), record EACH one in "entries" (in
 order, with its price and whether it is a market/cmp leg); still fill "entry" with
 the primary/first entry for compatibility. For a single entry, leave "entries" empty.
+If the provider is trading the SPOT market (e.g. "buying Bitcoin spot", "spot buy",
+"adding spot", "DCA spot") rather than a leveraged perp/futures position, set
+spot=true (it is still a signal). A plain leveraged long/short is not spot.
 PRIORITY OF SOURCES: the written TEXT is authoritative. When both text and one or
 more chart images are present, take the symbol, side, entry, SL and TP NUMBERS
 from the text whenever it states them; treat the image(s) as SUPPLEMENTAL — use
@@ -150,6 +158,7 @@ interface ExtractInput {
   stop_loss?: number;
   take_profits?: number[];
   leverage?: number;
+  spot?: boolean;
   confidence: number;
 }
 
@@ -231,6 +240,7 @@ export async function parseWithLlm(
       stopLoss: num(input.stop_loss),
       takeProfits: tps.length ? tps : undefined,
       leverageHint: num(input.leverage),
+      spot: input.spot === true || /\bspot\b/i.test(text),
       confidence: Math.max(0, Math.min(1, num(input.confidence) ?? 0.7)),
       source: "llm",
     };

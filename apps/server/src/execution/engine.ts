@@ -283,6 +283,11 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
   if (!symbolAllowed(group, parsed.symbol)) {
     return finalizeIgnored(group, rawText, parsed, `symbol ${parsed.symbol} not allowed`);
   }
+  // Spot buys have no leverage, stop-loss or take-profit structure, so we never
+  // place an order for them — record the signal, then skip it.
+  if (parsed.spot) {
+    return finalizeIgnored(group, rawText, parsed, `spot ${parsed.symbol} — no SL/TP, spot orders are not traded`);
+  }
 
   // Traffic-light risk assessment from the channel's history + this signal.
   // Archived trades were retired by the user, so keep them out of the track record.
