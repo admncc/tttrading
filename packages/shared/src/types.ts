@@ -184,6 +184,13 @@ export interface ParsedSignal {
    * never place an order for it — it is parsed and recorded, then skipped.
    */
   spot?: boolean;
+  /**
+   * The provider is ADDING to / DCA-ing into an existing position at a stated
+   * price (e.g. "doing DCA here at 4.416", "adding at", "scaling in") — often
+   * phrased as a "trade update". It is an actionable entry that increases size;
+   * it may carry no SL/TP of its own (the existing position's stop covers it).
+   */
+  dca?: boolean;
   confidence: number; // 0..1
   source: SignalSource;
 }

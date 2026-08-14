@@ -52,12 +52,14 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
     preview,
   }, { groupId: group.id });
 
-  const parsed = await parseSignal(rawText, group.settings.instructions, imgs);
+  let parsed = await parseSignal(rawText, group.settings.instructions, imgs);
 
   // A progress UPDATE about an existing trade ("$UNI Trade Update … my stop is now
   // at breakeven … up 7%") must never open a NEW position, even when the LLM reads
-  // the attached chart as a fresh long/short. Route it to management instead.
-  const tradeUpdate = isTradeUpdate(rawText);
+  // the attached chart as a fresh long/short. Route it to management instead —
+  // UNLESS it is an explicit DCA / add-to-position ("doing DCA here at 4.416"),
+  // which is an actionable add-entry even though it's phrased as an update.
+  const tradeUpdate = isTradeUpdate(rawText) && !parsed?.dca;
   if (parsed && parsed.confidence >= ACT_THRESHOLD && tradeUpdate) {
     event(
       "message",
@@ -104,7 +106,7 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
             m.partialPercent && m.partialPercent > 0 ? `partial ${m.partialPercent}%` : "",
             m.breakeven ? "SL→breakeven" : "",
             m.newStop !== undefined ? `SL→${m.newStop}` : "",
-            m.symbol ? `on ${m.symbol}` : "",
+            m.symbols && m.symbols.length > 1 ? `on ${m.symbols.join("+")}` : m.symbol ? `on ${m.symbol}` : "",
           ].filter(Boolean);
           return p.length ? p.join(" + ") : "management (no concrete action)";
         };
@@ -174,6 +176,23 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
         }
         if (mv?.isManagement && mv.confidence >= 0.5) {
           const kinds = new Set(actions.map((a) => a.kind));
+
+          // EXPLICIT multi-coin close ("close Hype and Sui"): the LLM enumerated
+          // several coins for the SAME close. Emit one close per coin, each with a
+          // trustworthy per-symbol attribution so the multi-coin recap guard lets
+          // them through — otherwise the guard would block the whole message and
+          // NEITHER position would close.
+          if (mv.closed && mv.symbols && mv.symbols.length >= 2) {
+            actions = actions.filter((a) => a.kind !== "close" && a.kind !== "partial_close");
+            for (const s of mv.symbols) actions.push({ kind: "close", symbol: s, explicitSymbol: true, note: `close ${s}` });
+            kinds.add("close");
+            event(
+              "manage",
+              `LLM explicit multi-close → ${mv.symbols.join(", ")} (each closed on its own)`,
+              { symbols: mv.symbols, confidence: mv.confidence },
+              { level: "info", groupId: group.id },
+            );
+          }
           // LLM PRIORITY on close-vs-partial: if the LLM confidently reads a FULL
           // close and sees NO partial, drop a partial the rules over-read from a
           // P&L % ("close OP long here down 2.5%") — otherwise only ~5% books
@@ -287,6 +306,27 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
   // place an order for them — record the signal, then skip it.
   if (parsed.spot) {
     return finalizeIgnored(group, rawText, parsed, `spot ${parsed.symbol} — no SL/TP, spot orders are not traded`);
+  }
+
+  // DCA / add-to-position ("doing DCA here at 4.416"): an add leg into an EXISTING
+  // position. Align its side to the position we actually hold for this channel —
+  // an add must never flip direction, whatever the model inferred — and carry the
+  // existing stop so the add isn't left unprotected.
+  if (parsed.dca) {
+    const dcaSym = parsed.symbol.toUpperCase();
+    const heldSame = [...tradesRepo.open(), ...tradesRepo.working()].find(
+      (t) => t.groupId === group.id && !t.shadow && t.symbol.toUpperCase() === dcaSym,
+    );
+    if (heldSame) {
+      if (parsed.side !== heldSame.side) parsed = { ...parsed, side: heldSame.side };
+      if (parsed.stopLoss === undefined && heldSame.stopLoss !== undefined) parsed = { ...parsed, stopLoss: heldSame.stopLoss };
+    }
+    event(
+      "message",
+      `DCA add ${parsed.side} ${parsed.symbol} @ ${parsed.entry ?? "CMP"}${heldSame ? " (adding to open position)" : " (no existing position — opening fresh)"}`,
+      { dca: true, entry: parsed.entry, alignedSide: parsed.side, hadPosition: !!heldSame },
+      { groupId: group.id },
+    );
   }
 
   // Traffic-light risk assessment from the channel's history + this signal.
@@ -684,7 +724,10 @@ async function applyManagement(
       action.kind === "sl_move" ||
       action.kind === "sl_breakeven";
     const referencedHeld = heldReferencedInText(held, rawText);
-    if ((affectsPosition && referencedHeld.length > 1) || (!action.symbol && named.length > 1)) {
+    // `explicitSymbol` actions were enumerated one-per-coin by the LLM ("close A
+    // and B"), so each has a trustworthy target — the recap guard must not block
+    // them (that is exactly the "close several at once" case we DO want to act on).
+    if (!action.explicitSymbol && ((affectsPosition && referencedHeld.length > 1) || (!action.symbol && named.length > 1))) {
       const names = referencedHeld.length > 1 ? referencedHeld : named;
       results.push(
         `${action.note} — message references ${names.length} held symbols (${names.join(", ")}); ambiguous recap, not acting`,

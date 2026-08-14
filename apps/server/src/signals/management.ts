@@ -18,6 +18,12 @@ export interface ManagementAction {
   fraction?: number;
   /** Whether a partial message also asked to move the stop to break-even. */
   alsoBreakeven?: boolean;
+  /**
+   * Set when the LLM EXPLICITLY enumerated this exact symbol as one of several
+   * to act on together ("close A and B"). Such actions carry a trustworthy
+   * per-symbol attribution, so the multi-coin "ambiguous recap" guard skips them.
+   */
+  explicitSymbol?: boolean;
   note: string;
 }
 
