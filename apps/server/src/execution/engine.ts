@@ -1667,7 +1667,7 @@ async function executeLimit(
     simulated: res.simulated,
   });
   const executed = signalsRepo.update(signal.id, { status: "executed", tradeId: trade.id })!;
-  const timeoutH = group.settings.limitTimeoutHours ?? 168;
+  const timeoutH = group.settings.limitTimeoutHours ?? 336;
   event(
     "exec",
     `Working limit order ${parsed.side} ${parsed.symbol} @ ${parsed.entry} (${res.simulated ? "sim" : "live"}, expires in ${timeoutH}h)`,

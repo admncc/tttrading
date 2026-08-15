@@ -335,7 +335,7 @@ async function reconcileWorking(
       }
 
       // Timeout: 0 (or negative) means "never expire".
-      const timeoutH = groupsRepo.get(t.groupId)?.settings.limitTimeoutHours ?? 168;
+      const timeoutH = groupsRepo.get(t.groupId)?.settings.limitTimeoutHours ?? 336;
       const expired = timeoutH > 0 && Date.now() - new Date(t.openedAt).getTime() > timeoutH * 3_600_000;
 
       // If the order is no longer resting on the exchange but we saw no fill in
@@ -549,7 +549,7 @@ async function evaluateWorkingSim(): Promise<void> {
   for (const t of working) {
     if (closing.has(t.id)) continue;
     try {
-      const timeoutH = groupsRepo.get(t.groupId)?.settings.limitTimeoutHours ?? 168;
+      const timeoutH = groupsRepo.get(t.groupId)?.settings.limitTimeoutHours ?? 336;
       if (timeoutH > 0 && Date.now() - new Date(t.openedAt).getTime() > timeoutH * 3_600_000) {
         await cancelWorkingTrade(t.id, `limit timeout (${timeoutH}h)`);
         continue;

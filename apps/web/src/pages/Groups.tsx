@@ -121,7 +121,7 @@ const BLANK: GroupInput = {
     breakevenAfterTp: 0,
     blockRedTrades: false,
     entryMode: "limit",
-    limitTimeoutHours: 168,
+    limitTimeoutHours: 336,
     symbolCooldownMinutes: 30,
     instructions: "",
   },
@@ -193,7 +193,7 @@ function GroupForm({
           <input
             type="number"
             min={0}
-            value={g.settings.limitTimeoutHours ?? 168}
+            value={g.settings.limitTimeoutHours ?? 336}
             disabled={(g.settings.entryMode ?? "limit") !== "limit"}
             onChange={(e) => {
               const n = Number(e.target.value);
@@ -201,7 +201,7 @@ function GroupForm({
             }}
           />
           <span className="muted" style={{ fontSize: 11 }}>
-            cancel unfilled after this (default 168 = 7d; 0 = never)
+            cancel unfilled after this (default 336 = 14d; 0 = never)
           </span>
         </div>
         <div className="field">

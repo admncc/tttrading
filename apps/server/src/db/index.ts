@@ -183,6 +183,39 @@ function migrate(database: Database.Database): void {
   } catch (err) {
     log.warn("Trade venue relabel migration skipped:", err instanceof Error ? err.message : err);
   }
+
+  // Working-limit TTL default raised from 7d (168h) to 14d (336h). One-time bump
+  // of groups still carrying the OLD default so a deliberately customized value is
+  // never overwritten; gated by a flag so re-setting 168 later in the desk stays
+  // respected (the migration won't run again).
+  try {
+    const done = database
+      .prepare("SELECT value FROM app_settings WHERE key='migration:limitTtl14d'")
+      .get() as { value: string } | undefined;
+    if (!done) {
+      const rows = database.prepare("SELECT id, settings FROM groups").all() as { id: string; settings: string }[];
+      const upd = database.prepare("UPDATE groups SET settings=? WHERE id=?");
+      let changed = 0;
+      for (const r of rows) {
+        try {
+          const s = JSON.parse(r.settings) as { limitTimeoutHours?: number };
+          if (s && s.limitTimeoutHours === 168) {
+            s.limitTimeoutHours = 336;
+            upd.run(JSON.stringify(s), r.id);
+            changed++;
+          }
+        } catch {
+          /* skip a group with unparseable settings */
+        }
+      }
+      database
+        .prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('migration:limitTtl14d','1')")
+        .run();
+      if (changed) log.info(`Migrated: bumped working-limit TTL 168h→336h on ${changed} group(s).`);
+    }
+  } catch (err) {
+    log.warn("limit-TTL migration skipped:", err instanceof Error ? err.message : err);
+  }
 }
 
 export const db: Database.Database = open();

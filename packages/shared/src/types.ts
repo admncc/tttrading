@@ -46,7 +46,7 @@ export interface GroupSettings {
    *  - "market": enter immediately at the current price.
    */
   entryMode?: "limit" | "market";
-  /** Cancel an unfilled working limit order after this many hours. Default 168 (7d). */
+  /** Cancel an unfilled working limit order after this many hours. Default 336 (14d). */
   limitTimeoutHours?: number;
   /**
    * How the position size is determined:
