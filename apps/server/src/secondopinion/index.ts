@@ -201,37 +201,53 @@ export function heuristicVerdict(parsed: ParsedSignal, ta?: SecondOpinionTA): Se
     const withTrend = long ? ta.trend === "up" : ta.trend === "down";
     const alignedFrames = (ta.frames ?? []).filter((f) => (long ? f.trend === "up" : f.trend === "down")).length;
     const totalFrames = ta.frames?.length ?? 0;
+    const weakConfluence = totalFrames > 0 && alignedFrames <= Math.floor(totalFrames * 0.25);
+    // A stop many ATRs away makes a "great" stated R/R illusory — the target is
+    // proportionally far too, and the trade needs an outsized move to pay. Treat
+    // >5× ATR as reckless; it voids the R/R bonus and draws its own penalty.
+    const recklessWide = ta.slAtrMultiple !== undefined && ta.slAtrMultiple > 5;
 
-    // 1) Multi-timeframe confluence — a real edge, but a counter-trend entry is a
-    // legitimate mean-reversion play, so the against-trend penalty is soft (a
-    // strong R/R off support can still be a good short-term long).
+    // 1) Multi-timeframe confluence — a real edge; weak confluence is a soft flag
+    // (a counter-trend entry can still be a valid mean-reversion play).
     if (totalFrames) {
       if (alignedFrames >= Math.ceil(totalFrames * 0.75)) { score += 16; good.push(ta.mtfAlignment ?? "multi-timeframe aligned"); }
-      else if (alignedFrames <= Math.floor(totalFrames * 0.25)) { score -= 8; red.push(`limited timeframe support (${ta.mtfAlignment})`); }
+      else if (weakConfluence) { score -= 8; red.push(`limited timeframe support (${ta.mtfAlignment})`); }
     }
 
-    // 2) Trading WITH the primary trend is the single most reliable positive.
-    if (withTrend) { score += 12; good.push(`with the ${ta.trend} trend`); }
+    // 2) Trading WITH the primary trend is the most reliable positive — but only
+    // credit it when the broader timeframes actually confirm (a lone 1h uptrend
+    // while the higher frames roll over is a trap, not a trend).
+    if (withTrend && !weakConfluence) { score += 12; good.push(`with the ${ta.trend} trend`); }
 
     // 3) Risk/reward — the trader's stated R/R to TP1 is the primary geometry
-    // signal. The reward to the NEAREST pivot (rrRealistic) is only a waypoint —
-    // in a trend price runs well past it — so it is context, never a hard veto.
+    // signal, BUT it counts only when the stop is sane: a big R/R built on a
+    // reckless-wide stop is not a real edge. rrRealistic (reward to the nearest
+    // pivot) is only a waypoint — context, never a hard veto.
     if (ta.rrClaimed !== undefined) {
-      if (ta.rrClaimed >= 3) { score += 14; good.push(`strong R/R (${ta.rrClaimed.toFixed(1)})`); }
-      else if (ta.rrClaimed >= 2) { score += 10; good.push(`good R/R (${ta.rrClaimed.toFixed(1)})`); }
+      if (!recklessWide && ta.rrClaimed >= 3) { score += 14; good.push(`strong R/R (${ta.rrClaimed.toFixed(1)})`); }
+      else if (!recklessWide && ta.rrClaimed >= 2) { score += 10; good.push(`good R/R (${ta.rrClaimed.toFixed(1)})`); }
       else if (ta.rrClaimed < 1) { score -= 12; red.push(`weak R/R to TP1 (${ta.rrClaimed.toFixed(1)})`); }
     }
     if (ta.rrRealistic !== undefined) {
       if (ta.rrRealistic >= 2) { score += 6; good.push(`clean room to the next level (${ta.rrRealistic.toFixed(1)}R)`); }
-      // Only a concern when BOTH the pivot room AND the stated R/R are poor.
       else if (ta.rrRealistic < 0.5 && (ta.rrClaimed ?? 0) < 1.5) { score -= 6; red.push(`little room before the next level`); }
     }
 
-    // 4) Stop placement vs volatility — sweet spot ~1.2–3.5× ATR.
+    // 4) Stop placement vs volatility — sweet spot ~1.2–3.5× ATR; a very wide
+    // stop is a real risk-management flag, an extreme one (>7× ATR) reckless.
     if (ta.slAtrMultiple !== undefined) {
       if (ta.slAtrMultiple >= 1.2 && ta.slAtrMultiple <= 3.5) { score += 6; good.push(`stop well-placed (${ta.slAtrMultiple.toFixed(1)}×ATR)`); }
       else if (ta.slAtrMultiple < 1) { score -= 8; red.push(`SL inside 1× ATR — noise risk (${ta.slAtrMultiple.toFixed(2)})`); }
-      else if (ta.slAtrMultiple > 5) { score -= 6; red.push(`SL very wide (${ta.slAtrMultiple.toFixed(1)}×ATR)`); }
+      else if (ta.slAtrMultiple > 7) { score -= 16; red.push(`SL recklessly wide (${ta.slAtrMultiple.toFixed(1)}×ATR)`); }
+      else if (ta.slAtrMultiple > 5) { score -= 8; red.push(`SL very wide (${ta.slAtrMultiple.toFixed(1)}×ATR)`); }
+    }
+
+    // 4b) Fighting strong momentum against the trade — a counter-trend entry into
+    // an extended RSI (shorting a rip, or knife-catching a plunge) is a classic
+    // way to lose. Only when the entry is NOT with the trend.
+    if (!withTrend && ta.rsi !== undefined && ((!long && ta.rsi >= 68) || (long && ta.rsi <= 32))) {
+      score -= 10;
+      red.push(`fading strong momentum (RSI ${ta.rsi})`);
     }
 
     // 5) Entry location vs structure.
