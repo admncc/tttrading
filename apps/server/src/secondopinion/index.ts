@@ -72,7 +72,7 @@ function trendOf(closes: number[], price: number): "up" | "down" | "sideways" {
 }
 const r6 = (n: number) => Number(n.toPrecision(6));
 
-function computeFrame(interval: string, candles: Candle[]): SecondOpinionTFrame | undefined {
+export function computeFrame(interval: string, candles: Candle[]): SecondOpinionTFrame | undefined {
   if (candles.length < 30) return undefined;
   const closes = candles.map((c) => c.c);
   const price = closes[closes.length - 1]!;
@@ -90,7 +90,7 @@ function computeFrame(interval: string, candles: Candle[]): SecondOpinionTFrame 
   };
 }
 
-function buildTA(
+export function buildTA(
   parsed: ParsedSignal,
   primary: Candle[],
   frames: SecondOpinionTFrame[],
@@ -119,8 +119,11 @@ function buildTA(
   // limit well below a market that has already run away, or a chase far above it).
   const entryVsPricePct = parsed.entry !== undefined ? ((parsed.entry - price) / price) * 100 : undefined;
   const entryAtrDist = parsed.entry !== undefined && a > 0 ? Math.abs(parsed.entry - price) / a : undefined;
+  // Only a limit sitting FAR from the market is stale — a normal scale-in add a
+  // few % below/above price is intentional, not a mismatch. Require a genuinely
+  // large gap (>4% or >4× ATR) so deliberate lower/upper legs aren't flagged.
   const entryStale =
-    entryVsPricePct !== undefined && (Math.abs(entryVsPricePct) > 3 || (entryAtrDist !== undefined && entryAtrDist > 2));
+    entryVsPricePct !== undefined && (Math.abs(entryVsPricePct) > 4 || (entryAtrDist !== undefined && entryAtrDist > 4));
 
   const near = (x: number, y: number) => a > 0 && Math.abs(x - y) <= 0.6 * a;
   let entryLocation: string | undefined;
@@ -190,35 +193,77 @@ function buildTA(
   };
 }
 
-function heuristicVerdict(parsed: ParsedSignal, ta?: SecondOpinionTA): SecondOpinionVerdict {
+export function heuristicVerdict(parsed: ParsedSignal, ta?: SecondOpinionTA): SecondOpinionVerdict {
   let score = 50;
   const red: string[] = [], good: string[] = [];
   if (ta) {
     const long = parsed.side === "long";
+    const withTrend = long ? ta.trend === "up" : ta.trend === "down";
     const alignedFrames = (ta.frames ?? []).filter((f) => (long ? f.trend === "up" : f.trend === "down")).length;
     const totalFrames = ta.frames?.length ?? 0;
+
+    // 1) Multi-timeframe confluence — a real edge, but a counter-trend entry is a
+    // legitimate mean-reversion play, so the against-trend penalty is soft (a
+    // strong R/R off support can still be a good short-term long).
     if (totalFrames) {
-      if (alignedFrames >= Math.ceil(totalFrames * 0.75)) { score += 18; good.push(ta.mtfAlignment ?? "multi-timeframe aligned"); }
-      else if (alignedFrames <= Math.floor(totalFrames * 0.25)) { score -= 18; red.push(`against most timeframes (${ta.mtfAlignment})`); }
+      if (alignedFrames >= Math.ceil(totalFrames * 0.75)) { score += 16; good.push(ta.mtfAlignment ?? "multi-timeframe aligned"); }
+      else if (alignedFrames <= Math.floor(totalFrames * 0.25)) { score -= 8; red.push(`limited timeframe support (${ta.mtfAlignment})`); }
+    }
+
+    // 2) Trading WITH the primary trend is the single most reliable positive.
+    if (withTrend) { score += 12; good.push(`with the ${ta.trend} trend`); }
+
+    // 3) Risk/reward — the trader's stated R/R to TP1 is the primary geometry
+    // signal. The reward to the NEAREST pivot (rrRealistic) is only a waypoint —
+    // in a trend price runs well past it — so it is context, never a hard veto.
+    if (ta.rrClaimed !== undefined) {
+      if (ta.rrClaimed >= 3) { score += 14; good.push(`strong R/R (${ta.rrClaimed.toFixed(1)})`); }
+      else if (ta.rrClaimed >= 2) { score += 10; good.push(`good R/R (${ta.rrClaimed.toFixed(1)})`); }
+      else if (ta.rrClaimed < 1) { score -= 12; red.push(`weak R/R to TP1 (${ta.rrClaimed.toFixed(1)})`); }
     }
     if (ta.rrRealistic !== undefined) {
-      if (ta.rrRealistic >= 2) { score += 14; good.push(`good R/R to next level (${ta.rrRealistic.toFixed(1)})`); }
-      else if (ta.rrRealistic < 1) { score -= 14; red.push(`poor realistic R/R (${ta.rrRealistic.toFixed(1)})`); }
+      if (ta.rrRealistic >= 2) { score += 6; good.push(`clean room to the next level (${ta.rrRealistic.toFixed(1)}R)`); }
+      // Only a concern when BOTH the pivot room AND the stated R/R are poor.
+      else if (ta.rrRealistic < 0.5 && (ta.rrClaimed ?? 0) < 1.5) { score -= 6; red.push(`little room before the next level`); }
     }
-    if (ta.slAtrMultiple !== undefined && ta.slAtrMultiple < 1) { score -= 10; red.push(`SL inside 1x ATR (${ta.slAtrMultiple.toFixed(2)})`); }
-    if (ta.entryLocation?.includes("poor")) { score -= 10; red.push(ta.entryLocation); }
-    if (ta.entryLocation?.includes("good")) { score += 8; good.push(ta.entryLocation); }
+
+    // 4) Stop placement vs volatility — sweet spot ~1.2–3.5× ATR.
+    if (ta.slAtrMultiple !== undefined) {
+      if (ta.slAtrMultiple >= 1.2 && ta.slAtrMultiple <= 3.5) { score += 6; good.push(`stop well-placed (${ta.slAtrMultiple.toFixed(1)}×ATR)`); }
+      else if (ta.slAtrMultiple < 1) { score -= 8; red.push(`SL inside 1× ATR — noise risk (${ta.slAtrMultiple.toFixed(2)})`); }
+      else if (ta.slAtrMultiple > 5) { score -= 6; red.push(`SL very wide (${ta.slAtrMultiple.toFixed(1)}×ATR)`); }
+    }
+
+    // 5) Entry location vs structure.
+    if (ta.entryLocation?.includes("poor")) { score -= 8; red.push(ta.entryLocation); }
+    if (ta.entryLocation?.includes("good")) { score += 10; good.push(ta.entryLocation); }
+
+    // 6) Where in the recent range — buying low / selling high is a plus.
+    if (ta.rangePosition !== undefined) {
+      const rp = ta.rangePosition;
+      if (long && rp <= 0.4) { score += 5; good.push(`buying the lower range (${Math.round(rp * 100)}%)`); }
+      else if (long && rp >= 0.9) { score -= 5; red.push(`buying the very top of the range (${Math.round(rp * 100)}%)`); }
+      else if (!long && rp >= 0.6) { score += 5; good.push(`selling the upper range (${Math.round(rp * 100)}%)`); }
+      else if (!long && rp <= 0.1) { score -= 5; red.push(`selling the very bottom of the range (${Math.round(rp * 100)}%)`); }
+    }
+
+    // 7) RSI — only an EXTREME reading, and only when it fights the entry, is a
+    // flag. Overbought in an uptrend is momentum, not a reason to fade.
+    if (ta.rsi !== undefined) {
+      if (long && ta.rsi >= 82) { score -= 8; red.push(`extremely overbought (RSI ${ta.rsi})`); }
+      if (!long && ta.rsi <= 18) { score -= 8; red.push(`extremely oversold (RSI ${ta.rsi})`); }
+    }
+
+    // 8) Stale limit far from market (deliberate scale-in adds are not stale).
     if (ta.entryStale) {
-      score -= 12;
+      score -= 8;
       red.push(`stale/mismatched entry — ${ta.entryVsPricePct! > 0 ? "+" : ""}${ta.entryVsPricePct?.toFixed(1)}% from live price`);
     }
-    if (ta.rsi !== undefined) {
-      if (long && ta.rsi >= 72) { score -= 8; red.push(`overbought RSI ${ta.rsi}`); }
-      if (!long && ta.rsi <= 28) { score -= 8; red.push(`oversold RSI ${ta.rsi}`); }
-    }
+
+    // 9) Funding crowding — a mild contrarian flag.
     if (ta.funding !== undefined) {
-      const crowded = long ? ta.funding > 0.0003 : ta.funding < -0.0003;
-      if (crowded) { score -= 6; red.push(`crowded funding (${(ta.funding * 100).toFixed(3)}%)`); }
+      const crowded = long ? ta.funding > 0.0004 : ta.funding < -0.0004;
+      if (crowded) { score -= 5; red.push(`crowded funding (${(ta.funding * 100).toFixed(3)}%)`); }
     }
   }
   score = Math.max(0, Math.min(100, Math.round(score)));
@@ -289,7 +334,7 @@ export async function generateSecondOpinion(
           `- 1h price ${ta.price}, EMA20/50/200 ${ta.emaFast}/${ta.emaMid}/${ta.emaSlow}, RSI ${ta.rsi}\n` +
           `- ATR ${ta.atr} (${(ta.atrPct * 100).toFixed(2)}%); SL distance = ${ta.slAtrMultiple?.toFixed(2) ?? "?"}x ATR\n` +
           `- support ${ta.support} / resistance ${ta.resistance}; range position ${(ta.rangePosition! * 100).toFixed(0)}%\n` +
-          `- R/R claimed to TP1 ${ta.rrClaimed?.toFixed(2) ?? "?"} vs realistic to next level ${ta.rrRealistic?.toFixed(2) ?? "?"}\n` +
+          `- R/R to TP1 (stated targets) ${ta.rrClaimed?.toFixed(2) ?? "?"}; reward to the NEAREST pivot ${ta.rrRealistic?.toFixed(2) ?? "?"} (a waypoint only — in a trend price runs past it, so judge reward by the stated targets/structure, not this figure)\n` +
           `- entry location: ${ta.entryLocation ?? "n/a"}; volume vs avg ${ta.volumeTrendPct?.toFixed(0)}%\n` +
           (ta.entryVsPricePct !== undefined
             ? `- provider entry is ${ta.entryVsPricePct > 0 ? "+" : ""}${ta.entryVsPricePct.toFixed(2)}% vs live price${ta.entryStale ? " → STALE/MISMATCHED (market has moved past the intended fill)" : ""}\n`
