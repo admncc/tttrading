@@ -379,15 +379,19 @@ export class AsterConnector implements ExchangeConnector {
 
   /* ------------------------------- orders -------------------------------- */
 
-  private async setLeverage(asset: AsterAsset, leverage: number, marginMode: "cross" | "isolated") {
+  /** Set leverage + margin mode; returns the leverage the exchange ACCEPTED. */
+  private async setLeverage(asset: AsterAsset, leverage: number, marginMode: "cross" | "isolated"): Promise<number> {
     // Aster enforces notional-based leverage brackets on top of the symbol's max,
     // so a value within maxLeverage can still be rejected (-4028 "Leverage X is not
     // valid"). Step down until one is accepted rather than leaving the position at
-    // an unknown default — so the effective leverage is actually what we chose.
+    // an unknown default — so the effective leverage is actually what we chose (the
+    // highest the exchange permits ≤ requested), matching Hyperliquid's clamp.
     let lev = Math.max(1, Math.floor(Math.min(leverage, asset.maxLeverage)));
+    let accepted = lev;
     for (;;) {
       try {
         await this.signed("POST", "/fapi/v3/leverage", { symbol: asset.asterSymbol, leverage: lev });
+        accepted = lev;
         break;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -410,6 +414,7 @@ export class AsterConnector implements ExchangeConnector {
     } catch {
       // -4046 "No need to change margin type" is expected & harmless.
     }
+    return accepted;
   }
 
   async placeMarketOrder(req: OrderRequest): Promise<OrderResult> {
@@ -455,7 +460,7 @@ export class AsterConnector implements ExchangeConnector {
     }
 
     try {
-      if (!req.reduceOnly) await this.setLeverage(asset, req.leverage, req.marginMode);
+      const effLev = req.reduceOnly ? undefined : await this.setLeverage(asset, req.leverage, req.marginMode);
       const params: Record<string, string | number | boolean> = {
         symbol: asset.asterSymbol,
         side: req.side === "long" ? "BUY" : "SELL",
@@ -473,7 +478,7 @@ export class AsterConnector implements ExchangeConnector {
       const exec = Number(res.executedQty);
       const filledPrice = Number.isFinite(avg) && avg > 0 ? avg : mid;
       const filledSize = Number.isFinite(exec) && exec > 0 ? exec : size;
-      return { ok: true, filledPrice, size: filledSize, orderId: String(res.orderId), simulated: false };
+      return { ok: true, filledPrice, size: filledSize, orderId: String(res.orderId), simulated: false, effectiveLeverage: effLev };
     } catch (err) {
       return { ok: false, filledPrice: mid, size, simulated: false, error: err instanceof Error ? err.message : String(err) };
     }
@@ -501,7 +506,7 @@ export class AsterConnector implements ExchangeConnector {
     if (sim) return { ok: true, status: "resting", size, simulated: true };
 
     try {
-      await this.setLeverage(asset, req.leverage, req.marginMode);
+      const effLev = await this.setLeverage(asset, req.leverage, req.marginMode);
       const res = await this.signed<{
         orderId: number;
         status?: string;
@@ -531,10 +536,10 @@ export class AsterConnector implements ExchangeConnector {
             /* best-effort */
           }
         }
-        return { ok: true, status: "filled", orderId: String(res.orderId), filledPrice, size: filledSize, simulated: false };
+        return { ok: true, status: "filled", orderId: String(res.orderId), filledPrice, size: filledSize, simulated: false, effectiveLeverage: effLev };
       }
       // NEW / accepted → resting working order.
-      return { ok: true, status: "resting", orderId: String(res.orderId), size, simulated: false };
+      return { ok: true, status: "resting", orderId: String(res.orderId), size, simulated: false, effectiveLeverage: effLev };
     } catch (err) {
       return { ok: false, size: 0, simulated: false, error: err instanceof Error ? err.message : String(err) };
     }
