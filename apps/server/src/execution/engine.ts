@@ -103,6 +103,7 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
           if (!m.isManagement) return "no-action (not management)";
           const p = [
             m.closed ? "full-close" : "",
+            m.cancelEntry ? "cancel-limit" : "",
             m.partialPercent && m.partialPercent > 0 ? `partial ${m.partialPercent}%` : "",
             m.breakeven ? "SL→breakeven" : "",
             m.newStop !== undefined ? `SL→${m.newStop}` : "",
@@ -128,10 +129,11 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
         // model with both conclusions) and take the reconsidered result as final —
         // instead of resolving the divergence with a fixed veto/merge rule.
         if (llmMode && mv) {
-          const MODELLED = ["close", "partial_close", "sl_move", "sl_breakeven"];
+          const MODELLED = ["close", "partial_close", "sl_move", "sl_breakeven", "cancel_limit"];
           const rk = new Set<string>(actions.map((a) => a.kind).filter((k) => MODELLED.includes(k)));
           const lk = new Set<string>();
           if (mv.closed) lk.add("close");
+          if (mv.cancelEntry) lk.add("cancel_limit");
           if (mv.partialPercent && mv.partialPercent > 0) lk.add("partial_close");
           if (mv.newStop !== undefined) lk.add("sl_move");
           if (mv.breakeven) lk.add("sl_breakeven");
@@ -166,13 +168,20 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
           }
         }
         if (llmMode && actions.length > 0 && mv && mv.isManagement === false && mv.confidence >= 0.6) {
+          // A cancel-limit only pulls a still-resting, unfilled ENTRY order — it can
+          // never close a position, so it is safe to honor even when the LLM judges
+          // the rest of the post non-actionable. (The LLM management model long had
+          // no way to represent a cancel, so it used to VETO explicit "cancel this
+          // limit" instructions and leave stale orders resting.) Keep those.
+          const kept = actions.filter((a) => a.kind === "cancel_limit");
           event(
             "message",
-            `LLM (priority) rejected rule-based management [${actions.map((a) => a.kind).join(", ")}] as non-actionable — no action taken`,
-            { regex: actions.map((a) => a.kind), llmConfidence: mv.confidence },
+            `LLM (priority) rejected rule-based management [${actions.map((a) => a.kind).join(", ")}] as non-actionable` +
+              (kept.length ? " — keeping cancel-limit (safe, pending-order only)" : " — no action taken"),
+            { regex: actions.map((a) => a.kind), llmConfidence: mv.confidence, keptCancelLimit: kept.length },
             { level: "warn", groupId: group.id },
           );
-          actions = [];
+          actions = kept;
         }
         if (mv?.isManagement && mv.confidence >= 0.5) {
           const kinds = new Set(actions.map((a) => a.kind));
@@ -214,6 +223,9 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
           }
           const extra: ManagementAction[] = [];
           if (mv.closed && !kinds.has("close")) extra.push({ kind: "close", symbol: mv.symbol, note: "chart: closed" });
+          // Cancel a resting limit ENTRY the LLM read ("cancel this limit on H") that
+          // the rules didn't flag — safe: it only pulls an unfilled pending order.
+          if (mv.cancelEntry && !kinds.has("cancel_limit")) extra.push({ kind: "cancel_limit", symbol: mv.symbol, note: "cancel limit entry" });
           // The stop-move / partial / break-even extras require an EXPLICIT
           // symbol from the chart — without one they'd fall back to the sole open
           // position and could act on the wrong coin the chart actually showed.

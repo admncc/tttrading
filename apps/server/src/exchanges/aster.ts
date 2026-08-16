@@ -380,11 +380,27 @@ export class AsterConnector implements ExchangeConnector {
   /* ------------------------------- orders -------------------------------- */
 
   private async setLeverage(asset: AsterAsset, leverage: number, marginMode: "cross" | "isolated") {
-    const capped = Math.max(1, Math.floor(Math.min(leverage, asset.maxLeverage)));
-    try {
-      await this.signed("POST", "/fapi/v3/leverage", { symbol: asset.asterSymbol, leverage: capped });
-    } catch (err) {
-      log.warn(`Aster setLeverage ${asset.name}:`, err instanceof Error ? err.message : err);
+    // Aster enforces notional-based leverage brackets on top of the symbol's max,
+    // so a value within maxLeverage can still be rejected (-4028 "Leverage X is not
+    // valid"). Step down until one is accepted rather than leaving the position at
+    // an unknown default — so the effective leverage is actually what we chose.
+    let lev = Math.max(1, Math.floor(Math.min(leverage, asset.maxLeverage)));
+    for (;;) {
+      try {
+        await this.signed("POST", "/fapi/v3/leverage", { symbol: asset.asterSymbol, leverage: lev });
+        break;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const invalid = /-4028|not valid/i.test(msg);
+        if (invalid && lev > 1) {
+          const next = lev > 10 ? Math.floor(lev / 2) : lev - 1;
+          log.warn(`Aster setLeverage ${asset.name}: ${lev}x rejected — retrying ${next}x`);
+          lev = Math.max(1, next);
+          continue;
+        }
+        log.warn(`Aster setLeverage ${asset.name}:`, msg);
+        break;
+      }
     }
     try {
       await this.signed("POST", "/fapi/v3/marginType", {

@@ -17,6 +17,11 @@ const MID = new Set([
   "LTC", "BCH", "ATOM", "UNI", "TRX", "TON", "NEAR", "APT", "ICP", "FIL",
   "ETC", "XLM", "HBAR", "ARB", "OP", "INJ", "SUI", "SEI", "AAVE", "RUNE",
   "TAO", "CRV", "MKR", "LDO", "STX", "IMX", "GRT", "ALGO", "SAND", "AXS",
+  // Established alts with deep, liquid perp markets — previously mislabeled
+  // "small" and over-penalized (e.g. WLD, ONDO ran well). They are not majors,
+  // but they are not the illiquid long tail either.
+  "WLD", "ONDO", "ENA", "JTO", "TIA", "PENGU", "PEPE", "WIF", "JUP", "ORDI",
+  "FET", "ENS", "PYTH", "DYDX", "STRK", "GALA", "BONK", "FLOKI", "RENDER", "KAS",
 ]);
 
 export type CapTier = "large" | "mid" | "small";
@@ -67,7 +72,9 @@ function record(trades: Trade[]): { n: number; winRate: number; net: number } {
  *     both as an inherent baseline and via that tier's realised track record,
  *  5. the ORDER SIDE (is this provider more reliable long or short?),
  *  6. a weak week-of-month effect (sample-gated, enriches over months),
- *  7. a weak day-of-week effect (e.g. weekend vs. Monday; sample-gated).
+ *  7. a weak day-of-week effect (e.g. weekend vs. Monday; sample-gated),
+ *  8. RECENT FORM / momentum — the last up-to-10 settled trades vs the long-run
+ *     record, so a provider on a hot streak scores higher (capped ±12).
  * Stop-loss presence and leverage are intentionally NOT scored: signals here
  * always carry a stop, and leverage is our own setting — neither says anything
  * about how risky the trade itself is. Every adjustment logs a transparent reason.
@@ -125,6 +132,9 @@ export function assessRisk(
       if (rr < 1) {
         score -= 12;
         reasons.push(`Poor risk/reward (${rr.toFixed(2)})`);
+      } else if (rr >= 3) {
+        score += 12;
+        reasons.push(`Excellent risk/reward (${rr.toFixed(2)})`);
       } else if (rr >= 2) {
         score += 8;
         reasons.push(`Good risk/reward (${rr.toFixed(2)})`);
@@ -216,6 +226,29 @@ export function assessRisk(
         score += adj;
         reasons.push(
           `${DOW[nowDow]}: ${(pr.winRate * 100).toFixed(0)}% over ${pr.n} vs ${(ch.winRate * 100).toFixed(0)}% avg`,
+        );
+      }
+    }
+  }
+
+  // ---- 8. recent form (momentum): reward a provider on a hot streak ----
+  // A channel's long-run win rate is slow to move; recent form is what "ran
+  // great lately" (e.g. Gauls' WLD/ONDO/JTO run). Compare the last up-to-10
+  // settled trades to the channel's overall record and nudge the score toward
+  // current form — capped ±12 so a streak informs but can't dominate the base.
+  if (n >= MIN_SAMPLE) {
+    const bySettle = [...chClosed].sort(
+      (a, b) => new Date(b.closedAt ?? b.openedAt).getTime() - new Date(a.closedAt ?? a.openedAt).getTime(),
+    );
+    const rf = record(bySettle.slice(0, Math.min(bySettle.length, 10)));
+    if (rf.n >= 5) {
+      const wrAdj = clamp((rf.winRate - ch.winRate) * 40, -12, 12);
+      const netAdj = rf.net > 0 && rf.net / rf.n > ch.net / n ? 4 : rf.net < 0 ? -4 : 0;
+      const adj = Math.round(clamp(wrAdj + netAdj, -12, 12));
+      if (adj !== 0) {
+        score += adj;
+        reasons.push(
+          `Recent form (last ${rf.n}): ${(rf.winRate * 100).toFixed(0)}% win, net ${rf.net >= 0 ? "+" : ""}${rf.net.toFixed(0)} vs ${(ch.winRate * 100).toFixed(0)}% avg`,
         );
       }
     }
