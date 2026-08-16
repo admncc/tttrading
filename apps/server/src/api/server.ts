@@ -851,7 +851,7 @@ export async function buildServer() {
   app.get("/api/stats", async () => dashboard());
 
   // Risk Insights: channel × coin × cap-tier × month-third performance breakdowns.
-  app.get("/api/risk-insights", async () => riskInsights());
+  app.get("/api/risk-insights", async () => await riskInsights());
 
   // Second Opinion: independent, observe-only assessment per signal.
   app.get<{ Querystring: { limit?: string; group?: string } }>("/api/second-opinions", async (req) => {

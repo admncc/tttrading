@@ -22,6 +22,22 @@ export interface InsightTrade {
   net: number;
   at: string;
   openedAt: string;
+  leverage: number;
+  notional: number;
+  riskUsd?: number;
+  r?: number;
+  holdHours?: number;
+  slipPct?: number;
+}
+export interface OpenRisk {
+  symbol: string;
+  tier: CapTier;
+  channel: string;
+  side: "long" | "short";
+  notional: number;
+  leverage: number;
+  riskUsd?: number;
+  hasStop: boolean;
 }
 
 export interface AccountInfo {
@@ -222,7 +238,9 @@ export const api = {
       checks: { key: string; ok: boolean; label: string }[];
     }>("/api/readiness"),
   riskInsights: () =>
-    req<{ generatedAt: string; totalClosed: number; trades: InsightTrade[] }>("/api/risk-insights"),
+    req<{ generatedAt: string; totalClosed: number; trades: InsightTrade[]; open: OpenRisk[]; equity?: number }>(
+      "/api/risk-insights",
+    ),
   rules: () =>
     req<{
       note: string;
