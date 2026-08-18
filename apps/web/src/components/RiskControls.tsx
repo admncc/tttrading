@@ -9,6 +9,7 @@ interface Settings {
   maxExposureUsd: number;
   liveMaxOrderUsd: number;
   splitOpposingVenues: boolean;
+  isolateSameCoinVenues: boolean;
 }
 
 export function RiskControls() {
@@ -29,6 +30,7 @@ export function RiskControls() {
           maxExposureUsd: d.maxExposureUsd,
           liveMaxOrderUsd: d.liveMaxOrderUsd,
           splitOpposingVenues: d.splitOpposingVenues,
+          isolateSameCoinVenues: d.isolateSameCoinVenues,
         });
         setLoadErr(null);
       })
@@ -170,6 +172,16 @@ export function RiskControls() {
           onChange={(e) => void save({ splitOpposingVenues: e.target.checked })}
         />
         Route opposing signals to a backup venue (long on primary, opposite short on Aster/MEXC) instead of netting
+      </label>
+
+      <label className="muted" style={{ fontSize: 12, display: "inline-flex", gap: 8, marginTop: 6, alignItems: "center" }}>
+        <input
+          type="checkbox"
+          checked={s.isolateSameCoinVenues}
+          disabled={busy}
+          onChange={(e) => void save({ isolateSameCoinVenues: e.target.checked })}
+        />
+        Isolate same-coin trades from different traders on separate venues (avoids shared/netted positions where one trader's close flattens another's)
       </label>
 
       {ready && (

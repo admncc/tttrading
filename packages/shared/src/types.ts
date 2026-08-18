@@ -132,6 +132,13 @@ export interface GlobalSettings {
    * netting them on one venue. When off, opposing signals just route normally.
    */
   splitOpposingVenues: boolean;
+  /**
+   * When a SAME-coin position from a DIFFERENT trader is already open, route the
+   * new trade to a separate backup venue so the two don't net into one shared
+   * position (where one trader's close flattens the other and their margin/PnL
+   * commingle). Same-trader adds (scale-in / DCA) stay put. Default on.
+   */
+  isolateSameCoinVenues: boolean;
 }
 
 /** Traffic-light risk classification. */

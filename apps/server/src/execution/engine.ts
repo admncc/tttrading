@@ -1139,6 +1139,39 @@ async function execute(
         venues = free;
       }
     }
+    // Isolation policy: if ANOTHER trader already holds/works this coin, prefer a
+    // venue no other group is using for it — so two traders' same-coin positions
+    // stay separate instead of netting into one shared position (where one
+    // trader's close flattens the other's leg and their margin/PnL commingle,
+    // as happened when a Gauls "close ONDO" flattened the whole netted ONDO).
+    // Same-trader adds (scale-in / DCA) are NOT isolated — they belong together.
+    if (settingsRepo.getIsolateSameCoinVenues() && venues.length > 1) {
+      const otherGroup = tradesRepo
+        .activeAndWorking()
+        .filter((t) => !t.shadow && t.symbol.toUpperCase() === parsed.symbol.toUpperCase() && t.groupId !== group.id);
+      if (otherGroup.length > 0) {
+        const busy = new Set(otherGroup.map((t) => byName(t.exchange).name));
+        const free = venues.filter((v) => !busy.has(v.ex.name));
+        if (free.length > 0) {
+          if (free[0]!.ex.name !== venues[0]!.ex.name) {
+            event(
+              "exec",
+              `Isolating ${parsed.symbol}: another trader holds it on ${[...busy].join(", ")} → routing to ${free[0]!.ex.name}`,
+              { symbol: parsed.symbol, busy: [...busy], routedTo: free[0]!.ex.name },
+              { groupId: group.id, signalId: signal.id },
+            );
+          }
+          venues = free;
+        } else {
+          event(
+            "exec",
+            `${parsed.symbol}: every listing venue already carries another trader's position — cannot isolate, sharing venue`,
+            { symbol: parsed.symbol, busy: [...busy] },
+            { level: "warn", groupId: group.id, signalId: signal.id },
+          );
+        }
+      }
+    }
     ex = venues[0]!.ex;
   } else if (resolved.kind === "notFound") {
     const tried = resolved.tried.join(", ") || "hyperliquid";
@@ -2147,7 +2180,12 @@ export async function closeTrade(tradeId: string, exitPriceOverride?: number) {
             p.size !== 0 &&
             (trade.side === "long" ? p.size > 0 : p.size < 0),
         );
-        remainingSize = pos ? Math.abs(pos.size) : 0; // no matching position ⇒ already flat
+        // Cap at THIS leg's own modeled remaining — never close more than this
+        // trade's share. On a NETTED position (several traders' legs on one
+        // venue) pos.size is the SUM of all legs; closing it would flatten the
+        // others and book the whole loss against this one record (the ONDO
+        // incident). Take the smaller of the live position and this leg's size.
+        remainingSize = pos ? Math.min(Math.abs(pos.size), remainingFraction * trade.size) : 0;
       } catch {
         /* price/position feed down — keep the fraction-model estimate */
       }

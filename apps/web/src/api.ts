@@ -188,6 +188,7 @@ export const api = {
       maxExposureUsd: number;
       liveMaxOrderUsd: number;
       splitOpposingVenues: boolean;
+      isolateSameCoinVenues: boolean;
       anthropicConfigured: boolean;
       anthropicKeySource: string;
       anthropicModel: string;
@@ -209,6 +210,7 @@ export const api = {
     maxExposureUsd?: number;
     liveMaxOrderUsd?: number;
     splitOpposingVenues?: boolean;
+    isolateSameCoinVenues?: boolean;
     autoRefine?: boolean;
     parseMode?: "regex" | "llm";
     llmMemory?: string;

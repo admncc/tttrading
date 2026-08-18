@@ -624,6 +624,19 @@ export const settings = {
   setSplitOpposingVenues(on: boolean): void {
     kvSet("splitOpposingVenues", on ? "true" : "false");
   },
+  /**
+   * Route a SAME-coin trade from a DIFFERENT trader to a separate venue, so two
+   * traders' positions in the same coin don't net into one shared position (where
+   * one trader's close flattens the other's leg and their margin/PnL commingle).
+   * Same-trader adds (scale-in / DCA) stay on their venue. Default on.
+   */
+  getIsolateSameCoinVenues(): boolean {
+    const v = kvGet("isolateSameCoinVenues");
+    return v === undefined ? true : v === "true";
+  },
+  setIsolateSameCoinVenues(on: boolean): void {
+    kvSet("isolateSameCoinVenues", on ? "true" : "false");
+  },
   getGlobalSettings(): import("@tttrading/shared").GlobalSettings {
     return {
       shadowMode: this.getShadowMode(),
@@ -633,6 +646,7 @@ export const settings = {
       maxExposureUsd: this.getRiskLimit("maxExposureUsd"),
       liveMaxOrderUsd: this.getRiskLimit("liveMaxOrderUsd"),
       splitOpposingVenues: this.getSplitOpposingVenues(),
+      isolateSameCoinVenues: this.getIsolateSameCoinVenues(),
     };
   },
   /**

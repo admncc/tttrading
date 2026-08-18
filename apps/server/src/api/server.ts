@@ -295,6 +295,7 @@ export async function buildServer() {
       maxExposureUsd: z.number().min(0).max(1e9).optional(),
       liveMaxOrderUsd: z.number().min(0).max(1e9).optional(),
       splitOpposingVenues: z.boolean().optional(),
+      isolateSameCoinVenues: z.boolean().optional(),
       anthropicKey: z.string().max(500).optional(), // "" clears the desk-stored key
       anthropicModel: z.string().max(100).optional(),
       autoRefine: z.boolean().optional(),
@@ -326,6 +327,7 @@ export async function buildServer() {
     if (d.maxExposureUsd !== undefined) settingsRepo.setRiskLimit("maxExposureUsd", d.maxExposureUsd);
     if (d.liveMaxOrderUsd !== undefined) settingsRepo.setRiskLimit("liveMaxOrderUsd", d.liveMaxOrderUsd);
     if (d.splitOpposingVenues !== undefined) settingsRepo.setSplitOpposingVenues(d.splitOpposingVenues);
+    if (d.isolateSameCoinVenues !== undefined) settingsRepo.setIsolateSameCoinVenues(d.isolateSameCoinVenues);
     if (d.parseMode !== undefined) settingsRepo.setParseMode(d.parseMode);
     if (d.anthropicKey !== undefined) {
       settingsRepo.setAnthropicKey(d.anthropicKey.trim());
