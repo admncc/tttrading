@@ -225,9 +225,14 @@ function migrate(database: Database.Database): void {
   // deterministic from price×size, so recompute it and correct only where the
   // stored value diverges materially (the mis-booking signature). Flag-gated,
   // logged, and it leaves correctly-booked trades untouched.
+  // Flag key is bumped (…v2) so this pass RE-RUNS: an earlier pass corrected the
+  // ONDO legs but aborted before reaching later rows (a bad row threw and stopped
+  // the whole sweep — e.g. the Aster ETH shorts stayed mis-booked). Now each row
+  // is guarded on its own, and the sweep is idempotent (a corrected record already
+  // matches its price×size, so it is never touched again).
   try {
     const done = database
-      .prepare("SELECT value FROM app_settings WHERE key='migration:pnlNettedFix'")
+      .prepare("SELECT value FROM app_settings WHERE key='migration:pnlNettedFix2'")
       .get() as { value: string } | undefined;
     if (!done) {
       const rows = database
@@ -245,24 +250,29 @@ function migrate(database: Database.Database): void {
       const upd = database.prepare("UPDATE trades SET realized_pnl=?, fees=? WHERE id=?");
       let fixed = 0;
       for (const r of rows) {
-        const dir = r.side === "long" ? 1 : -1;
-        const gross = (r.exit_price - r.entry_price) * dir * r.size;
-        const estFee = 0.0005 * (r.entry_price + r.exit_price) * r.size; // ~round-trip taker
-        const correct = gross + (r.banked_pnl ?? 0) - (r.banked_fees ?? 0) - estFee;
-        const diff = Math.abs(r.realized_pnl - correct);
-        // Correct only when the stored PnL diverges FAR beyond any plausible fee
-        // (3× a generous 0.1%-of-notional fee, floor 12 USDC) AND the trade is
-        // materially sized — the netting-bug signature. A correctly-booked trade
-        // matches its own price×size within fee noise, so it is never touched.
-        const feeGuard = Math.max(12, 0.003 * r.exit_price * r.size);
-        if (diff > feeGuard && (Math.abs(r.realized_pnl) > 20 || Math.abs(correct) > 20)) {
-          upd.run(Number(correct.toFixed(6)), Number(estFee.toFixed(6)), r.id);
-          log.warn(`Corrected mis-booked PnL: ${r.group_name} ${r.symbol} ${r.realized_pnl.toFixed(2)} → ${correct.toFixed(2)} USDC`);
-          fixed++;
+        try {
+          const dir = r.side === "long" ? 1 : -1;
+          const gross = (r.exit_price - r.entry_price) * dir * r.size;
+          const estFee = 0.0005 * (r.entry_price + r.exit_price) * r.size; // ~round-trip taker
+          const correct = gross + (r.banked_pnl ?? 0) - (r.banked_fees ?? 0) - estFee;
+          if (!Number.isFinite(correct) || !Number.isFinite(r.realized_pnl)) continue;
+          const diff = Math.abs(r.realized_pnl - correct);
+          // Correct only when the stored PnL diverges FAR beyond any plausible fee
+          // (3× a generous 0.1%-of-notional fee, floor 12 USDC) AND the trade is
+          // materially sized — the netting-bug signature. A correctly-booked trade
+          // matches its own price×size within fee noise, so it is never touched.
+          const feeGuard = Math.max(12, 0.003 * Math.abs(r.exit_price * r.size));
+          if (diff > feeGuard && (Math.abs(r.realized_pnl) > 20 || Math.abs(correct) > 20)) {
+            upd.run(Number(correct.toFixed(6)), Number(estFee.toFixed(6)), r.id);
+            log.warn(`Corrected mis-booked PnL: ${r.group_name} ${r.symbol} ${r.realized_pnl.toFixed(2)} → ${correct.toFixed(2)} USDC`);
+            fixed++;
+          }
+        } catch (rowErr) {
+          log.warn(`PnL correction skipped one row (${r.symbol}):`, rowErr instanceof Error ? rowErr.message : rowErr);
         }
       }
       database
-        .prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('migration:pnlNettedFix','1')")
+        .prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('migration:pnlNettedFix2','1')")
         .run();
       if (fixed) log.info(`Migrated: corrected ${fixed} mis-booked trade PnL record(s) from the netted-close bug.`);
     }
