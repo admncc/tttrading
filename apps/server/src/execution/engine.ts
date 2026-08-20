@@ -244,6 +244,21 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
               extra.push({ kind: "partial_close", symbol: mv.symbol, fraction: mv.partialPercent / 100, note: `chart: book ${mv.partialPercent}%` });
           }
           if (extra.length) actions = [...actions, ...extra];
+
+          // Trust the LLM's explicit single-symbol attribution for NON-destructive
+          // actions (partial book / stop move / break-even): a confident "book 40%
+          // on ENA" should act on ENA even when the message also name-drops another
+          // held coin (e.g. "Ena cruising … Velvet …"). The multi-coin recap guard
+          // exists to stop a wrong FULL CLOSE, not to swallow a clearly-attributed
+          // partial — so mark these as explicitSymbol to let them through. Full
+          // closes stay guarded (a recap could name the wrong coin to flatten).
+          if (mv.symbol && mv.confidence >= 0.85) {
+            for (const a of actions) {
+              if (a.symbol === mv.symbol && (a.kind === "partial_close" || a.kind === "sl_move" || a.kind === "sl_breakeven")) {
+                a.explicitSymbol = true;
+              }
+            }
+          }
         }
       } catch (err) {
         log.warn("Management vision read failed:", err instanceof Error ? err.message : err);
