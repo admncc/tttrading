@@ -4,6 +4,7 @@ import type { ExchangeName, TradeSide } from "@tttrading/shared";
 import { config } from "../config.js";
 import { settings } from "../db/repositories.js";
 import { hlAccountAddress, hlPrivateKey, hlReady } from "../exchanges/credentials.js";
+import { canonicalSymbol, symbolAliases } from "../symbols.js";
 import { log } from "../logger.js";
 import type {
   AccountSummary,
@@ -235,14 +236,15 @@ export class HyperliquidConnector implements ExchangeConnector {
 
   async getAsset(symbol: string): Promise<AssetInfo | undefined> {
     await this.loadAssets();
-    const key = symbol.toUpperCase();
-    let asset = this.assets.get(key);
+    // Exact ticker first, then cross-venue aliases (GOLD↔XAU, SILVER↔XAG).
+    const keys = symbolAliases(symbol);
+    let asset = keys.map((k) => this.assets.get(k)).find(Boolean);
     // A miss while the builder dexs failed to load last cycle is likely a stale
     // gap (e.g. GOLD), not a genuine de-listing — force one fresh load before
     // giving up, so a transient outage doesn't wrongly report "not listed".
     if (!asset && !this.builderLoaded) {
       await this.loadAssets(true);
-      asset = this.assets.get(key);
+      asset = keys.map((k) => this.assets.get(k)).find(Boolean);
     }
     return asset;
   }
@@ -333,7 +335,7 @@ export class HyperliquidConnector implements ExchangeConnector {
     // symbol so reconciliation matches trade.symbol.
     const mapPos = (s: CH): Position[] =>
       (s.assetPositions ?? []).map((p) => ({
-        symbol: (p.position.coin.split(":").pop() ?? p.position.coin).toUpperCase(),
+        symbol: canonicalSymbol((p.position.coin.split(":").pop() ?? p.position.coin).toUpperCase()),
         size: Number(p.position.szi),
         entryPrice: Number(p.position.entryPx ?? 0),
         unrealizedPnl: Number(p.position.unrealizedPnl),

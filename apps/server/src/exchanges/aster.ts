@@ -4,6 +4,7 @@ import { config } from "../config.js";
 import { settings } from "../db/repositories.js";
 import { asterUser, asterSigner, asterPrivateKey, asterBaseUrl, asterEnabled, asterReady } from "./credentials.js";
 import { log } from "../logger.js";
+import { canonicalSymbol, symbolAliases } from "../symbols.js";
 import type {
   AccountSummary,
   AssetInfo,
@@ -248,7 +249,13 @@ export class AsterConnector implements ExchangeConnector {
 
   private async resolve(symbol: string): Promise<AsterAsset | undefined> {
     await this.loadAssets();
-    return this.assets.get(symbol.toUpperCase());
+    // Try the exact ticker, then cross-venue aliases (GOLD↔XAU, SILVER↔XAG) so a
+    // canonicalized "GOLD" still finds Aster's "XAU" listing.
+    for (const s of symbolAliases(symbol)) {
+      const a = this.assets.get(s);
+      if (a) return a;
+    }
+    return undefined;
   }
 
   async getAsset(symbol: string): Promise<AssetInfo | undefined> {
@@ -305,7 +312,7 @@ export class AsterConnector implements ExchangeConnector {
     >("GET", "/fapi/v3/positionRisk");
     return (Array.isArray(rows) ? rows : [])
       .map((p) => ({
-        symbol: bySymbol.get(p.symbol) ?? p.symbol,
+        symbol: canonicalSymbol(bySymbol.get(p.symbol) ?? p.symbol),
         size: Number(p.positionAmt),
         entryPrice: Number(p.entryPrice),
         unrealizedPnl: Number(p.unRealizedProfit),

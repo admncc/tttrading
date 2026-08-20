@@ -14,6 +14,7 @@ import { readManagementLevels, reconsiderManagement, llmReady, type SignalImage 
 import { classifyManagementAll, isTradeUpdate, isMarketCommentary, type ManagementAction } from "../signals/management.js";
 import { expandTakeProfits } from "../signals/takeprofit.js";
 import { assessRisk, tierSlippage, PROTECTIVE_SLIPPAGE } from "../risk/score.js";
+import { canonicalSymbol, symbolAliases } from "../symbols.js";
 import { alertBlocked, alertClassification, alertClosed, alertError, alertOpened, sendAlert } from "../alerts/notifier.js";
 import { broadcast } from "../ws/hub.js";
 import { pushStats } from "../stats/service.js";
@@ -53,6 +54,9 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
   }, { groupId: group.id });
 
   let parsed = await parseSignal(rawText, group.settings.instructions, imgs);
+  // Canonicalize metal tickers (XAU→GOLD, XAG→SILVER) so a gold signal is treated
+  // as the same asset regardless of which ticker the trader used or venue it lands on.
+  if (parsed) parsed = { ...parsed, symbol: canonicalSymbol(parsed.symbol) };
 
   // A progress UPDATE about an existing trade ("$UNI Trade Update … my stop is now
   // at breakeven … up 7%") must never open a NEW position, even when the LLM reads
@@ -672,22 +676,25 @@ function deriveSymbol(
   rawText: string,
 ): { sym?: string; named: string[] } {
   if (action.symbol) {
-    const s = action.symbol.toUpperCase();
+    const s = canonicalSymbol(action.symbol);
     return { sym: s, named: [s] };
   }
   // Derive from held coins named in the text — but ONLY tickers ≥3 chars, so
   // short word-like symbols (ME, OP, ID, BE, GO) can't match ordinary English
   // ("book 50% for me"). Two-char coins must be tagged ($OP) or be the sole
   // managed position (the single-position fallback in applyManagement handles that).
-  const named = held.filter((c) => {
-    const clean = c.replace(/[^A-Z0-9]/g, "");
+  // A held coin matches if ANY of its aliases appears (so a held GOLD matches a
+  // message that says "XAU", and vice-versa).
+  const tokenInText = (tok: string): boolean => {
+    const clean = tok.replace(/[^A-Z0-9]/g, "");
     if (clean.length >= 3) return new RegExp(`\\b${clean}\\b`, "i").test(rawText);
     // 2-char tickers (OP, ME, ID…) match ONLY as an exact UPPERCASE standalone
     // token, so ordinary lowercase words ("for me", "the id") can't select a
     // position — but an explicit "close OP long here" still resolves.
     if (clean.length === 2) return new RegExp(`\\b${clean}\\b`).test(rawText);
     return false;
-  });
+  };
+  const named = held.filter((c) => symbolAliases(c).some(tokenInText));
   // Only resolve to a symbol when the text names EXACTLY one held coin. Naming
   // several (a status recap) is ambiguous — the caller must not guess one.
   return { sym: named.length === 1 ? named[0] : undefined, named };
@@ -701,17 +708,19 @@ function deriveSymbol(
  * attribute a close/SL/partial to any single one, tag or no tag.
  */
 function heldReferencedInText(held: string[], rawText: string): string[] {
-  return held.filter((c) => {
-    const clean = c.replace(/[^A-Z0-9]/g, "");
-    if (clean.length < 2) return false;
-    const tagged = new RegExp(`[$#]${clean}\\b`, "i").test(rawText);
-    // ≥3-char tickers match case-insensitively; 2-char only as exact uppercase.
-    const bare =
-      clean.length >= 3
-        ? new RegExp(`\\b${clean}\\b`, "i").test(rawText)
-        : new RegExp(`\\b${clean}\\b`).test(rawText);
-    return tagged || bare;
-  });
+  return held.filter((c) =>
+    symbolAliases(c).some((tok) => {
+      const clean = tok.replace(/[^A-Z0-9]/g, "");
+      if (clean.length < 2) return false;
+      const tagged = new RegExp(`[$#]${clean}\\b`, "i").test(rawText);
+      // ≥3-char tickers match case-insensitively; 2-char only as exact uppercase.
+      const bare =
+        clean.length >= 3
+          ? new RegExp(`\\b${clean}\\b`, "i").test(rawText)
+          : new RegExp(`\\b${clean}\\b`).test(rawText);
+      return tagged || bare;
+    }),
+  );
 }
 
 /**

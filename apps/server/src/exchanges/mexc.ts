@@ -4,6 +4,7 @@ import { config } from "../config.js";
 import { settings } from "../db/repositories.js";
 import { mexcApiKey, mexcApiSecret, mexcBaseUrl, mexcEnabled, mexcReady } from "./credentials.js";
 import { log } from "../logger.js";
+import { canonicalSymbol, symbolAliases } from "../symbols.js";
 import type {
   AccountSummary,
   AssetInfo,
@@ -191,7 +192,11 @@ export class MexcConnector implements ExchangeConnector {
 
   private async resolve(symbol: string): Promise<MexcAsset | undefined> {
     await this.loadAssets();
-    return this.assets.get(symbol.toUpperCase());
+    for (const s of symbolAliases(symbol)) {
+      const a = this.assets.get(s);
+      if (a) return a;
+    }
+    return undefined;
   }
 
   async getAsset(symbol: string): Promise<AssetInfo | undefined> {
@@ -254,7 +259,7 @@ export class MexcConnector implements ExchangeConnector {
         const coins = Number(p.holdVol) * cs;
         const signed = p.positionType === 2 ? -coins : coins; // 1=long, 2=short
         return {
-          symbol: asset?.name ?? p.symbol,
+          symbol: canonicalSymbol(asset?.name ?? p.symbol),
           size: signed,
           entryPrice: Number(p.holdAvgPrice),
           unrealizedPnl: 0,

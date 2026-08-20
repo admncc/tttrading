@@ -279,6 +279,18 @@ function migrate(database: Database.Database): void {
   } catch (err) {
     log.warn("PnL correction migration skipped:", err instanceof Error ? err.message : err);
   }
+
+  // Canonicalize metal tickers on existing trade records (XAU→GOLD, XAG→SILVER)
+  // so they match the now-canonical symbols the connectors report — otherwise an
+  // open Aster XAU (gold) position would fail to reconcile against a GOLD feed.
+  // Naturally idempotent (no XAU rows remain after the first run).
+  try {
+    const g = database.prepare("UPDATE trades SET symbol='GOLD' WHERE UPPER(symbol)='XAU'").run();
+    const s = database.prepare("UPDATE trades SET symbol='SILVER' WHERE UPPER(symbol)='XAG'").run();
+    if (g.changes || s.changes) log.info(`Migrated: canonicalized ${g.changes + s.changes} metal ticker record(s) (XAU→GOLD, XAG→SILVER).`);
+  } catch (err) {
+    log.warn("metal ticker canonicalization skipped:", err instanceof Error ? err.message : err);
+  }
 }
 
 export const db: Database.Database = open();
