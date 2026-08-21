@@ -206,6 +206,13 @@ export function heuristicVerdict(parsed: ParsedSignal, ta?: SecondOpinionTA): Se
     // proportionally far too, and the trade needs an outsized move to pay. Treat
     // >5× ATR as reckless; it voids the R/R bonus and draws its own penalty.
     const recklessWide = ta.slAtrMultiple !== undefined && ta.slAtrMultiple > 5;
+    // Trading AGAINST a real primary trend (shorting an uptrend / longing a
+    // downtrend). Don't fight the tape: a great R/R here is usually a trap — the
+    // "room to target" is exactly where price runs against you (the Vip BTC shorts
+    // that scored high on geometry then got run over by the bull). Voids the R/R
+    // bonus, like a reckless-wide stop. A genuine mean-reversion at a level is
+    // caught separately by neutral RSI + good location, which still score.
+    const againstTrend = !withTrend && ta.trend !== "sideways";
 
     // 1) Multi-timeframe confluence — a real edge; weak confluence is a soft flag
     // (a counter-trend entry can still be a valid mean-reversion play).
@@ -223,11 +230,13 @@ export function heuristicVerdict(parsed: ParsedSignal, ta?: SecondOpinionTA): Se
     // signal, BUT it counts only when the stop is sane: a big R/R built on a
     // reckless-wide stop is not a real edge. rrRealistic (reward to the nearest
     // pivot) is only a waypoint — context, never a hard veto.
+    const rrCredit = !recklessWide && !againstTrend;
     if (ta.rrClaimed !== undefined) {
-      if (!recklessWide && ta.rrClaimed >= 3) { score += 14; good.push(`strong R/R (${ta.rrClaimed.toFixed(1)})`); }
-      else if (!recklessWide && ta.rrClaimed >= 2) { score += 10; good.push(`good R/R (${ta.rrClaimed.toFixed(1)})`); }
+      if (rrCredit && ta.rrClaimed >= 3) { score += 14; good.push(`strong R/R (${ta.rrClaimed.toFixed(1)})`); }
+      else if (rrCredit && ta.rrClaimed >= 2) { score += 10; good.push(`good R/R (${ta.rrClaimed.toFixed(1)})`); }
       else if (ta.rrClaimed < 1) { score -= 12; red.push(`weak R/R to TP1 (${ta.rrClaimed.toFixed(1)})`); }
     }
+    if (againstTrend) { score -= 6; red.push(`against the ${ta.trend} trend — fighting the tape`); }
     if (ta.rrRealistic !== undefined) {
       if (ta.rrRealistic >= 2) { score += 6; good.push(`clean room to the next level (${ta.rrRealistic.toFixed(1)}R)`); }
       else if (ta.rrRealistic < 0.5 && (ta.rrClaimed ?? 0) < 1.5) { score -= 6; red.push(`little room before the next level`); }
@@ -245,9 +254,11 @@ export function heuristicVerdict(parsed: ParsedSignal, ta?: SecondOpinionTA): Se
     // 4b) Fighting strong momentum against the trade — a counter-trend entry into
     // an extended RSI (shorting a rip, or knife-catching a plunge) is a classic
     // way to lose. Only when the entry is NOT with the trend.
-    if (!withTrend && ta.rsi !== undefined && ((!long && ta.rsi >= 68) || (long && ta.rsi <= 32))) {
-      score -= 10;
-      red.push(`fading strong momentum (RSI ${ta.rsi})`);
+    if (!withTrend && ta.rsi !== undefined) {
+      const extreme = (!long && ta.rsi >= 80) || (long && ta.rsi <= 20);
+      const strong = (!long && ta.rsi >= 68) || (long && ta.rsi <= 32);
+      if (extreme) { score -= 18; red.push(`fading EXTREME momentum (RSI ${ta.rsi})`); }
+      else if (strong) { score -= 10; red.push(`fading strong momentum (RSI ${ta.rsi})`); }
     }
 
     // 5) Entry location vs structure.
