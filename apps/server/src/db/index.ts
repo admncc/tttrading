@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { config } from "../config.js";
 import { log } from "../logger.js";
+import { canonicalSymbol } from "../symbols.js";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS groups (
@@ -285,11 +286,16 @@ function migrate(database: Database.Database): void {
   // open Aster XAU (gold) position would fail to reconcile against a GOLD feed.
   // Naturally idempotent (no XAU rows remain after the first run).
   try {
-    const g = database.prepare("UPDATE trades SET symbol='GOLD' WHERE UPPER(symbol)='XAU'").run();
-    const s = database.prepare("UPDATE trades SET symbol='SILVER' WHERE UPPER(symbol)='XAG'").run();
-    if (g.changes || s.changes) log.info(`Migrated: canonicalized ${g.changes + s.changes} metal ticker record(s) (XAU→GOLD, XAG→SILVER).`);
+    const rows = database.prepare("SELECT id, symbol FROM trades").all() as { id: string; symbol: string }[];
+    const upd = database.prepare("UPDATE trades SET symbol=? WHERE id=?");
+    let n = 0;
+    for (const r of rows) {
+      const c = canonicalSymbol(r.symbol);
+      if (c !== (r.symbol ?? "").toUpperCase()) { upd.run(c, r.id); n++; }
+    }
+    if (n) log.info(`Migrated: canonicalized ${n} cross-venue ticker record(s) (e.g. XAU→GOLD, kSHIB→SHIB).`);
   } catch (err) {
-    log.warn("metal ticker canonicalization skipped:", err instanceof Error ? err.message : err);
+    log.warn("ticker canonicalization skipped:", err instanceof Error ? err.message : err);
   }
 }
 

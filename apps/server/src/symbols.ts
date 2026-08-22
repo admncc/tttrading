@@ -9,6 +9,18 @@
 const GROUPS: string[][] = [
   ["GOLD", "XAU"], // canonical first
   ["SILVER", "XAG"],
+  // "k"/"1000" meme coins: the raw price is so small that venues list a
+  // 1000-unit contract — Hyperliquid as kSHIB, Binance-style venues (Aster) as
+  // 1000SHIB. Same asset; the price is ×1000. Canonical is the raw ticker, and
+  // the engine's existing magnitude-snap converts a raw-scale signal price to
+  // the venue's ×1000 scale automatically (size derives from the venue mid).
+  ["SHIB", "KSHIB", "1000SHIB"],
+  ["PEPE", "KPEPE", "1000PEPE"],
+  ["BONK", "KBONK", "1000BONK"],
+  ["FLOKI", "KFLOKI", "1000FLOKI"],
+  ["LUNC", "KLUNC", "1000LUNC"],
+  ["DOGS", "KDOGS", "1000DOGS"],
+  ["NEIRO", "KNEIRO", "1000NEIRO"],
 ];
 
 const CANON = new Map<string, string>(); // member → canonical (group[0])
