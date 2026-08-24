@@ -119,6 +119,7 @@ const BLANK: GroupInput = {
     tpLevels: 3,
     defaultPartialPct: 50,
     breakevenAfterTp: 0,
+    slWideningMult: 1,
     blockRedTrades: false,
     entryMode: "limit",
     limitTimeoutHours: 336,
@@ -315,6 +316,24 @@ function GroupForm({
           />
           <span className="muted" style={{ fontSize: 11 }}>
             0 = off
+          </span>
+        </div>
+        <div className="field">
+          <label>DCA-hold: widen stop ×</label>
+          <input
+            type="number"
+            min={1}
+            max={3}
+            step={0.25}
+            value={g.settings.slWideningMult ?? 1}
+            onChange={(e) => {
+              const n = Number(e.target.value);
+              if (Number.isFinite(n) && n >= 1 && n <= 3) setS({ slWideningMult: n });
+            }}
+          />
+          <span className="muted" style={{ fontSize: 11 }}>
+            1 = signal stop as-is. Higher = survive a flush before the trader's
+            add/close (risk-per-trade shrinks size to hold $ risk; fixed size = larger max loss).
           </span>
         </div>
         <div className="field">

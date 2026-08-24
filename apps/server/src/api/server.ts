@@ -118,6 +118,7 @@ const groupSettingsSchema = z.object({
   tpLevels: z.number().int().min(1).max(10),
   defaultPartialPct: z.number().min(1).max(99).optional(),
   breakevenAfterTp: z.number().int().min(0).max(10),
+  slWideningMult: z.number().min(1).max(3).optional(),
   blockRedTrades: z.boolean(),
   entryMode: z.enum(["limit", "market"]).optional(),
   limitTimeoutHours: z.number().min(0).max(8760).optional(),

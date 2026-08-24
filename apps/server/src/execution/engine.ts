@@ -249,18 +249,20 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
           }
           if (extra.length) actions = [...actions, ...extra];
 
-          // Trust the LLM's explicit single-symbol attribution for NON-destructive
-          // actions (partial book / stop move / break-even): a confident "book 40%
-          // on ENA" should act on ENA even when the message also name-drops another
-          // held coin (e.g. "Ena cruising … Velvet …"). The multi-coin recap guard
-          // exists to stop a wrong FULL CLOSE, not to swallow a clearly-attributed
-          // partial — so mark these as explicitSymbol to let them through. Full
-          // closes stay guarded (a recap could name the wrong coin to flatten).
+          // Trust the LLM's explicit single-symbol attribution to pass the recap
+          // guard: a confident "book 40% on ENA" (partial/stop) or "PEPE Closed"
+          // (a single, clearly-attributed FULL close) should act on that coin even
+          // when the message also name-drops another held coin ("Ena cruising …
+          // Velvet …", "PEPE Closed. BTC ready to move"). A full close is only
+          // trusted for a SINGLE explicit target (mv.closed, no multi-close set) —
+          // an ambiguous multi-coin recap still can't flatten the wrong position.
+          const singleClose = mv.closed && (!mv.symbols || mv.symbols.length < 2);
           if (mv.symbol && mv.confidence >= 0.85) {
             for (const a of actions) {
-              if (a.symbol === mv.symbol && (a.kind === "partial_close" || a.kind === "sl_move" || a.kind === "sl_breakeven")) {
-                a.explicitSymbol = true;
-              }
+              const trust =
+                a.kind === "partial_close" || a.kind === "sl_move" || a.kind === "sl_breakeven" ||
+                (a.kind === "close" && singleClose);
+              if (a.symbol === mv.symbol && trust) a.explicitSymbol = true;
             }
           }
         }
@@ -1336,6 +1338,27 @@ async function placeEntry(
           alertError(`SL side ${parsed.symbol} (${group.name})`, reason);
           broadcast({ type: "signal", signal: failed });
           return failed;
+        }
+
+        // DCA-hold: give opt-in DCA-style channels room to survive a flush before
+        // the trader's add/manage signal arrives, by widening the placed stop to a
+        // BOUNDED multiple of the signal's stop distance (measured from entry/ref).
+        // Runs BEFORE sizing, so risk-per-trade shrinks the position to hold the $
+        // risk on target while fixed/percent sizing accepts a proportionally larger
+        // max loss. Hard-capped at 3× — a wider stop, never unbounded averaging.
+        const wm = Math.min(3, Math.max(1, group.settings.slWideningMult ?? 1));
+        if (wm > 1) {
+          const dist = Math.abs(ref - parsed.stopLoss);
+          const widened = parsed.side === "long" ? ref - wm * dist : ref + wm * dist;
+          if (widened > 0 && widened !== parsed.stopLoss) {
+            event(
+              "exec",
+              `DCA-hold: widening SL ${parsed.stopLoss}→${widened} (×${wm}) for ${parsed.symbol}`,
+              { from: parsed.stopLoss, to: widened, mult: wm },
+              { groupId: group.id, signalId: signal.id },
+            );
+            parsed = { ...parsed, stopLoss: widened };
+          }
         }
       }
     }

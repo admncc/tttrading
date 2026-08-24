@@ -87,6 +87,16 @@ export interface GroupSettings {
    */
   breakevenAfterTp: number;
   /**
+   * DCA-hold: widen the placed entry stop-loss to this MULTIPLE of the signal's
+   * stop distance, giving DCA-style channels (traders who add through a flush
+   * rather than getting wicked out) room to survive before their add/manage
+   * signal arrives. 1 = use the signal's stop as-is (default, no change). Bounded
+   * 1–3 — this is a wider stop, NOT unbounded loss-averaging. Applied before
+   * sizing, so risk-per-trade sizing shrinks the position to keep the $ risk on
+   * target; fixed/percent sizing keeps size, so max loss scales with the multiple.
+   */
+  slWideningMult?: number;
+  /**
    * When true, signals rated "red" (high risk) by the traffic-light system are
    * NOT executed. Their hypothetical outcome is still tracked (shadow trade) so
    * we can verify whether blocking them was the right call.
