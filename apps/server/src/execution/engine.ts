@@ -63,7 +63,31 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
   // the attached chart as a fresh long/short. Route it to management instead —
   // UNLESS it is an explicit DCA / add-to-position ("doing DCA here at 4.416"),
   // which is an actionable add-entry even though it's phrased as an update.
-  const tradeUpdate = isTradeUpdate(rawText) && !parsed?.dca;
+  // A BARE directional message (just "Close the BTC long here" — no entry/SL/TP
+  // structure) that carries a management verb for a coin the group ALREADY holds
+  // is management, not a fresh entry: without this, regex-trusted parsing would
+  // OPEN a second BTC long instead of closing the existing one. Requires the coin
+  // to be held and a real close/partial/SL/cancel verb, and never diverts a DCA add
+  // or a structured entry (one with a price/stop/target).
+  let manageIntent = false;
+  if (parsed && !parsed.dca && parsed.entry === undefined && parsed.stopLoss === undefined && !(parsed.takeProfits?.length)) {
+    const heldByGroup = new Set(
+      [...tradesRepo.open(), ...tradesRepo.working()]
+        .filter((t) => t.groupId === group.id && !t.shadow)
+        .map((t) => t.symbol.toUpperCase()),
+    );
+    if (heldByGroup.has(canonicalSymbol(parsed.symbol))) {
+      manageIntent = classifyManagementAll(rawText).some(
+        (a) =>
+          a.kind === "close" ||
+          a.kind === "partial_close" ||
+          a.kind === "sl_move" ||
+          a.kind === "sl_breakeven" ||
+          a.kind === "cancel_limit",
+      );
+    }
+  }
+  const tradeUpdate = (isTradeUpdate(rawText) || manageIntent) && !parsed?.dca;
   if (parsed && parsed.confidence >= ACT_THRESHOLD && tradeUpdate) {
     event(
       "message",
@@ -88,7 +112,11 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
       // / cancel-limit) and an IMPERATIVE close; drop only a purely-NARRATIVE close
       // (a recap "the setup was invalidated / stopped out" that just tripped the
       // close keyword with no command verb).
-      const IMPERATIVE_CLOSE = /\b(?:close|closed|closing|exit|flatten|dump|get\s+out|out\s+of|take\s+it\s+off|cut\s+it)\b/i;
+      // Present-tense / imperative close verbs ONLY. Past-tense "closed" / "exited"
+      // are how a NARRATIVE recap reads ("$BTC closed in profit, see the update"),
+      // so they must NOT keep a close alive under commentary — the trailing \b makes
+      // "close"/"exit" not match "closed"/"exited", while "closing"/"exiting" stay.
+      const IMPERATIVE_CLOSE = /\b(?:close|closing|exit|exiting|flatten|dump|get\s+out|out\s+of|take\s+it\s+off|cut\s+it)\b/i;
       const before = actions.length;
       actions = actions.filter((a) => a.kind !== "close" || IMPERATIVE_CLOSE.test(rawText));
       if (actions.length < before) {
@@ -117,9 +145,14 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
     const llmMode = settingsRepo.getParseMode() === "llm";
     // Consult the LLM whenever a chart is present or surviving rule-actions want to
     // act — even under commentary, so it can arbitrate "close BTC here, see the big
-    // move" correctly. Pure commentary (no chart, no surviving action) still skips
-    // it (the guard below leaves actions empty), so no wasted calls.
-    const consultLlm = llmReady() && (primary !== undefined || (llmMode && actions.length > 0));
+    // move" correctly. But a commentary post whose rule-actions were ALL filtered
+    // out (a pure recap, chart or not) still skips the LLM: consulting it there
+    // would let a chart-carrying "big market update" inject a close/partial the
+    // commentary guard exists to neutralize.
+    const consultLlm =
+      llmReady() &&
+      !(marketCommentary && actions.length === 0) &&
+      (primary !== undefined || (llmMode && actions.length > 0));
     if (consultLlm) {
       try {
         let mv = await readManagementLevels(rawText, group.settings.instructions, imgs, actions.map((a) => a.kind));
@@ -778,22 +811,45 @@ function heldReferencedInText(held: string[], rawText: string): string[] {
 }
 
 /**
- * Every DISTINCT symbol explicitly cash-tagged ($BTC / #ETH / $BTCUSDT) in the
- * message, canonicalized. extractAnySymbol only keeps the FIRST tag, so when a
- * message tags several coins the rules' attribution is unreliable ("$ETH hit TP1.
- * Closing $BTC now" tags ETH first but the close is BTC) — >1 distinct tag on a
- * position action is therefore an ambiguous attribution the guard must block.
+ * When a message cash-tags SEVERAL distinct coins, extractAnySymbol keeps only the
+ * FIRST tag — which may not be the coin the action's verb refers to ("$ETH hit
+ * TP1. Closing $BTC now" tags ETH first but the close is BTC). Re-bind the action
+ * to the tagged symbol NEAREST its verb in the text, so the close targets BTC (and
+ * a not-held BTC then safely no-ops) instead of flattening the healthy held ETH.
+ * Returns undefined when there is only one distinct tag (nothing to disambiguate)
+ * or the verb isn't found — leaving the original attribution untouched.
  */
-function distinctTaggedSymbols(rawText: string): string[] {
-  const out = new Set<string>();
+function taggedNearestToVerb(rawText: string, verb: RegExp): string | undefined {
+  const tags: { sym: string; idx: number }[] = [];
   const re = /[$#]([A-Za-z]{2,6})(?:USDT|USDC|USD|PERP)?\b/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(rawText)) !== null) {
-    const s = canonicalSymbol(m[1]!.toUpperCase().replace(/(USDT|USDC|USD|PERP)$/i, ""));
-    if (s.length >= 2) out.add(s);
+    const sym = canonicalSymbol(m[1]!.toUpperCase().replace(/(USDT|USDC|USD|PERP)$/i, ""));
+    if (sym.length >= 2) tags.push({ sym, idx: m.index });
   }
-  return [...out];
+  if (new Set(tags.map((t) => t.sym)).size < 2) return undefined; // unambiguous
+  const vm = verb.exec(rawText);
+  if (!vm) return undefined;
+  const vpos = vm.index;
+  let best: string | undefined;
+  let bestDist = Infinity;
+  for (const t of tags) {
+    const d = Math.abs(t.idx - vpos);
+    if (d < bestDist) {
+      bestDist = d;
+      best = t.sym;
+    }
+  }
+  return best;
 }
+
+/** Verb anchors per management kind, for the nearest-tag disambiguation above. */
+const KIND_VERB_RE: Partial<Record<string, RegExp>> = {
+  close: /\b(?:clos|exit|flatten|dump|invalidat|stopped|cut\b|off\s+the\s+table|get\s+out)/i,
+  partial_close: /\b(?:book|took|tak(?:e|ing)|trim|secur|lock|sell|off\s*load|\d+\s*%)/i,
+  sl_move: /\b(?:sl|stop|invalidation|trail|mov)/i,
+  sl_breakeven: /\b(?:break\s*even|risk[-\s]?free|mov)/i,
+};
 
 /**
  * Apply one or more trade-management intents from a single message to the group's
@@ -817,7 +873,6 @@ async function applyManagement(
     const openForGroup = tradesRepo.open().filter((t) => t.groupId === group.id && !t.shadow);
     const groupWorking = tradesRepo.working().filter((t) => t.groupId === group.id && !t.shadow);
     const held = [...new Set([...openForGroup, ...groupWorking].map((t) => t.symbol.toUpperCase()))];
-    const { sym, named } = deriveSymbol(action, held, rawText);
 
     // A status RECAP / multi-coin message must never fire a position change: a
     // single SL/close/partial can't be attributed to one of several coins. This
@@ -831,6 +886,18 @@ async function applyManagement(
       action.kind === "partial_close" ||
       action.kind === "sl_move" ||
       action.kind === "sl_breakeven";
+    // Multi-tag disambiguation: when several coins are cash-tagged, re-bind a
+    // position action to the tag NEAREST its verb rather than the first tag the
+    // classifier happened to capture ("$ETH hit TP1. Closing $BTC now" → BTC, so a
+    // not-held BTC safely no-ops instead of flattening the healthy held ETH). Only
+    // fires with ≥2 distinct tags; a confident LLM-attributed action is left alone.
+    // Runs BEFORE deriveSymbol so the resolved target reflects the retarget.
+    if (affectsPosition && !action.explicitSymbol) {
+      const verb = KIND_VERB_RE[action.kind];
+      const near = verb ? taggedNearestToVerb(rawText, verb) : undefined;
+      if (near && near !== canonicalSymbol(action.symbol ?? "")) action.symbol = near;
+    }
+    const { sym, named } = deriveSymbol(action, held, rawText);
     const referencedHeld = heldReferencedInText(held, rawText);
     // `explicitSymbol` actions were enumerated one-per-coin by the LLM ("close A
     // and B"), so each has a trustworthy target — the recap guard must not block

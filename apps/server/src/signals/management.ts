@@ -102,8 +102,11 @@ const RE_TRIM = /\btrim(?:med|ming)?\b/i;
 // Fractional partial WITHOUT a "%": "take 1/3 off", "sell 1/3 here", "close half",
 // "trim a third". A booking/exit verb followed (within a short gap) by a fraction
 // word/ratio. Books the exact stated fraction instead of the group default.
+// The fraction must be followed by a position-context token (off / out / here /
+// "the position" …) or end the clause — so ordinary prose ("took a third attempt",
+// "close half a percent higher", "sell half the rally") does NOT book a partial.
 const RE_PARTIAL_FRAC =
-  /\b(?:book(?:ing)?|took|tak(?:e|ing|en)|sell(?:ing)?|off\s*load\w*|clos(?:e|ed|ing)?|trim(?:med|ming)?|secur\w*|lock(?:ed|ing)?\s*in)\b[^.\n]{0,14}?\b(1\/2|1\/3|2\/3|1\/4|3\/4|half|a\s+(?:half|third|quarter))\b/i;
+  /\b(?:book(?:ing)?|took|tak(?:e|ing|en)|sell(?:ing)?|off\s*load\w*|clos(?:e|ed|ing)?|trim(?:med|ming)?|secur\w*|lock(?:ed|ing)?\s*in)\b[^.\n]{0,14}?\b(1\/2|1\/3|2\/3|1\/4|3\/4|half|a\s+(?:half|third|quarter))\b(?:\s+(?:off|out|here|now|left|remaining)\b|\s+(?:of\s+)?(?:the\s+)?(?:position|pos|runner|trade|bag|rest|remaining)\b|[.,!)]|$)/i;
 /** Map a fraction word/ratio ("1/3", "a third", "half") to a 0..1 fraction. */
 function fracWord(s: string): number | undefined {
   const t = s.toLowerCase().replace(/\s+/g, " ").trim();

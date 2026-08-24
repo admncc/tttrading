@@ -777,6 +777,13 @@ export async function buildServer() {
     }
     const trade = await closeTrade(req.params.id, parsed.data.exitPrice);
     if (!trade) return reply.code(404).send({ error: "not found" });
+    // closeTrade may leave the trade OPEN when the position feed is down and it
+    // couldn't confirm flat (the monitor will reconcile). Don't tell the operator
+    // it closed in that case — report a pending close instead of a false success.
+    if (trade.status !== "closed") {
+      audit(req, `close pending ${trade.symbol} (${trade.groupName}) — position feed down, monitor will reconcile`, { id: req.params.id, group: trade.groupName });
+      return { ...trade, closePending: true };
+    }
     audit(req, `closed ${trade.symbol} (${trade.groupName})`, { id: req.params.id, group: trade.groupName, pnl: trade.realizedPnl });
     return trade;
   });
