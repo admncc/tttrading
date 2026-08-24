@@ -297,7 +297,9 @@ export class AsterConnector implements ExchangeConnector {
       const coin = bySymbol.get(row.symbol);
       if (!coin) continue;
       const n = Number(row.price);
-      if (Number.isFinite(n) && n > 0) out[coin] = n;
+      // Canonical key (1000SHIB→SHIB, XAU→GOLD) so the price ticker's canonical
+      // "want" set matches — otherwise marks/uPnL stay blank for aliased coins.
+      if (Number.isFinite(n) && n > 0) out[canonicalSymbol(coin)] = n;
     }
     return out;
   }

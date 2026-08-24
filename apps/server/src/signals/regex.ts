@@ -1,5 +1,22 @@
 import type { ParsedSignal, TradeSide } from "@tttrading/shared";
 
+/**
+ * Narrow spot-BUY detector: "spot buy/trade/dca", or "buy/bought … on/in spot".
+ * Requires a buying context so it never fires on commentary like "sweet spot
+ * entry", "spot on", or "good spot to long" (which a bare \bspot\b did, wrongly
+ * dropping real leveraged signals).
+ */
+export const SPOT_BUY_RE =
+  /\bspot\s+(?:buy|buys|buying|bought|trade|trades|order|dca)\b|\b(?:buy|buying|bought|buys)\s+(?:it |them |the )?(?:on|in)\s+spot\b/i;
+/**
+ * Narrow DCA-ADD detector: "dca in/here/now/at…", "adding/scaling/averaging
+ * in/to…", "scale in", "top up". Requires an add context so it never fires on a
+ * bare mention like "good for DCA buyers" (which a bare \bDCA\b did, wrongly
+ * forcing the add-to-position side-alignment path).
+ */
+export const DCA_ADD_RE =
+  /\bdca(?:ing|'?d)?\s+(?:in|into|here|now|more|again|at|the)\b|\b(?:add|adding|added|scal(?:e|ing)|averag(?:e|ing))\s+(?:in|into|to|more|here|up|down|again)\b|\bscale\s+in\b|\btop(?:ping)?\s+up\b/i;
+
 function toNumber(raw: string): number | undefined {
   // Handle both "60,000.50" (US) and "60.000,50" (EU) formats: whichever
   // separator appears LAST is the decimal separator.
@@ -25,6 +42,9 @@ const STOPWORDS = new Set([
   "THE", "NOW", "BUY", "SELL", "LONG", "SHORT", "DIP", "AND", "FOR", "ALL", "OUT",
   "TP", "SL", "USDT", "USDC", "USD", "PERP", "THIS", "THAT", "MORE", "SOME", "HERE",
   "WILL", "SETUP", "ENTRY", "TARGET", "STOP", "ARE", "NOT", "WAS", "GET", "NEW",
+  // Filler words that can sit between a direction word and the ticker
+  // ("buy BACK btc", "buy SPOT eth", "adding INTO sol") — never a real symbol.
+  "BACK", "SPOT", "INTO", "LIMIT", "AGAIN", "DCA", "ADD",
 ]);
 
 const QUOTE_SUFFIX = /(USDT|USDC|USD|PERP)$/i;
@@ -48,12 +68,17 @@ function extractSymbol(text: string, side: TradeSide): string | undefined {
     if (sym.length >= 2 && !STOPWORDS.has(sym)) return sym;
   }
 
-  // Ticker directly after the direction word ("long BTC", "buy eth").
-  const afterDir = new RegExp(`\\b(?:${dir})\\b[^A-Za-z]*([A-Za-z]{2,6})\\b`, "i");
+  // Ticker AFTER the direction word — scan the next few tokens, not just the
+  // adjacent one, skipping filler ("buy back BTC" → BTC, not BACK; "buy more
+  // SOL" → SOL, not undefined; "buy spot ETH" → ETH, not SPOT).
+  const afterDir = new RegExp(`\\b(?:${dir})\\b([^\\n]{0,24})`, "i");
   const m = text.match(afterDir);
   if (m) {
-    const sym = m[1]!.toUpperCase().replace(QUOTE_SUFFIX, "");
-    if (sym.length >= 2 && !STOPWORDS.has(sym)) return sym;
+    const tokens = (m[1]!.toUpperCase().match(/[A-Z]{2,6}/g) ?? []).slice(0, 3);
+    for (const raw of tokens) {
+      const sym = raw.replace(QUOTE_SUFFIX, "");
+      if (sym.length >= 2 && !STOPWORDS.has(raw) && !STOPWORDS.has(sym)) return sym;
+    }
   }
   return undefined;
 }
@@ -76,12 +101,16 @@ export const ENTRY_RULES: { name: string; pattern: string; description: string }
 
 /** Extract a symbol without needing a direction (for management messages). */
 export function extractAnySymbol(text: string): string | undefined {
-  const tag = text.match(/[$#]([A-Za-z]{2,6})\b/);
+  // Tolerate a quote suffix glued to the cashtag ($BTCUSDT, $ETHUSDT): without
+  // it the {2,6}+\b match failed entirely on 3-4 letter tickers, so an explicit
+  // "Close $BTCUSDT" derived no symbol and the close silently no-op'd.
+  const tag = text.match(/[$#]([A-Za-z]{2,6})(?:USDT|USDC|USD|PERP)?\b/);
   if (tag) {
     const s = tag[1]!.toUpperCase().replace(QUOTE_SUFFIX, "");
     if (s.length >= 2 && !STOPWORDS.has(s)) return s;
   }
-  const pair = text.match(/\b([A-Za-z]{2,6})[\/\-](?:USDT|USDC|USD|PERP)\b/i);
+  // Separator optional, matching extractSymbol — so bare "BTCUSDT" resolves too.
+  const pair = text.match(/\b([A-Za-z]{2,6})[\/\-]?(?:USDT|USDC|USD|PERP)\b/i);
   if (pair) return pair[1]!.toUpperCase();
   return undefined;
 }
@@ -243,7 +272,8 @@ export function parseWithRegex(text: string): ParsedSignal | null {
     stopLoss,
     takeProfits: takeProfits.length ? takeProfits : undefined,
     leverageHint,
-    spot: /\bspot\b/i.test(text),
+    spot: SPOT_BUY_RE.test(text),
+    dca: DCA_ADD_RE.test(text),
     confidence,
     source: "regex",
   };

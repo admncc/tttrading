@@ -3,6 +3,7 @@ import type { ParsedSignal, TradeSide } from "@tttrading/shared";
 import { config } from "../config.js";
 import { settings } from "../db/repositories.js";
 import { log } from "../logger.js";
+import { SPOT_BUY_RE, DCA_ADD_RE } from "./regex.js";
 
 /** Effective key/model: desk-configured value (DB) wins over the .env default. */
 function effectiveKey(): string {
@@ -251,8 +252,12 @@ export async function parseWithLlm(
       stopLoss: num(input.stop_loss),
       takeProfits: tps.length ? tps : undefined,
       leverageHint: num(input.leverage),
-      spot: input.spot === true || /\bspot\b/i.test(text),
-      dca: input.dca === true || /\bDCA\b/i.test(text),
+      // Trust the model's structured spot/dca classification. Only fall back to a
+      // NARROW buy-/add-context regex when the field is absent — a bare \bspot\b /
+      // \bDCA\b override wrongly fired on commentary ("sweet spot entry" dropped a
+      // real leveraged long; "DCA buyers" forced the add-alignment path).
+      spot: input.spot === true || (input.spot == null && SPOT_BUY_RE.test(text)),
+      dca: input.dca === true || (input.dca == null && DCA_ADD_RE.test(text)),
       confidence: Math.max(0, Math.min(1, num(input.confidence) ?? 0.7)),
       source: "llm",
     };

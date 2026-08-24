@@ -221,18 +221,39 @@ async function reconcileByPosition(
       const again = tradesRepo.get(fresh.id);
       if (!again || again.status !== "open") continue;
       const openedMs = new Date(again.openedAt).getTime();
-      const symFills = fills.filter(
-        (f) => f.symbol.toUpperCase() === again.symbol.toUpperCase() && f.time >= openedMs - 5000,
-      );
-      const grossPnl = symFills.reduce((s, f) => s + f.closedPnl, 0);
-      const fee = symFills.reduce((s, f) => s + f.fee, 0);
-      // Exit price: weighted avg of the close-side fills, else the live mid.
+      // Bound the realized-PnL reconstruction to THIS trade's own close: take only
+      // the CLOSE-side fills (a long closes by selling → side "A"), oldest first,
+      // and accumulate at most `again.size` cumulative quantity. Selecting by
+      // symbol+time alone swept in the ENTRY fill's fee and any SIBLING trade that
+      // closed the same symbol in the window, over/under-stating this record's PnL.
       const closeSide = again.side === "long" ? "A" : "B"; // closing a long sells
-      const cf = symFills.filter((f) => f.side === closeSide && f.price > 0);
+      const cf = fills
+        .filter(
+          (f) =>
+            f.symbol.toUpperCase() === again.symbol.toUpperCase() &&
+            f.time >= openedMs - 5000 &&
+            f.side === closeSide &&
+            f.price > 0,
+        )
+        .sort((a, b) => a.time - b.time);
+      let remain = again.size;
+      let grossPnl = 0;
+      let fee = 0;
+      let exitVol = 0;
+      let exitNotional = 0;
+      for (const f of cf) {
+        if (remain <= 0) break;
+        const take = Math.min(f.size, remain);
+        const frac = f.size > 0 ? take / f.size : 0;
+        grossPnl += (f.closedPnl ?? 0) * frac;
+        fee += (f.fee ?? 0) * frac;
+        exitVol += take;
+        exitNotional += f.price * take;
+        remain -= take;
+      }
       let exit = again.entryPrice;
-      if (cf.length) {
-        const v = cf.reduce((s, f) => s + f.size, 0);
-        if (v > 0) exit = cf.reduce((s, f) => s + f.price * f.size, 0) / v;
+      if (exitVol > 0) {
+        exit = exitNotional / exitVol;
       } else {
         try {
           const mid = await ex.getMidPrice(again.symbol);
@@ -342,8 +363,10 @@ async function reconcileWorking(
       // the recent window (e.g. it filled during downtime), cross-check the
       // account's positions and promote from there instead of orphaning it.
       if (openOids && t.exchangeOrderId && !openOids.has(t.exchangeOrderId)) {
+        let posReadOk = false;
         try {
           const positions = await ex.getPositions();
+          posReadOk = true;
           const pos = positions.find(
             (p) => p.symbol.toUpperCase() === t.symbol.toUpperCase() && p.size !== 0 &&
               (t.side === "long" ? p.size > 0 : p.size < 0),
@@ -372,10 +395,15 @@ async function reconcileWorking(
         } catch {
           /* positions unavailable — fall through */
         }
-        // Not resting and no matching position → the order is truly gone.
+        // Not on the book. A visible recent fill is positive evidence → promote.
         if (size > 0) {
           await promoteWorkingToOpen(t.id, avgFill(), size);
-        } else if (expired) {
+        } else if (expired && posReadOk) {
+          // Only cancel on a POSITIVELY-confirmed absence: the positions read
+          // succeeded and showed no matching position. A read that THREW is
+          // inconclusive — the entry may have filled during downtime and aged
+          // out of the fills window, so cancelling would orphan a live, unmanaged
+          // position. Leave it for the next tick to re-confirm.
           await cancelWorkingTrade(t.id, `limit expired (not resting, no position)`);
         }
         continue;
@@ -391,10 +419,14 @@ async function reconcileWorking(
       }
 
       // Expiry: promote any (small) partial that filled rather than orphaning
-      // it; only a wholly-unfilled order is cancelled outright.
+      // it; only a wholly-unfilled order is cancelled outright. Reaching here with
+      // openOids defined means the order is still confirmed RESTING on the book
+      // (unfilled) — safe to cancel. If openOids is undefined we could not read the
+      // open orders, so a size-0 order is inconclusive (it may have filled during
+      // downtime); leave it rather than risk orphaning a live position.
       if (expired) {
         if (size > 0) await promoteWorkingToOpen(t.id, avgFill(), size);
-        else await cancelWorkingTrade(t.id, `limit timeout (${timeoutH}h)`);
+        else if (openOids) await cancelWorkingTrade(t.id, `limit timeout (${timeoutH}h)`);
       }
     } catch (err) {
       log.error(`working ${t.symbol} (${t.id}):`, err instanceof Error ? err.message : err);

@@ -269,7 +269,14 @@ export class HyperliquidConnector implements ExchangeConnector {
       return raw ? Number(raw) : undefined;
     }
     const mids = (await this.info.allMids()) as unknown as Record<string, string>;
-    const raw = mids[symbol.toUpperCase()] ?? mids[symbol];
+    // Look up by the RESOLVED venue ticker first: allMids is keyed by HL's own
+    // universe name (e.g. "kSHIB"), while the incoming symbol is our canonical
+    // ticker ("SHIB"). Without this every k/1000 meme coin prices as undefined
+    // and can neither be opened nor closed on HL. Fall back to the raw symbol
+    // for main-book coins whose name already equals the uppercased canonical.
+    const key = asset?.name ?? symbol;
+    const raw =
+      mids[key] ?? mids[key.toUpperCase()] ?? mids[symbol.toUpperCase()] ?? mids[symbol];
     return raw ? Number(raw) : undefined;
   }
 
@@ -287,7 +294,10 @@ export class HyperliquidConnector implements ExchangeConnector {
     const out: Record<string, number> = {};
     for (const [sym, raw] of Object.entries(mids)) {
       const n = Number(raw);
-      if (Number.isFinite(n) && n > 0) out[sym.toUpperCase()] = n;
+      // Key by the CANONICAL ticker (kSHIB→SHIB, XAU→GOLD): the price ticker's
+      // "want" set is built from canonical trade.symbols, so a venue-ticker key
+      // would never match and marks/uPnL would silently stay blank for aliases.
+      if (Number.isFinite(n) && n > 0) out[canonicalSymbol(sym)] = n;
     }
     // Add HIP-3 builder-dex marks (main perps keep priority). Only take a symbol's
     // mark from the dex we actually ROUTE it to (asset.dex) — a coin can be listed
@@ -298,9 +308,10 @@ export class HyperliquidConnector implements ExchangeConnector {
         const bm = await this.infoPost<Record<string, string>>({ type: "allMids", dex });
         for (const [full, raw] of Object.entries(bm)) {
           const bare = (full.split(":").pop() ?? full).toUpperCase();
-          if (out[bare] || this.assets.get(bare)?.dex !== dex) continue;
+          const canon = canonicalSymbol(bare);
+          if (out[canon] || this.assets.get(bare)?.dex !== dex) continue;
           const n = Number(raw);
-          if (Number.isFinite(n) && n > 0) out[bare] = n;
+          if (Number.isFinite(n) && n > 0) out[canon] = n;
         }
       } catch {
         /* skip this dex's mids */

@@ -239,7 +239,8 @@ export class MexcConnector implements ExchangeConnector {
         Number.isFinite(bid) && Number.isFinite(ask) && bid > 0 && ask > 0
           ? (bid + ask) / 2
           : Number(r.fairPrice) || Number(r.lastPrice);
-      if (Number.isFinite(mid) && mid > 0) out[coin] = mid;
+      // Canonical key so the price ticker's canonical "want" set matches aliases.
+      if (Number.isFinite(mid) && mid > 0) out[canonicalSymbol(coin)] = mid;
     }
     return out;
   }
@@ -328,7 +329,7 @@ export class MexcConnector implements ExchangeConnector {
 
   /* ------------------------------- orders -------------------------------- */
 
-  private async setLeverage(asset: MexcAsset, leverage: number, marginMode: "cross" | "isolated", side: TradeSide) {
+  private async setLeverage(asset: MexcAsset, leverage: number, marginMode: "cross" | "isolated", side: TradeSide): Promise<number> {
     const capped = Math.max(1, Math.floor(Math.min(leverage, asset.maxLeverage)));
     try {
       await this.signed("POST", "/api/v1/private/position/change_leverage", {
@@ -340,6 +341,9 @@ export class MexcConnector implements ExchangeConnector {
     } catch (err) {
       log.warn(`MEXC setLeverage ${asset.name}:`, err instanceof Error ? err.message : err);
     }
+    // Return the leverage the venue will actually apply (clamped to the pair's
+    // max) so the trade is recorded at the real leverage, not the requested one.
+    return capped;
   }
 
   /** Actual filled price & coin size for an order (best-effort from its deals). */
@@ -394,7 +398,8 @@ export class MexcConnector implements ExchangeConnector {
     }
 
     try {
-      if (!req.reduceOnly) await this.setLeverage(asset, req.leverage, req.marginMode, req.side);
+      let effLev = req.leverage;
+      if (!req.reduceOnly) effLev = await this.setLeverage(asset, req.leverage, req.marginMode, req.side);
       // Close codes (2/4) ARE reduce-only; open codes (1/3) open. We never send a
       // reduceOnly flag (it's one-way-mode only) — the side code carries intent.
       const side = mexcSide(req.side, !!req.reduceOnly);
@@ -421,6 +426,7 @@ export class MexcConnector implements ExchangeConnector {
         size: fill?.coins && fill.coins > 0 ? fill.coins : coinSize,
         orderId,
         simulated: false,
+        effectiveLeverage: req.reduceOnly ? undefined : effLev,
       };
     } catch (err) {
       return { ok: false, filledPrice: mid, size: 0, simulated: false, error: err instanceof Error ? err.message : String(err) };
@@ -447,7 +453,7 @@ export class MexcConnector implements ExchangeConnector {
     if (sim) return { ok: true, status: "resting", size: coinSize, simulated: true };
 
     try {
-      await this.setLeverage(asset, req.leverage, req.marginMode, req.side);
+      const effLev = await this.setLeverage(asset, req.leverage, req.marginMode, req.side);
       const data = await this.signed<{ orderId: number | string } | number | string>(
         "POST",
         "/api/v1/private/order/create",
@@ -464,7 +470,7 @@ export class MexcConnector implements ExchangeConnector {
       const orderId = orderIdOf(data);
       if (!orderId) return { ok: false, size: 0, simulated: false, error: "no orderId in response" };
       // Treated as resting; the monitor promotes it from real fills.
-      return { ok: true, status: "resting", orderId, size: coinSize, simulated: false };
+      return { ok: true, status: "resting", orderId, size: coinSize, simulated: false, effectiveLeverage: effLev };
     } catch (err) {
       return { ok: false, size: 0, simulated: false, error: err instanceof Error ? err.message : String(err) };
     }

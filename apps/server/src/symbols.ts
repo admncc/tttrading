@@ -48,3 +48,13 @@ export function symbolAliases(s: string): string[] {
 export function sameAsset(a: string, b: string): boolean {
   return canonicalSymbol(a) === canonicalSymbol(b);
 }
+
+/**
+ * True for a "k"/"1000" meme coin whose venue price is ×1000 the raw ticker
+ * (SHIB, PEPE, BONK, …). Only these need their ENTRY price magnitude-corrected
+ * against the venue mid; for every other coin a far limit entry is intentional
+ * (a deep buy-the-dip bid) and must NOT be snapped toward the mid.
+ */
+export function isScaledCoin(s: string): boolean {
+  return symbolAliases(s).some((m) => m.startsWith("1000"));
+}

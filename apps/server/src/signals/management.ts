@@ -40,8 +40,16 @@ const RE_CANCEL_LIMIT =
 // number is caught by RE_PARTIAL_A's `clos` verb below). Bare "stopped" is
 // dropped ("stopped at resistance" is not a stop-out); only "stopped out" /
 // "got stopped" count.
+// A candle-close remark ("BTC closed strong above the range", "daily closed
+// green") is market commentary, NOT an instruction to flatten a live position.
+// Distinguish it from a real exit: (a) don't count "closed" when it is preceded
+// by a timeframe word (candle/daily/…); (b) don't count it when it is followed
+// — allowing one adverb in between — by a level word (above/below/near/…) or by
+// a candle-colour/strength/timeframe word. A genuine close ("closed the
+// position", "closed here", "closed for a loss", bare "position closed") has
+// none of those and still matches.
 const RE_CLOSE_NONCANCEL =
-  /\b(invalidated|stopped\s*out|got\s*stopped|clos(?:e|ed|ing)\b(?!\s*(?:\d|to\b|above\b|below\b|near\b|by\b|half\b|part|some\b))|cut(?:ting)?\b|exit(?:ed|ing)?\b|off\s+the\s+table|left\s+without\s+us|took\s+profit\s+and\s+clos)/i;
+  /\b(invalidated|stopped\s*out|got\s*stopped|(?<!\b(?:candle|daily|weekly|monthly|hourly)\s)clos(?:e|ed|ing)\b(?!\s+(?:\w+\s+)?(?:above|below|near|under|over|around)\b)(?!\s*(?:\d|to\b|by\b|half\b|part|some\b|green\b|red\b|strong\b|higher\b|lower\b|the\s+(?:day|week|candle|month|session)\b))|cut(?:ting)?\b|exit(?:ed|ing)?\b|off\s+the\s+table|left\s+without\s+us|took\s+profit\s+and\s+clos)/i;
 const RE_CANCEL_WORD = /\bcancel(?:led|ed|ing)?\b/i;
 // "risk free" / "move SL to entry / breakeven". The second branch requires the
 // word "to" before the target so ordinary prose ("moved my stop, we'll be

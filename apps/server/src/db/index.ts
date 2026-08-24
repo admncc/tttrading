@@ -264,7 +264,11 @@ function migrate(database: Database.Database): void {
           // matches its own price×size within fee noise, so it is never touched.
           const feeGuard = Math.max(12, 0.003 * Math.abs(r.exit_price * r.size));
           if (diff > feeGuard && (Math.abs(r.realized_pnl) > 20 || Math.abs(correct) > 20)) {
-            upd.run(Number(correct.toFixed(6)), Number(estFee.toFixed(6)), r.id);
+            // fees column = ALL fees booked on the trade (banked partial-close
+            // fees + this final leg's estimate), matching how it's written on the
+            // normal close paths — not estFee alone, which dropped the banked part.
+            const totalFees = (r.banked_fees ?? 0) + estFee;
+            upd.run(Number(correct.toFixed(6)), Number(totalFees.toFixed(6)), r.id);
             log.warn(`Corrected mis-booked PnL: ${r.group_name} ${r.symbol} ${r.realized_pnl.toFixed(2)} → ${correct.toFixed(2)} USDC`);
             fixed++;
           }

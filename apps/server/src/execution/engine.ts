@@ -14,7 +14,7 @@ import { readManagementLevels, reconsiderManagement, llmReady, type SignalImage 
 import { classifyManagementAll, isTradeUpdate, isMarketCommentary, type ManagementAction } from "../signals/management.js";
 import { expandTakeProfits } from "../signals/takeprofit.js";
 import { assessRisk, tierSlippage, PROTECTIVE_SLIPPAGE } from "../risk/score.js";
-import { canonicalSymbol, symbolAliases } from "../symbols.js";
+import { canonicalSymbol, symbolAliases, isScaledCoin } from "../symbols.js";
 import { alertBlocked, alertClassification, alertClosed, alertError, alertOpened, sendAlert } from "../alerts/notifier.js";
 import { broadcast } from "../ws/hub.js";
 import { pushStats } from "../stats/service.js";
@@ -347,9 +347,16 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
   // existing stop so the add isn't left unprotected.
   if (parsed.dca) {
     const dcaSym = parsed.symbol.toUpperCase();
-    const heldSame = [...tradesRepo.open(), ...tradesRepo.working()].find(
+    const heldLegs = [...tradesRepo.open(), ...tradesRepo.working()].filter(
       (t) => t.groupId === group.id && !t.shadow && t.symbol.toUpperCase() === dcaSym,
     );
+    // Prefer a leg on the SAME side as the parsed add. Only when exactly one leg
+    // is held (unambiguous) do we align the add's direction to it — a group can
+    // legitimately hold both a long and a short of one coin (splitOpposingVenues),
+    // and picking an arbitrary leg could flip the add onto the wrong direction.
+    const parsedSide = parsed.side;
+    const sameSide = heldLegs.find((t) => t.side === parsedSide);
+    const heldSame = sameSide ?? (heldLegs.length === 1 ? heldLegs[0] : undefined);
     if (heldSame) {
       if (parsed.side !== heldSame.side) parsed = { ...parsed, side: heldSame.side };
       if (parsed.stopLoss === undefined && heldSame.stopLoss !== undefined) parsed = { ...parsed, stopLoss: heldSame.stopLoss };
@@ -464,6 +471,22 @@ function finalizeIgnored(
 
 /** Move a trade's stop-loss (break-even or explicit). Place-then-cancel when live. */
 async function moveStop(trade: Trade, newStop: number, breakeven: boolean): Promise<void> {
+  // Serialize with every other lifecycle mutator on this trade (close, partial,
+  // promote, cancel, and other stop-moves) via the `closing` guard — otherwise a
+  // monitor break-even racing an explicit SL-move could interleave their
+  // place-new-then-cancel-old sequences and cancel the stop just placed, leaving
+  // slOrderId pointing at a dead order. If a mutation is already in flight, drop
+  // this move (the position stays protected; the monitor re-evaluates next tick).
+  if (closing.has(trade.id)) return;
+  closing.add(trade.id);
+  try {
+    await moveStopInner(trade, newStop, breakeven);
+  } finally {
+    closing.delete(trade.id);
+  }
+}
+
+async function moveStopInner(trade: Trade, newStop: number, breakeven: boolean): Promise<void> {
   const ex = connectorFor(trade);
   // Real, live position (open OR resting): put the stop on the exchange. Place
   // the NEW stop first, then cancel the old one (if any) — never leave the
@@ -545,7 +568,12 @@ async function partialClose(tradeInput: Trade, rawFraction: number): Promise<voi
     // Base the fraction on the ACTUAL live position, not trade.size: a TP
     // scale-out bumps tpFilledCount but does NOT decrement trade.size, so
     // booking "50%" off the stale size would close more than half of what's
-    // really left. Fall back to trade.size if the position can't be read.
+    // really left. But CAP it to this trade's own size — when a same-coin
+    // scale-in or another trader's leg nets into one larger exchange position,
+    // Math.abs(pos.size) is the COMBINED size, and a fraction of that would eat
+    // the sibling leg (the ONDO netted-close incident, which closeTrade already
+    // guards). min(live, trade.size) shrinks for a TP scale-out yet never
+    // exceeds this leg. Fall back to trade.size if the position can't be read.
     let base = trade.size;
     if (!trade.simulated && ex.live) {
       try {
@@ -556,7 +584,7 @@ async function partialClose(tradeInput: Trade, rawFraction: number): Promise<voi
             p.size !== 0 &&
             (trade.side === "long" ? p.size > 0 : p.size < 0),
         );
-        if (pos && Math.abs(pos.size) > 0) base = Math.abs(pos.size);
+        if (pos && Math.abs(pos.size) > 0) base = Math.min(Math.abs(pos.size), trade.size);
       } catch {
         /* fall back to the recorded size */
       }
@@ -1072,13 +1100,26 @@ async function effectiveNotional(
   const mode = s.sizingMode ?? "fixed";
   // Never exceed a sane multiple of the channel's own fixed size, nor the hard cap.
   const cap = Math.min(MAX_ORDER_NOTIONAL, Math.max(s.tradeSizeUsd * 10, s.tradeSizeUsd));
-  const clamp = (n: number) => Math.min(Math.max(0, n), cap);
+  // Clamp, and LOUDLY flag when the cap binds a dynamic-sizing mode — otherwise a
+  // tight stop (riskPerTrade) or a large equity (percentEquity) silently produces
+  // LESS risk than configured. The user can raise tradeSizeUsd to lift the cap.
+  const clamp = (n: number, label: string) => {
+    if (n > cap) {
+      event(
+        "exec",
+        `${label} sizing for ${parsed.symbol} wanted ${n.toFixed(0)} USDC, capped at ${cap.toFixed(0)} (10× fixed size) — configured risk not fully honored; raise tradeSizeUsd to lift the cap.`,
+        { wanted: n, cap, mode: label },
+        { level: "warn", groupId: group.id },
+      );
+    }
+    return Math.min(Math.max(0, n), cap);
+  };
 
   if (mode === "percentEquity" && (s.riskValue ?? 0) > 0) {
     const pct = Math.min(s.riskValue as number, 100); // margin can't exceed 100% of equity
     try {
       const equity = (await ex.getAccountSummary())?.accountValue ?? 0;
-      if (equity > 0) return clamp(equity * (pct / 100) * s.leverage);
+      if (equity > 0) return clamp(equity * (pct / 100) * s.leverage, "percentEquity");
     } catch {
       /* no equity reading — fall back */
     }
@@ -1095,7 +1136,7 @@ async function effectiveNotional(
     }
     if (ref && ref > 0) {
       const stopDist = Math.max(Math.abs(ref - parsed.stopLoss) / ref, MIN_STOP_DIST);
-      return clamp((s.riskValue as number) / stopDist);
+      return clamp((s.riskValue as number) / stopDist, "riskPerTrade");
     }
     return s.tradeSizeUsd;
   }
@@ -1287,7 +1328,13 @@ async function placeEntry(
       /* no price feed — can't normalize or side-check; let the order path handle it */
     }
     const fixes: string[] = [];
-    if (parsed.entry !== undefined && mid && mid > 0) {
+    // Magnitude-correct the ENTRY only for ×1000 meme coins, where the signal's
+    // raw-scale price genuinely needs converting to the venue's ×1000 scale. For
+    // every other coin a far limit entry is an INTENTIONAL deep bid (e.g. limit
+    // 18 while price is 100) and snapping it toward the mid would corrupt it into
+    // an above-market order. SL/TP still snap below (bounded by the wrong-side
+    // guard); the would-chase guard drops a genuinely mis-scaled non-meme entry.
+    if (parsed.entry !== undefined && mid && mid > 0 && isScaledCoin(parsed.symbol)) {
       const e = snapMagnitude(parsed.entry, mid);
       if (e !== parsed.entry) {
         fixes.push(`entry ${parsed.entry}→${e}`);
@@ -2218,9 +2265,14 @@ export async function closeTrade(tradeId: string, exitPriceOverride?: number) {
     // position behind. Trust the exchange's real position size; fall back to the
     // fraction model only when it can't be read.
     let remainingSize = remainingFraction * trade.size;
+    // Whether remainingSize came from a TRUSTED live read (exact for this leg) vs
+    // the fraction-model fallback (may under-size). Sim/non-live sizes are exact
+    // by construction. Gates the SL/TP cancel below.
+    let posReadOk = trade.simulated || !ex.live;
     if (!trade.simulated && ex.live) {
       try {
         const positions = await ex.getPositions();
+        posReadOk = true;
         const pos = positions.find(
           (p) =>
             p.symbol.toUpperCase() === trade.symbol.toUpperCase() &&
@@ -2284,11 +2336,36 @@ export async function closeTrade(tradeId: string, exitPriceOverride?: number) {
 
     // Position is now closed/flat (or simulated) — NOW cancel any resting SL/TP so
     // they can't fire on a future position. cancelOrders no-ops when not live.
+    // But only strip protection when we're CONFIDENT the position is flat: if the
+    // close was sized from the fraction-model fallback (the live read failed), the
+    // reduce-only order may have under-closed, leaving a live residual — re-verify
+    // flat first and KEEP the SL/TP if we can't confirm it, so the residual isn't
+    // left naked. A trusted live read (posReadOk) already sized this leg exactly,
+    // so cancelling our own resting orders is safe even on a still-netted position.
+    let safeToCancel = posReadOk;
+    if (!safeToCancel) {
+      try {
+        const positions = await ex.getPositions();
+        safeToCancel = !positions.some(
+          (p) =>
+            p.symbol.toUpperCase() === trade.symbol.toUpperCase() &&
+            p.size !== 0 &&
+            (trade.side === "long" ? p.size > 0 : p.size < 0),
+        );
+      } catch {
+        safeToCancel = false;
+      }
+    }
     const restingIds = [trade.slOrderId, ...(trade.tpOrderIds ?? [])].filter(
       (x): x is string => !!x,
     );
-    if (restingIds.length) {
+    if (restingIds.length && safeToCancel) {
       await ex.cancelOrders(trade.symbol, restingIds);
+    } else if (restingIds.length && !safeToCancel) {
+      log.warn(
+        `closeTrade: ${trade.symbol} — could not confirm flat after close; ` +
+          `KEEPING resting SL/TP so any live residual stays protected.`,
+      );
     }
 
     const dir = trade.side === "long" ? 1 : -1;
