@@ -80,8 +80,26 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
     // short setup was invalidated") is educational recap, not a command — its
     // "invalidated"/"stopped" wording must NOT fire a close on a live position.
     const marketCommentary = isMarketCommentary(rawText);
-    let actions = marketCommentary ? [] : classifyManagementAll(rawText);
-    if (marketCommentary) {
+    let actions = classifyManagementAll(rawText);
+    if (marketCommentary && actions.length) {
+      // A commentary / pointer phrase ("look at the previous", "see the big move")
+      // is no longer a blanket veto — a real imperative that merely co-occurs with
+      // it must survive. Keep imperative management (partial / SL-move / break-even
+      // / cancel-limit) and an IMPERATIVE close; drop only a purely-NARRATIVE close
+      // (a recap "the setup was invalidated / stopped out" that just tripped the
+      // close keyword with no command verb).
+      const IMPERATIVE_CLOSE = /\b(?:close|closed|closing|exit|flatten|dump|get\s+out|out\s+of|take\s+it\s+off|cut\s+it)\b/i;
+      const before = actions.length;
+      actions = actions.filter((a) => a.kind !== "close" || IMPERATIVE_CLOSE.test(rawText));
+      if (actions.length < before) {
+        event(
+          "message",
+          `Market commentary / pointer post from ${group.name} — dropped narrative close, kept ${actions.length} imperative action(s)`,
+          { preview },
+          { groupId: group.id },
+        );
+      }
+    } else if (marketCommentary) {
       event(
         "message",
         `Market commentary / pointer post from ${group.name} — no management action taken`,
@@ -97,7 +115,11 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
     // chart-only levels. Fail-safe: an LLM error/uncertain result keeps the rules'
     // actions, so a timeout never silently drops a real management action.
     const llmMode = settingsRepo.getParseMode() === "llm";
-    const consultLlm = !marketCommentary && llmReady() && (primary !== undefined || (llmMode && actions.length > 0));
+    // Consult the LLM whenever a chart is present or surviving rule-actions want to
+    // act — even under commentary, so it can arbitrate "close BTC here, see the big
+    // move" correctly. Pure commentary (no chart, no surviving action) still skips
+    // it (the guard below leaves actions empty), so no wasted calls.
+    const consultLlm = llmReady() && (primary !== undefined || (llmMode && actions.length > 0));
     if (consultLlm) {
       try {
         let mv = await readManagementLevels(rawText, group.settings.instructions, imgs, actions.map((a) => a.kind));
@@ -470,17 +492,19 @@ function finalizeIgnored(
 }
 
 /** Move a trade's stop-loss (break-even or explicit). Place-then-cancel when live. */
-async function moveStop(trade: Trade, newStop: number, breakeven: boolean): Promise<void> {
+async function moveStop(trade: Trade, newStop: number, breakeven: boolean): Promise<boolean> {
   // Serialize with every other lifecycle mutator on this trade (close, partial,
   // promote, cancel, and other stop-moves) via the `closing` guard — otherwise a
   // monitor break-even racing an explicit SL-move could interleave their
   // place-new-then-cancel-old sequences and cancel the stop just placed, leaving
   // slOrderId pointing at a dead order. If a mutation is already in flight, drop
-  // this move (the position stays protected; the monitor re-evaluates next tick).
-  if (closing.has(trade.id)) return;
+  // this move (the position stays protected; the monitor re-evaluates next tick)
+  // and return false so the caller can report it rather than assert success.
+  if (closing.has(trade.id)) return false;
   closing.add(trade.id);
   try {
     await moveStopInner(trade, newStop, breakeven);
+    return true;
   } finally {
     closing.delete(trade.id);
   }
@@ -751,6 +775,24 @@ function heldReferencedInText(held: string[], rawText: string): string[] {
       return tagged || bare;
     }),
   );
+}
+
+/**
+ * Every DISTINCT symbol explicitly cash-tagged ($BTC / #ETH / $BTCUSDT) in the
+ * message, canonicalized. extractAnySymbol only keeps the FIRST tag, so when a
+ * message tags several coins the rules' attribution is unreliable ("$ETH hit TP1.
+ * Closing $BTC now" tags ETH first but the close is BTC) — >1 distinct tag on a
+ * position action is therefore an ambiguous attribution the guard must block.
+ */
+function distinctTaggedSymbols(rawText: string): string[] {
+  const out = new Set<string>();
+  const re = /[$#]([A-Za-z]{2,6})(?:USDT|USDC|USD|PERP)?\b/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(rawText)) !== null) {
+    const s = canonicalSymbol(m[1]!.toUpperCase().replace(/(USDT|USDC|USD|PERP)$/i, ""));
+    if (s.length >= 2) out.add(s);
+  }
+  return [...out];
 }
 
 /**
@@ -1291,6 +1333,20 @@ function snapMagnitude(level: number, ref: number): number {
 }
 
 /**
+ * DCA-hold widened stop: move the stop to a BOUNDED multiple (1–3×, hard-capped)
+ * of the signal's stop distance measured from `ref` (the entry). Returns the new
+ * absolute stop price, or undefined when the multiple is 1 / the result is
+ * invalid (leave the stop unchanged). A wider stop, never unbounded averaging.
+ */
+function widenStopFor(side: TradeSide, stop: number, ref: number, mult: number | undefined): number | undefined {
+  const wm = Math.min(3, Math.max(1, mult ?? 1));
+  if (wm <= 1 || !(ref > 0)) return undefined;
+  const dist = Math.abs(ref - stop);
+  const widened = side === "long" ? ref - wm * dist : ref + wm * dist;
+  return widened > 0 && widened !== stop ? widened : undefined;
+}
+
+/**
  * Place a single entry (a whole single-entry signal, or one leg of a scale-in)
  * and record the resulting trade: sizing, risk gate, collateral check, then the
  * limit or market path. `leg` is set only for scale-in legs — it forces that
@@ -1393,15 +1449,17 @@ async function placeEntry(
         // Runs BEFORE sizing, so risk-per-trade shrinks the position to hold the $
         // risk on target while fixed/percent sizing accepts a proportionally larger
         // max loss. Hard-capped at 3× — a wider stop, never unbounded averaging.
-        const wm = Math.min(3, Math.max(1, group.settings.slWideningMult ?? 1));
-        if (wm > 1) {
-          const dist = Math.abs(ref - parsed.stopLoss);
-          const widened = parsed.side === "long" ? ref - wm * dist : ref + wm * dist;
-          if (widened > 0 && widened !== parsed.stopLoss) {
+        // Skipped for a scale-in LEG: the whole ladder shares ONE stop, so the
+        // widening is computed once in executeScaleIn (from a single reference)
+        // and passed down already-applied — re-deriving per leg off each leg's own
+        // entry would give the legs divergent stops.
+        if (!leg) {
+          const widened = widenStopFor(parsed.side, parsed.stopLoss, ref, group.settings.slWideningMult);
+          if (widened !== undefined) {
             event(
               "exec",
-              `DCA-hold: widening SL ${parsed.stopLoss}→${widened} (×${wm}) for ${parsed.symbol}`,
-              { from: parsed.stopLoss, to: widened, mult: wm },
+              `DCA-hold: widening SL ${parsed.stopLoss}→${widened} (×${group.settings.slWideningMult}) for ${parsed.symbol}`,
+              { from: parsed.stopLoss, to: widened, mult: group.settings.slWideningMult },
               { groupId: group.id, signalId: signal.id },
             );
             parsed = { ...parsed, stopLoss: widened };
@@ -1418,14 +1476,18 @@ async function placeEntry(
   // to the global ceiling. Testnet/paper/shadow orders simulate and are exempt.
   // Lets you validate mainnet (or Aster/MEXC) with tiny size before scaling up.
   const liveCap = settingsRepo.getGlobalSettings().liveMaxOrderUsd;
-  if (liveCap > 0 && !ex.simulating() && tradeSizeUsd > liveCap) {
+  // For a scale-in, split the ceiling across the legs so the WHOLE ladder respects
+  // liveMaxOrderUsd — otherwise N legs would each be capped at the full ceiling and
+  // the real exposure would be N× the intended safety limit.
+  const legCap = leg ? liveCap / leg.total : liveCap;
+  if (legCap > 0 && !ex.simulating() && tradeSizeUsd > legCap) {
     event(
       "exec",
-      `Capping real order ${parsed.symbol} on ${ex.name}: ${tradeSizeUsd.toFixed(0)} → ${liveCap} (live-order limit)`,
-      { requested: tradeSizeUsd, cap: liveCap, venue: ex.name },
+      `Capping real order ${parsed.symbol} on ${ex.name}: ${tradeSizeUsd.toFixed(0)} → ${legCap.toFixed(0)} (live-order limit${leg ? `, ${leg.total}-leg split` : ""})`,
+      { requested: tradeSizeUsd, cap: legCap, venue: ex.name },
       { level: "warn", groupId: group.id, signalId: signal.id },
     );
-    tradeSizeUsd = liveCap;
+    tradeSizeUsd = legCap;
   }
 
   // Global risk gate (kill-switch / limits) — applies to every new entry.
@@ -1450,7 +1512,17 @@ async function placeEntry(
       // have separate per-dex balances).
       const summary = await ex.getAccountSummary(parsed.symbol);
       if (summary) {
-        const needMargin = tradeSizeUsd / Math.max(1, group.settings.leverage);
+        // Use the leverage the venue will ACTUALLY apply (clamped to the pair max),
+        // not the desk default — otherwise a 20× desk setting on a 5×-max pair makes
+        // needMargin 4× too small and the guard passes orders the venue then rejects.
+        let effLev = group.settings.leverage;
+        try {
+          const a = await ex.getAsset(parsed.symbol);
+          if (a?.maxLeverage) effLev = Math.min(effLev, a.maxLeverage);
+        } catch {
+          /* can't read the pair — fall back to the desk leverage */
+        }
+        const needMargin = tradeSizeUsd / Math.max(1, effLev);
         if (summary.withdrawable < needMargin * 0.99) {
           const reason = `insufficient collateral on ${ex.name}: need ~${needMargin.toFixed(2)} free, have ${summary.withdrawable.toFixed(2)}`;
           const failed = signalsRepo.update(signal.id, { status: "failed", error: reason })!;
@@ -1567,6 +1639,32 @@ async function executeScaleIn(
     { legs: legs.map((l) => ({ price: l.price, mode: l.mode })) },
     { groupId: group.id, signalId: signal.id },
   );
+
+  // DCA-hold: the whole ladder shares ONE stop, so widen it ONCE here (measured
+  // from the primary / first-priced leg, or the live mid if every leg is market)
+  // and let each leg inherit the already-widened absolute stop. placeEntry skips
+  // per-leg widening for scale-in legs, so the legs can't end up with divergent
+  // stops derived from their individual entry prices.
+  if (parsed.stopLoss !== undefined && (group.settings.slWideningMult ?? 1) > 1) {
+    let ref = legs.find((l) => l.price && l.price > 0)?.price;
+    if (ref === undefined) {
+      try {
+        ref = await ex.getMidPrice(parsed.symbol);
+      } catch {
+        /* no price feed — leave the stop unwidened */
+      }
+    }
+    const widened = ref ? widenStopFor(parsed.side, parsed.stopLoss, ref, group.settings.slWideningMult) : undefined;
+    if (widened !== undefined) {
+      event(
+        "exec",
+        `DCA-hold: widening shared scale-in SL ${parsed.stopLoss}→${widened} (×${group.settings.slWideningMult}) for ${parsed.symbol}`,
+        { from: parsed.stopLoss, to: widened, mult: group.settings.slWideningMult },
+        { groupId: group.id, signalId: signal.id },
+      );
+      parsed = { ...parsed, stopLoss: widened };
+    }
+  }
 
   const legErrors: string[] = [];
   for (let i = 0; i < legs.length; i++) {
@@ -1930,7 +2028,8 @@ export async function setTradeStop(
   }
   const ok = trade.side === "long" ? price < ref : price > ref;
   if (!ok) return { ok: false, error: `stop ${price} is on the wrong side of ${ref} for a ${trade.side}` };
-  await moveStop(trade, price, false);
+  const moved = await moveStop(trade, price, false);
+  if (!moved) return { ok: false, error: "another operation is in progress on this trade — try again in a moment" };
   event("manage", `Desk set SL ${price} for ${trade.symbol}`, { price }, { groupId: trade.groupId });
   return { ok: true, trade: tradesRepo.get(tradeId) };
 }
@@ -2361,11 +2460,19 @@ export async function closeTrade(tradeId: string, exitPriceOverride?: number) {
     );
     if (restingIds.length && safeToCancel) {
       await ex.cancelOrders(trade.symbol, restingIds);
-    } else if (restingIds.length && !safeToCancel) {
+    }
+    if (!trade.simulated && ex.live && !safeToCancel) {
+      // Double read-failure: the size came from the fraction model AND we couldn't
+      // re-confirm flat, so we can neither trust the close nor safely strip the
+      // resting SL/TP. Do NOT book a terminal close — that would orphan those
+      // protective orders against a FUTURE position for this symbol. Leave the
+      // trade OPEN and let the monitor reconcile it once the position feed recovers
+      // (it closes + cancels if flat, or keeps managing a residual). The reduce-only
+      // close already went out best-effort, so any real position is being reduced.
       log.warn(
-        `closeTrade: ${trade.symbol} — could not confirm flat after close; ` +
-          `KEEPING resting SL/TP so any live residual stays protected.`,
+        `closeTrade: ${trade.symbol} — position feed down; leaving the trade open for the monitor to reconcile rather than booking an unconfirmed close (resting SL/TP kept).`,
       );
+      return tradesRepo.get(tradeId);
     }
 
     const dir = trade.side === "long" ? 1 : -1;

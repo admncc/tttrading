@@ -68,17 +68,17 @@ function extractSymbol(text: string, side: TradeSide): string | undefined {
     if (sym.length >= 2 && !STOPWORDS.has(sym)) return sym;
   }
 
-  // Ticker AFTER the direction word — scan the next few tokens, not just the
-  // adjacent one, skipping filler ("buy back BTC" → BTC, not BACK; "buy more
-  // SOL" → SOL, not undefined; "buy spot ETH" → ETH, not SPOT).
-  const afterDir = new RegExp(`\\b(?:${dir})\\b([^\\n]{0,24})`, "i");
+  // Ticker directly after the direction word ("long BTC", "buy eth"). Only the
+  // ADJACENT token — NOT a scan across later words, which would grab a real prose
+  // ticker ("buy the hype ETH" → HYPE, "long the pump on SOL" → PUMP). When the
+  // adjacent token is filler (buy BACK/SPOT/MORE btc), it's a STOPWORD → this
+  // returns undefined and the parser defers to the LLM (safe), rather than
+  // confidently trading the wrong coin.
+  const afterDir = new RegExp(`\\b(?:${dir})\\b[^A-Za-z]*([A-Za-z]{2,6})\\b`, "i");
   const m = text.match(afterDir);
   if (m) {
-    const tokens = (m[1]!.toUpperCase().match(/[A-Z]{2,6}/g) ?? []).slice(0, 3);
-    for (const raw of tokens) {
-      const sym = raw.replace(QUOTE_SUFFIX, "");
-      if (sym.length >= 2 && !STOPWORDS.has(raw) && !STOPWORDS.has(sym)) return sym;
-    }
+    const sym = m[1]!.toUpperCase().replace(QUOTE_SUFFIX, "");
+    if (sym.length >= 2 && !STOPWORDS.has(sym)) return sym;
   }
   return undefined;
 }
@@ -188,9 +188,14 @@ function extractEntries(text: string): { price?: number; mode: "market" | "limit
   // can't consume the NEXT leg's ordinal ("…(63842)(cmp). Second …").
   const re =
     /\b(?:1st|2nd|3rd|4th|first|second|third|fourth)\s+(?:limit\s+)?entr(?:y|ies)\b(?:\s*zone)?[^0-9\n]{0,20}([0-9][0-9.,]*)([^\n.]{0,14})/gi;
+  // Digit-labelled zones: "Entry 1: 63000", "Entry 2 - 64000", "entry #3 @ 62000".
+  // The label's number is followed by a separator (:/-/)/@/at) then the price, so
+  // the leg price is never confused with the ordinal digit.
+  const reDigit =
+    /\bentr(?:y|ies)\s*#?\s*\d+\s*(?:[:\-)]|@|at)\s*\$?\s*([0-9][0-9.,]*)((?:(?!entr)[^\n.]){0,14})/gi;
   const legs: { price?: number; mode: "market" | "limit" }[] = [];
   const seen = new Set<number>();
-  for (const m of text.matchAll(re)) {
+  for (const m of [...text.matchAll(re), ...text.matchAll(reDigit)]) {
     const price = toNumber(m[1]!);
     if (price === undefined || seen.has(price)) continue;
     seen.add(price);
@@ -234,6 +239,10 @@ export function parseWithRegex(text: string): ParsedSignal | null {
         // The `(?!\s*[:)])` guard rejects a list ordinal ("Entry 1: buy up till X"
         // → don't capture the "1"), letting the real price/`till` bound win instead.
         /\b(?:entry|enter|entradas?|einstieg)\b(?:\s*(?:at|@|:|=|around|near)?\s*\$?){0,2}\s*([0-9][0-9.,]*)(?!\s*[:)])/i,
+        // Single digit-labelled entry ("Entry 1: 63000"): skip the ordinal index
+        // and its separator to capture the real price, which the pattern above
+        // deliberately rejects (its `(?!\s*[:)])` guard drops the "1").
+        /\b(?:entry|enter|entradas?|einstieg)\s*#?\s*\d+\s*(?:[:\-)]|@|at)\s*\$?\s*([0-9][0-9.,]*)/i,
         /@\s*([0-9][0-9.,]*)/,
         // Only when there's no labeled entry: "buy up till 0.245" -> the limit.
         /\btill\s*([0-9][0-9.,]*)/i,

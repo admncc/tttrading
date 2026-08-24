@@ -29,8 +29,11 @@ export interface ManagementAction {
 
 // Remove/cancel a still-RESTING limit ENTRY order (not an open position).
 // Checked before close so "cancel/remove the limit entry" isn't read as a close.
+// NB: "pull" is deliberately NOT in this alternation — "pull back to the entry
+// zone" / "waiting for a pull back to entry" is price commentary, not an order-
+// management command, and would otherwise cancel a resting limit on pure TA prose.
 const RE_CANCEL_LIMIT =
-  /\b(?:cancel\w*|remov\w*|delet\w*|pull\w*|scrap\w*|kill\w*)\b[^.\n]{0,25}\b(?:limit|entry|pending|resting|order)s?\b/i;
+  /\b(?:cancel\w*|remov\w*|delet\w*|scrap\w*|kill\w*)\b[^.\n]{0,25}\b(?:limit|entry|pending|resting|order)s?\b/i;
 // "invalidated"/"stopped"/"closed"/"cut"/"off the table" => close a live trade.
 // Two variants: NONCANCEL excludes the bare cancel/remove words (which, next to
 // "limit/entry", mean cancel_limit); the cancel word alone (no limit context)
@@ -49,7 +52,7 @@ const RE_CANCEL_LIMIT =
 // position", "closed here", "closed for a loss", bare "position closed") has
 // none of those and still matches.
 const RE_CLOSE_NONCANCEL =
-  /\b(invalidated|stopped\s*out|got\s*stopped|(?<!\b(?:candle|daily|weekly|monthly|hourly)\s)clos(?:e|ed|ing)\b(?!\s+(?:\w+\s+)?(?:above|below|near|under|over|around)\b)(?!\s*(?:\d|to\b|by\b|half\b|part|some\b|green\b|red\b|strong\b|higher\b|lower\b|the\s+(?:day|week|candle|month|session)\b))|cut(?:ting)?\b|exit(?:ed|ing)?\b|off\s+the\s+table|left\s+without\s+us|took\s+profit\s+and\s+clos)/i;
+  /\b(invalidated|stopped\s*out|got\s*stopped|(?<!\b(?:candle|daily|weekly|monthly|hourly)\s)clos(?:e|ed|ing)\b(?!\s+(?:\w+\s+)?(?:above|below|near)\b)(?!\s*(?:\d|to\b|by\b|half\b|part|some\b|green\b|red\b|strong\b|higher\b|lower\b|the\s+(?:day|week|candle|month|session)\b))|cut(?:ting)?\b|exit(?:ed|ing)?\b|off\s+the\s+table|left\s+without\s+us|took\s+profit\s+and\s+clos)/i;
 const RE_CANCEL_WORD = /\bcancel(?:led|ed|ing)?\b/i;
 // "risk free" / "move SL to entry / breakeven". The second branch requires the
 // word "to" before the target so ordinary prose ("moved my stop, we'll be
@@ -69,8 +72,11 @@ function isBreakeven(text: string): boolean {
 // "moving the SL/invalidation to 61491.4". The number must NOT be immediately
 // followed by r/R (an "RR" multiple), x (leverage) or % — else "moved SL, 3R
 // locked" would set the stop to 3. The engine also range-checks the new stop.
+// The gap before the number must NOT cross a "TP<n>" token, else "move stop up,
+// TP1 at 65000" would scrape the "1" from TP1 as the new stop (rejected by the
+// engine's range check, but the real trail/move intent would be lost meanwhile).
 const RE_SLMOVE =
-  /\b(?:mov\w+|adjust\w*|trail\w*|reduc\w*\s+risk)\b[^.\n]{0,40}\b(sl|stop\s*loss|stop|invalidation)\b[^0-9\n]{0,20}([0-9][0-9.,]*)(?!\s*[rRxX%])/i;
+  /\b(?:mov\w+|adjust\w*|trail\w*|reduc\w*\s+risk)\b[^.\n]{0,40}\b(sl|stop\s*loss|stop|invalidation)\b(?:(?!tp\s*\d)[^0-9\n]){0,20}([0-9][0-9.,]*)(?!\s*[rRxX%])/i;
 // "book 50%", "take 20% profit", "50% out".
 const RE_PARTIAL_A = /\b(?:book(?:ing)?|tak(?:e|ing)|lock(?:ing)?\s*in|secur\w*|clos(?:e|ed|ing)?)\b[^%\n]{0,25}?(\d{1,3}(?:\.\d+)?)\s*%/i;
 const RE_PARTIAL_B = /\b(\d{1,3}(?:\.\d+)?)\s*%\s*(?:out|off|pos|position|booked)\b/i;
@@ -93,6 +99,21 @@ const RE_PARTIAL_WORD =
 const RE_PARTIAL_GAINS =
   /\b(?:book(?:ed|ing)?|took|tak(?:e|ing|en)|lock(?:ed|ing)?\s*in|secur\w*|bank(?:ed|ing)?)\b[^.\n%]{0,20}?\b(?:gains?|profits?)\b(?!\s*(?:at|@|:|near|around|of|=|target|tp)?\s*[\d$])/i;
 const RE_TRIM = /\btrim(?:med|ming)?\b/i;
+// Fractional partial WITHOUT a "%": "take 1/3 off", "sell 1/3 here", "close half",
+// "trim a third". A booking/exit verb followed (within a short gap) by a fraction
+// word/ratio. Books the exact stated fraction instead of the group default.
+const RE_PARTIAL_FRAC =
+  /\b(?:book(?:ing)?|took|tak(?:e|ing|en)|sell(?:ing)?|off\s*load\w*|clos(?:e|ed|ing)?|trim(?:med|ming)?|secur\w*|lock(?:ed|ing)?\s*in)\b[^.\n]{0,14}?\b(1\/2|1\/3|2\/3|1\/4|3\/4|half|a\s+(?:half|third|quarter))\b/i;
+/** Map a fraction word/ratio ("1/3", "a third", "half") to a 0..1 fraction. */
+function fracWord(s: string): number | undefined {
+  const t = s.toLowerCase().replace(/\s+/g, " ").trim();
+  if (t === "1/2" || t === "a half" || t === "half") return 0.5;
+  if (t === "1/3" || t === "a third") return 1 / 3;
+  if (t === "2/3") return 2 / 3;
+  if (t === "1/4" || t === "a quarter") return 0.25;
+  if (t === "3/4") return 0.75;
+  return undefined;
+}
 // "TP1 hit", "target reached", "area 1 reached", "4RR", "done and dusted".
 const RE_TPHIT =
   /\b(?:tp\s*\d*\s*(?:hit|reached|done)|target\s*\d*\s*(?:reached|hit|smashed|done)|area\s*\d*\s*reached|\d+\s*rr\b|done\s+and\s+dusted)\b/i;
@@ -164,6 +185,16 @@ export function classifyManagementAll(text: string): ManagementAction[] {
       add({ kind: "close", symbol, note: "closed 100%" });
     } else if (Number.isFinite(pct) && pct > 0) {
       add({ kind: "partial_close", symbol, fraction: pct / 100, alsoBreakeven: isBreakeven(text), note: `book ${pct}%` });
+      partial = true;
+    }
+  }
+  // No explicit "%", but a stated FRACTION ("take 1/3 off", "close half") → book
+  // that exact fraction (more precise than the group default).
+  if (!partial) {
+    const fm = text.match(RE_PARTIAL_FRAC);
+    const frac = fm ? fracWord(fm[1]!) : undefined;
+    if (frac !== undefined && !(pm && RE_PNL_WORD.test(pm[0]))) {
+      add({ kind: "partial_close", symbol, fraction: frac, alsoBreakeven: isBreakeven(text), note: `book ${Math.round(frac * 100)}%` });
       partial = true;
     }
   }
