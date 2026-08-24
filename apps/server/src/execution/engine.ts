@@ -112,11 +112,16 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
       // / cancel-limit) and an IMPERATIVE close; drop only a purely-NARRATIVE close
       // (a recap "the setup was invalidated / stopped out" that just tripped the
       // close keyword with no command verb).
-      // Present-tense / imperative close verbs ONLY. Past-tense "closed" / "exited"
-      // are how a NARRATIVE recap reads ("$BTC closed in profit, see the update"),
-      // so they must NOT keep a close alive under commentary — the trailing \b makes
-      // "close"/"exit" not match "closed"/"exited", while "closing"/"exiting" stay.
-      const IMPERATIVE_CLOSE = /\b(?:close|closing|exit|exiting|flatten|dump|get\s+out|out\s+of|take\s+it\s+off|cut\s+it)\b/i;
+      // Present/imperative close verbs, PLUS a past-tense "closed/exited" only when
+      // it takes a position OBJECT ("closed the position/trade/it/here/everything").
+      // Bare past-tense "closed"/"exited" is how a NARRATIVE recap reads ("$BTC
+      // closed in profit / closed green above") and must NOT keep a close alive
+      // under commentary — but a genuine manual-close REPORT ("closed the position,
+      // see pinned") must, so the bot still mirrors the exit. The object list is
+      // what separates the two (a P&L/adjective tail like "in profit"/"green" is
+      // narrative and is left to drop).
+      const IMPERATIVE_CLOSE =
+        /\b(?:close|closing|exit|exiting|flatten|dump|get\s+out|out\s+of|take\s+it\s+off|cut\s+it)\b|\b(?:closed|exited)\s+(?:the\s+)?(?:position|trade|pos|runner|it|here|everything|all|long|short)\b/i;
       const before = actions.length;
       actions = actions.filter((a) => a.kind !== "close" || IMPERATIVE_CLOSE.test(rawText));
       if (actions.length < before) {
