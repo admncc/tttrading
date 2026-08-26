@@ -97,6 +97,13 @@ export interface GroupSettings {
    */
   slWideningMult?: number;
   /**
+   * When a signal has an ENTRY but NO stop-loss, place a wide protective stop this
+   * many PERCENT from the fill (long below / short above). Gives vague "taking a
+   * risk here, wide SL" calls a floor instead of running unprotected. 0/undefined
+   * = off (leave stopless). Never overrides a stop the signal actually specified.
+   */
+  defaultStopPct?: number;
+  /**
    * When true, signals rated "red" (high risk) by the traffic-light system are
    * NOT executed. Their hypothetical outcome is still tracked (shadow trade) so
    * we can verify whether blocking them was the right call.

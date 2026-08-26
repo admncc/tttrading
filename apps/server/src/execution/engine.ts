@@ -1537,6 +1537,22 @@ async function placeEntry(
             parsed = { ...parsed, stopLoss: widened };
           }
         }
+      } else if ((group.settings.defaultStopPct ?? 0) > 0) {
+        // No stop in the signal → place a WIDE protective stop at defaultStopPct%
+        // from the reference, so a vague "taking a risk here, wide SL" entry isn't
+        // left unprotected. Correct side by construction (long below / short above).
+        // Never overrides a real signal SL (this branch runs only when none exists).
+        const dsp = group.settings.defaultStopPct as number;
+        const s = parsed.side === "long" ? ref * (1 - dsp / 100) : ref * (1 + dsp / 100);
+        if (s > 0) {
+          parsed = { ...parsed, stopLoss: s };
+          event(
+            "exec",
+            `Default protective SL ${dsp}% → ${s.toPrecision(6)} for ${parsed.symbol} (signal had no stop)`,
+            { pct: dsp, stop: s, ref },
+            { groupId: group.id, signalId: signal.id },
+          );
+        }
       }
     }
   }

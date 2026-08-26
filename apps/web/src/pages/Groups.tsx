@@ -120,6 +120,7 @@ const BLANK: GroupInput = {
     defaultPartialPct: 50,
     breakevenAfterTp: 0,
     slWideningMult: 1,
+    defaultStopPct: 0,
     blockRedTrades: false,
     entryMode: "limit",
     limitTimeoutHours: 336,
@@ -316,6 +317,24 @@ function GroupForm({
           />
           <span className="muted" style={{ fontSize: 11 }}>
             0 = off
+          </span>
+        </div>
+        <div className="field">
+          <label>Default wide SL % (no-stop signals)</label>
+          <input
+            type="number"
+            min={0}
+            max={50}
+            step={1}
+            value={g.settings.defaultStopPct ?? 0}
+            onChange={(e) => {
+              const n = Number(e.target.value);
+              if (Number.isFinite(n) && n >= 0 && n <= 50) setS({ defaultStopPct: n });
+            }}
+          />
+          <span className="muted" style={{ fontSize: 11 }}>
+            0 = off. When a signal gives an entry but no SL, place a protective stop this % from
+            the fill (e.g. 10 for a wide "taking a risk here" call). Never overrides a real SL.
           </span>
         </div>
         <div className="field">
