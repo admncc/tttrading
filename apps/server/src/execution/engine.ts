@@ -446,6 +446,14 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
     { groupId: group.id },
   );
 
+  // Mixed message: this parsed as a NEW ENTRY, but the same text may ALSO manage
+  // other OPEN positions ("opened a BTC short, took 50% off my SOL long"). The
+  // entry path would otherwise drop that management. Apply what the message
+  // expresses for HELD symbols OTHER than the entry symbol (best-effort; never
+  // blocks or alters the entry itself). Runs before the confirm/auto split so it
+  // applies regardless of how the entry is handled.
+  await applySideManagement(group, rawText, imgs, parsed.symbol);
+
   // Block high-risk (red) signals when configured, but track what they'd do.
   if (group.settings.blockRedTrades && risk.level === "red") {
     const signal = signalsRepo.create({
@@ -1049,6 +1057,88 @@ async function applyManagement(
   broadcast({ type: "signal", signal });
   if (acted) pushStats();
   return signal;
+}
+
+/**
+ * Mixed-message side-management. A message that parses as a NEW ENTRY can also
+ * carry management for OTHER open positions ("opened a BTC short, took 50% off my
+ * SOL long"). The entry path would otherwise drop that management entirely. This
+ * applies the partial / close / break-even / stop the SAME message expresses for
+ * HELD symbols OTHER than the entry symbol — never the entry symbol itself (that
+ * would immediately reduce the position we just opened). Best-effort and fully
+ * self-contained: it never blocks or alters the entry, and swallows its own errors.
+ */
+async function applySideManagement(
+  group: Group,
+  rawText: string,
+  imgs: SignalImage[],
+  entrySymbol: string,
+): Promise<void> {
+  try {
+    if (!group.enabled) return;
+    const entryCanon = canonicalSymbol(entrySymbol);
+    const heldOther = new Set(
+      [...tradesRepo.open(), ...tradesRepo.working()]
+        .filter((t) => t.groupId === group.id && !t.shadow)
+        .map((t) => canonicalSymbol(t.symbol))
+        .filter((s) => s !== entryCanon),
+    );
+    if (!heldOther.size) return; // nothing else open to manage
+
+    // Cheap gate: only look closer when the text actually carries a management
+    // verb — avoids an extra LLM read on a plain entry with no side-instructions.
+    const ruleActs = classifyManagementAll(rawText).filter((a) => a.kind !== "none");
+    if (!ruleActs.length) return;
+
+    // Rules-only fallback (no LLM): apply rule actions that resolve to a
+    // held-OTHER symbol. Rules can miss word-form coins ("Solana"), so this is a
+    // best-effort net; the LLM path below is the accurate one.
+    if (!llmReady()) {
+      const side = ruleActs.filter((a) => {
+        const { sym } = deriveSymbol(a, [...heldOther], rawText);
+        return sym && heldOther.has(sym);
+      });
+      if (!side.length) return;
+      for (const a of side) a.explicitSymbol = true;
+      await applyManagement(group, rawText, side);
+      return;
+    }
+
+    // LLM read — accurate multi-symbol attribution ("took 50% off SOL and BTC"
+    // names coins as words, not cash-tags, which the rules can't resolve).
+    let mv;
+    try {
+      mv = await readManagementLevels(rawText, group.settings.instructions, imgs, ruleActs.map((a) => a.kind));
+    } catch {
+      return;
+    }
+    if (!mv || !mv.isManagement || mv.confidence < 0.6) return;
+    const named = (mv.symbols && mv.symbols.length ? mv.symbols : mv.symbol ? [mv.symbol] : []).map((s) => canonicalSymbol(s));
+    const targets = [...new Set(named.filter((s) => heldOther.has(s)))];
+    if (!targets.length) return;
+
+    const side: ManagementAction[] = [];
+    for (const s of targets) {
+      if (mv.closed) side.push({ kind: "close", symbol: s, explicitSymbol: true, note: `mixed: close ${s}` });
+      else if (mv.partialPercent !== undefined && mv.partialPercent > 0 && mv.partialPercent < 100)
+        side.push({ kind: "partial_close", symbol: s, fraction: mv.partialPercent / 100, explicitSymbol: true, note: `mixed: book ${mv.partialPercent}% ${s}` });
+      if (mv.breakeven) side.push({ kind: "sl_breakeven", symbol: s, explicitSymbol: true, note: `mixed: SL→BE ${s}` });
+      // A concrete new-stop price is meaningful for ONE coin only (a single number
+      // can't be the right stop for several) — apply it solely when unambiguous.
+      if (mv.newStop !== undefined && targets.length === 1)
+        side.push({ kind: "sl_move", symbol: s, newStop: mv.newStop, explicitSymbol: true, note: `mixed: SL→${mv.newStop} ${s}` });
+    }
+    if (!side.length) return;
+    event(
+      "manage",
+      `Mixed message: entry stays ${entryCanon}, applying side-management on ${targets.join(", ")}`,
+      { targets, closed: mv.closed, partialPercent: mv.partialPercent, breakeven: mv.breakeven, newStop: mv.newStop },
+      { groupId: group.id },
+    );
+    await applyManagement(group, rawText, side);
+  } catch (err) {
+    log.warn("side-management failed:", err instanceof Error ? err.message : err);
+  }
 }
 
 /**
