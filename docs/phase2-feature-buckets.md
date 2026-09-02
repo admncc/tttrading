@@ -54,6 +54,26 @@ Signals with recomputed features: **70** (HL-listed) · scored win/loss: **40**.
 | high | 9 | 55.6% (27–81) ·small | -0.00R |
 | normal | 8 | 25.0% (7–59) ·small | -0.54R |
 
+### capTier (categorical, n=70)
+| bucket | n | win-rate (95% CI) | expectancy R |
+|---|---|---|---|
+| mid | 21 | 42.9% (24–63) | +0.01R |
+| large | 12 | 33.3% (14–61) ·small | +0.38R |
+| small | 7 | 71.4% (36–92) ·small | +0.92R |
+
+### coinBaseRateShrunk (numeric, n=70)
+| bucket | n | win-rate (95% CI) | expectancy R |
+|---|---|---|---|
+| ≤ 0.436 | 6 | 50.0% (19–81) ·small | -0.07R |
+| 0.436–0.480 | 4 | 0.0% (0–49) ·small | -1.00R |
+| > 0.480 | 30 | 50.0% (33–67) | +0.51R |
+
+### coinResolvedN (numeric, n=70)
+| bucket | n | win-rate (95% CI) | expectancy R |
+|---|---|---|---|
+| 0.000–2.000 | 31 | 45.2% (29–62) | +0.34R |
+| > 2.000 | 9 | 44.4% (19–73) ·small | +0.07R |
+
 ### coinRet7d (numeric, n=70)
 | bucket | n | win-rate (95% CI) | expectancy R |
 |---|---|---|---|
@@ -132,6 +152,16 @@ Signals with recomputed features: **70** (HL-listed) · scored win/loss: **40**.
 | 0.603–1.059 | 11 | 36.4% (15–65) ·small | -0.31R |
 | 1.059–2.844 | 11 | 36.4% (15–65) ·small | -0.18R |
 | > 2.844 | 6 | 50.0% (19–81) ·small | +1.22R |
+
+### sector (categorical, n=70)
+| bucket | n | win-rate (95% CI) | expectancy R |
+|---|---|---|---|
+| l1 | 20 | 45.0% (26–66) | +0.43R |
+| defi | 8 | 62.5% (31–86) ·small | +0.73R |
+| meme | 4 | 50.0% (15–85) ·small | -0.06R |
+| ai | 3 | 0.0% (0–56) ·small | -1.00R |
+| other | 3 | 66.7% (21–94) ·small | +0.60R |
+| l2 | 2 | 0.0% (0–66) ·small | -1.00R |
 
 ### session (categorical, n=70)
 | bucket | n | win-rate (95% CI) | expectancy R |

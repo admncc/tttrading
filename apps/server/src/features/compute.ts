@@ -208,6 +208,53 @@ export function traderStatsFeatures(s: TraderStats, priorMean = 0.48, priorStren
   return out;
 }
 
+/* --------------------------- 2.5 asset master -------------------------- */
+// Static sector map (no external feed). Unknown coins fall to "other" — the
+// bucket report will show if "other" needs splitting. kX = 1000x meme variants.
+const SECTORS: Record<string, string> = {};
+const put = (sector: string, coins: string[]) => coins.forEach((c) => (SECTORS[c] = sector));
+put("l1", ["BTC", "ETH", "SOL", "BNB", "AVAX", "ADA", "SUI", "APT", "SEI", "TON", "NEAR", "ICP", "INJ", "TIA", "DOT", "ATOM", "TRX", "LTC", "BCH", "XRP", "HYPE", "EGLD", "KAS", "ALGO", "XLM", "HBAR"]);
+put("l2", ["OP", "ARB", "MANTA", "STRK", "ZK", "MNT", "METIS", "BLAST", "POL", "MATIC"]);
+put("defi", ["AAVE", "UNI", "LINK", "ONDO", "JTO", "RAY", "JUP", "ENA", "PENDLE", "CRV", "MKR", "LDO", "SYRUP", "VELVET", "AERO", "CAKE", "DYDX", "GMX", "MORPHO"]);
+put("ai", ["FET", "RENDER", "RNDR", "TAO", "GRASS", "WLD", "AR", "VIRTUAL", "AIXBT", "AI16Z", "IO", "AKT"]);
+put("meme", ["PEPE", "SHIB", "WIF", "BONK", "DOGE", "PUMP", "FARTCOIN", "POPCAT", "MEW", "FLOKI", "BRETT", "SPX", "TRUMP", "MOODENG", "PNUT", "GOAT", "TURBO", "MANA", "JASMY"]);
+
+/** Sector + cap tier for the coin (2.5). capTier passed in to avoid a dep here. */
+export function assetFeatures(symbol: string, capTier: string): Feat[] {
+  const s = symbol.toUpperCase().replace(/^K/, ""); // kPEPE → PEPE
+  return [
+    { name: "sector", text: SECTORS[symbol.toUpperCase()] ?? SECTORS[s] ?? "other" },
+    { name: "capTier", text: capTier },
+  ];
+}
+
+export interface CoinBaseRate { resolved: number; tpFirst: number }
+/** Coin base rate: historical share of signals on this coin that hit TP first,
+ *  Bayes-shrunk to the population base rate (2.5 / dev-brief 4.1). */
+export function coinBaseRateFeatures(s: CoinBaseRate, priorMean = 0.48, priorStrength = 10): Feat[] {
+  const shrunk = (s.tpFirst + priorStrength * priorMean) / (s.resolved + priorStrength);
+  return [
+    { name: "coinBaseRateShrunk", num: Number(shrunk.toFixed(4)) },
+    { name: "coinResolvedN", num: s.resolved },
+  ];
+}
+
+/* ------------------------- 2.1 market breadth -------------------------- */
+/** ETH/BTC ratio regime — a cheap breadth proxy (alt-season vs BTC-season). */
+export function ethBtcFeatures(ethD1: Candle[], btcD1: Candle[]): Feat[] {
+  const n = Math.min(ethD1.length, btcD1.length);
+  if (n < 30) return [];
+  const eth = ethD1.slice(-n).map((c) => c.c), btc = btcD1.slice(-n).map((c) => c.c);
+  const ratio = eth.map((e, i) => (btc[i]! > 0 ? e / btc[i]! : 0));
+  const cur = ratio[ratio.length - 1]!;
+  const e20 = ema(ratio, 20), e50 = ema(ratio, Math.min(50, ratio.length));
+  const trend = cur > e20 && e20 > e50 ? "eth-strong" : cur < e20 && e20 < e50 ? "btc-strong" : "mixed";
+  const r7 = pctReturn(ratio, 7);
+  const out: Feat[] = [{ name: "ethBtcRegime", text: trend }];
+  if (r7 !== undefined) out.push({ name: "ethBtcRet7d", num: r7 });
+  return out;
+}
+
 /** Map a horizon timeframe to a rough hold-time class (for atrHorizon selection). */
 export function horizonForHold(medianHoldHours: number | undefined): "1h" | "4h" | "1d" {
   if (medianHoldHours === undefined) return "4h";

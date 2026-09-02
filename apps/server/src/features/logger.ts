@@ -6,13 +6,14 @@
  */
 import type { Group, ParsedSignal, SignalFeature } from "@tttrading/shared";
 import { rMultiple } from "@tttrading/shared";
-import { trades as tradesRepo, signalFeatures as featRepo } from "../db/repositories.js";
+import { trades as tradesRepo, signalFeatures as featRepo, secondOpinions as soRepo } from "../db/repositories.js";
 import { activeHyperliquid } from "../exchanges/registry.js";
+import { capTier } from "../risk/score.js";
 import { log } from "../logger.js";
 import {
   FEATURE_VERSION, type Feat, timeFeatures, geometryFeatures, taFeatures,
   btcRegimeFeatures, betaFeatures, derivativeFeatures, traderStatsFeatures, horizonForHold,
-  type TraderStats,
+  assetFeatures, coinBaseRateFeatures, ethBtcFeatures, type TraderStats,
 } from "./compute.js";
 
 type Candle = { t: number; o: number; h: number; l: number; c: number; v: number };
@@ -71,6 +72,13 @@ export async function logSignalFeatures(
 
     feats.push(...timeFeatures(signalMs));
     feats.push(...derivativeFeatures(parsed.side, inputs.ctx));
+    feats.push(...assetFeatures(parsed.symbol, capTier(parsed.symbol)));
+
+    // Coin base rate from resolved second-opinions on this coin before now.
+    const coinResolved = soRepo
+      .list(5000)
+      .filter((o) => o.symbol.toUpperCase() === parsed.symbol.toUpperCase() && o.outcome && new Date(o.createdAt).getTime() < signalMs && ["win", "loss"].includes(o.outcome.outcomeClass ?? ""));
+    feats.push(...coinBaseRateFeatures({ resolved: coinResolved.length, tpFirst: coinResolved.filter((o) => o.outcome!.outcomeClass === "win").length }));
 
     // Trader horizon → pick the ATR horizon for geometry; then geometry features.
     const stats = traderStats(group.id, parsed.side, parsed.symbol, signalMs);
@@ -93,10 +101,15 @@ export async function logSignalFeatures(
 
     // BTC regime + beta need BTC daily candles (point-in-time, up to now).
     try {
-      const btcD1 = (await activeHyperliquid().getCandles("BTC", "1d", signalMs - 400 * DAY, signalMs)) as Candle[];
+      const hl = activeHyperliquid();
+      const [btcD1, ethD1] = await Promise.all([
+        hl.getCandles("BTC", "1d", signalMs - 400 * DAY, signalMs) as Promise<Candle[]>,
+        hl.getCandles("ETH", "1d", signalMs - 400 * DAY, signalMs).catch(() => [] as Candle[]) as Promise<Candle[]>,
+      ]);
       feats.push(...btcRegimeFeatures(btcD1));
       const coinD1 = inputs.byTf["1d"] ?? [];
       if (coinD1.length) feats.push(...betaFeatures(coinD1, btcD1));
+      if (ethD1.length && btcD1.length) feats.push(...ethBtcFeatures(ethD1, btcD1));
     } catch (err) {
       log.warn("features: BTC regime unavailable:", err instanceof Error ? err.message : err);
     }
@@ -119,6 +132,8 @@ export async function logSignalFeatures(
 }
 
 function sourceOf(name: string): string {
+  if (["sector", "capTier", "coinBaseRateShrunk", "coinResolvedN"].includes(name)) return "asset";
+  if (name.startsWith("ethBtc")) return "btc-regime";
   if (name.startsWith("btc") || name.startsWith("beta") || name.startsWith("corr") || name.startsWith("coin")) return "btc-regime";
   if (name.startsWith("trader") || name === "concurrentSignalsSameDir") return "trader-stats";
   if (["funding", "fundingCrowded", "openInterest", "premiumBps"].includes(name)) return "derivatives";

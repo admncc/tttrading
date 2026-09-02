@@ -11,8 +11,9 @@ import { computeFrame } from "../secondopinion/index.js";
 import { computeOutcome } from "../secondopinion/outcome.js";
 import {
   timeFeatures, geometryFeatures, taFeatures, btcRegimeFeatures, betaFeatures,
-  derivativeFeatures, type Feat,
+  derivativeFeatures, assetFeatures, coinBaseRateFeatures, type Feat,
 } from "../features/compute.js";
+import { capTier } from "../risk/score.js";
 import { bucketFeature, renderFeatureReport, type SignalDatum } from "../features/buckets.js";
 
 type AnyOp = { id: string; symbol: string; side: "long" | "short"; createdAt: string; entry?: number; stopLoss?: number; takeProfits?: number[]; ta?: { rrClaimed?: number }; verdict?: { stance?: string } };
@@ -27,8 +28,12 @@ const btcAll: number[][] = JSON.parse(readFileSync(btcPath, "utf8"));
 const toC = (raw: number[][]): C[] => raw.map((c) => ({ t: c[0]!, o: c[1]!, h: c[2]!, l: c[3]!, c: c[4]!, v: c[5]! }));
 const FRAMES = ["15m", "1h", "4h", "1d"];
 
+// Process chronologically so the coin base rate uses only PRIOR outcomes.
+const chrono = [...ops].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+const coinHist = new Map<string, { resolved: number; tpFirst: number }>();
+
 const signals: SignalDatum[] = [];
-for (const op of ops) {
+for (const op of chrono) {
   const b = bundle[op.id];
   if (!b || b.status !== "ok") continue;
   const signalMs = Date.parse(op.createdAt);
@@ -45,6 +50,9 @@ for (const op of ops) {
   }
   const feats: Feat[] = [];
   feats.push(...timeFeatures(signalMs));
+  feats.push(...assetFeatures(op.symbol, capTier(op.symbol)));
+  const cb = coinHist.get(op.symbol.toUpperCase()) ?? { resolved: 0, tpFirst: 0 };
+  feats.push(...coinBaseRateFeatures(cb));
   feats.push(...geometryFeatures(op.side, op.entry, op.stopLoss, op.takeProfits?.[0], price, atrH));
   feats.push(...taFeatures(op.side, frames.map((f) => ({ interval: f.interval, trend: f.trend })), c1h));
   // Point-in-time BTC daily slice (candles that closed at/before the signal).
@@ -65,6 +73,14 @@ for (const op of ops) {
   const map: Record<string, number | string | undefined> = {};
   for (const f of feats) map[f.name] = f.num ?? f.text;
   signals.push({ win, rR, feats: map });
+
+  // Update the coin's running base rate AFTER this signal (so it stays prior-only).
+  if (win !== undefined) {
+    const h = coinHist.get(op.symbol.toUpperCase()) ?? { resolved: 0, tpFirst: 0 };
+    h.resolved += 1;
+    if (win) h.tpFirst += 1;
+    coinHist.set(op.symbol.toUpperCase(), h);
+  }
 }
 
 const scored = signals.filter((s) => s.win !== undefined).length;

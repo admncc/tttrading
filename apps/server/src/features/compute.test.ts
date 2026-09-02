@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   timeFeatures, geometryFeatures, taFeatures, btcRegimeFeatures, betaFeatures,
-  traderStatsFeatures, horizonForHold, type Feat,
+  traderStatsFeatures, horizonForHold, assetFeatures, coinBaseRateFeatures, ethBtcFeatures, type Feat,
 } from "./compute.js";
 
 const get = (fs: Feat[], name: string) => fs.find((f) => f.name === name);
@@ -92,6 +92,28 @@ describe("traderStatsFeatures (2.6)", () => {
   it("a large sample stays close to its raw rate", () => {
     const f = traderStatsFeatures({ resolved: 200, wins: 120 }); // raw 0.60
     assert.ok(Math.abs(get(f, "traderWinrateShrunk")!.num! - 0.60) < 0.02);
+  });
+});
+
+describe("assetFeatures + coinBaseRate (2.5)", () => {
+  it("maps sector (incl. k-prefixed memes) and passes cap tier", () => {
+    assert.equal(get(assetFeatures("BTC", "large"), "sector")!.text, "l1");
+    assert.equal(get(assetFeatures("kPEPE", "small"), "sector")!.text, "meme");
+    assert.equal(get(assetFeatures("SOMETHINGNEW", "micro"), "sector")!.text, "other");
+    assert.equal(get(assetFeatures("BTC", "large"), "capTier")!.text, "large");
+  });
+  it("coin base rate shrinks a tiny sample toward the prior", () => {
+    const f = coinBaseRateFeatures({ resolved: 2, tpFirst: 2 });
+    assert.ok(Math.abs(get(f, "coinBaseRateShrunk")!.num! - 0.5667) < 0.001);
+  });
+});
+
+describe("ethBtcFeatures (2.1 breadth)", () => {
+  it("flags eth-strong when the ratio is rising", () => {
+    const btc: C[] = [], eth: C[] = [];
+    for (let i = 0; i < 60; i++) { const b = 100; const e = 2 + i * 0.02; btc.push(day(i, b, b, b, b)); eth.push(day(i, e, e, e, e)); }
+    const f = ethBtcFeatures(eth, btc);
+    assert.equal(get(f, "ethBtcRegime")!.text, "eth-strong");
   });
 });
 
