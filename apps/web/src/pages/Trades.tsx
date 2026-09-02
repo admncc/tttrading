@@ -21,11 +21,13 @@ function netBanked(t: Trade): number | undefined {
   return (t.bankedPnl ?? 0) - (t.bankedFees ?? 0);
 }
 
-/** Live unrealized PnL for an open trade from the current mark price. */
+/** Live unrealized PnL for an open trade from the current mark price — the
+ *  actual open PnL on the REMAINING size only. Banked partials are NOT included
+ *  here; they're shown separately on their own line. */
 function unrealized(t: Trade, mark: number | undefined): number | undefined {
   if (t.status !== "open" || !mark || mark <= 0) return undefined;
   const dir = t.side === "long" ? 1 : -1;
-  return (mark - t.entryPrice) * dir * t.size + (netBanked(t) ?? 0);
+  return (mark - t.entryPrice) * dir * t.size;
 }
 
 export function Trades({
@@ -370,14 +372,14 @@ export function Trades({
                     {t.realizedPnl !== undefined ? (
                       usd(t.realizedPnl)
                     ) : unrealized(t, prices[t.symbol.toUpperCase()]) !== undefined ? (
-                      <span title="Total live PnL for this trade = unrealized on the remaining size + already-banked partials">
+                      <span title="Open unrealized PnL right now, on the remaining size only (banked partials shown separately below)">
                         {usd(unrealized(t, prices[t.symbol.toUpperCase()])!)}
                         <span className="muted" style={{ fontSize: 11 }}> uPnL</span>
                         {netBanked(t) !== undefined && (
                           <div
                             className="muted"
                             style={{ fontSize: 11 }}
-                            title="Portion of the above already locked in from partial exits"
+                            title="Realized separately from partial exits (not part of the uPnL above)"
                           >
                             {usd(netBanked(t)!)} banked
                           </div>
