@@ -821,6 +821,24 @@ export class HyperliquidConnector implements ExchangeConnector {
     }
   }
 
+  /**
+   * Historical funding rates for a coin (for percentile / 7d-avg context).
+   * Best-effort: returns [] on any error. Rates are per-interval (hourly on HL).
+   */
+  async getFundingHistory(symbol: string, startMs: number, endMs: number): Promise<{ time: number; rate: number }[]> {
+    try {
+      const rows = (await this.infoPost({
+        type: "fundingHistory",
+        coin: symbol.toUpperCase(),
+        startTime: startMs,
+        endTime: endMs,
+      })) as { time: number; fundingRate: string }[];
+      return (rows ?? []).map((r) => ({ time: r.time, rate: Number(r.fundingRate) })).filter((r) => Number.isFinite(r.rate));
+    } catch {
+      return [];
+    }
+  }
+
   /** Recent fills for the configured account (most recent first). */
   async getRecentFills(): Promise<FillLite[]> {
     if (!this.live && !hlAccountAddress(this.network)) return [];

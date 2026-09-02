@@ -2,7 +2,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   timeFeatures, geometryFeatures, taFeatures, btcRegimeFeatures, betaFeatures,
-  traderStatsFeatures, horizonForHold, assetFeatures, coinBaseRateFeatures, ethBtcFeatures, type Feat,
+  traderStatsFeatures, horizonForHold, assetFeatures, coinBaseRateFeatures, ethBtcFeatures,
+  fundingHistoryFeatures, type Feat,
 } from "./compute.js";
 
 const get = (fs: Feat[], name: string) => fs.find((f) => f.name === name);
@@ -114,6 +115,26 @@ describe("ethBtcFeatures (2.1 breadth)", () => {
     for (let i = 0; i < 60; i++) { const b = 100; const e = 2 + i * 0.02; btc.push(day(i, b, b, b, b)); eth.push(day(i, e, e, e, e)); }
     const f = ethBtcFeatures(eth, btc);
     assert.equal(get(f, "ethBtcRegime")!.text, "eth-strong");
+  });
+});
+
+describe("fundingHistoryFeatures (2.2)", () => {
+  const hist = (rates: number[], nowMs: number) => rates.map((r, i) => ({ time: nowMs - (rates.length - i) * 3_600_000, rate: r }));
+  it("current at the top of its range ⇒ high percentile; long into it ⇒ extreme", () => {
+    const now = Date.parse("2026-01-10T00:00:00Z");
+    const rates = Array.from({ length: 50 }, (_, i) => 0.00001 * i); // 0 .. 0.00049
+    const f = fundingHistoryFeatures("long", 0.00048, hist(rates, now), now);
+    assert.ok(get(f, "fundingPercentile")!.num! >= 0.9);
+    assert.equal(get(f, "fundingExtremeVsTrade")!.num, 1);
+  });
+  it("a short at the same high funding is NOT crowded-vs-trade", () => {
+    const now = Date.parse("2026-01-10T00:00:00Z");
+    const rates = Array.from({ length: 50 }, (_, i) => 0.00001 * i);
+    const f = fundingHistoryFeatures("short", 0.00048, hist(rates, now), now);
+    assert.equal(get(f, "fundingExtremeVsTrade")!.num, 0);
+  });
+  it("too little history ⇒ no features", () => {
+    assert.equal(fundingHistoryFeatures("long", 0.0001, [], Date.now()).length, 0);
   });
 });
 

@@ -13,7 +13,7 @@ import { log } from "../logger.js";
 import {
   FEATURE_VERSION, type Feat, timeFeatures, geometryFeatures, taFeatures,
   btcRegimeFeatures, betaFeatures, derivativeFeatures, traderStatsFeatures, horizonForHold,
-  assetFeatures, coinBaseRateFeatures, ethBtcFeatures, type TraderStats,
+  assetFeatures, coinBaseRateFeatures, ethBtcFeatures, fundingHistoryFeatures, type TraderStats,
 } from "./compute.js";
 
 type Candle = { t: number; o: number; h: number; l: number; c: number; v: number };
@@ -114,6 +114,14 @@ export async function logSignalFeatures(
       log.warn("features: BTC regime unavailable:", err instanceof Error ? err.message : err);
     }
 
+    // 2.2: funding history → 7d-avg + percentile (point-in-time, up to now).
+    try {
+      const fh = await activeHyperliquid().getFundingHistory(parsed.symbol, signalMs - 30 * DAY, signalMs);
+      feats.push(...fundingHistoryFeatures(parsed.side, inputs.ctx.funding, fh, signalMs));
+    } catch (err) {
+      log.warn("features: funding history unavailable:", err instanceof Error ? err.message : err);
+    }
+
     const rows: SignalFeature[] = feats.map((f) => ({
       signalId,
       name: f.name,
@@ -136,7 +144,7 @@ function sourceOf(name: string): string {
   if (name.startsWith("ethBtc")) return "btc-regime";
   if (name.startsWith("btc") || name.startsWith("beta") || name.startsWith("corr") || name.startsWith("coin")) return "btc-regime";
   if (name.startsWith("trader") || name === "concurrentSignalsSameDir") return "trader-stats";
-  if (["funding", "fundingCrowded", "openInterest", "premiumBps"].includes(name)) return "derivatives";
+  if (name.startsWith("funding") || ["openInterest", "premiumBps"].includes(name)) return "derivatives";
   if (["session", "weekday", "hourUtc", "weekend"].includes(name)) return "time";
   if (["rr", "slAtrH", "tpAtrH", "feeDragR", "horizonTf"].includes(name)) return "geometry";
   return "ta";

@@ -186,6 +186,29 @@ export function derivativeFeatures(
   return out;
 }
 
+/** Funding context from history (2.2): 7d-avg and where the current rate sits in
+ *  its own recent distribution. Extreme funding into the trade = crowding risk. */
+export function fundingHistoryFeatures(
+  side: "long" | "short",
+  currentFunding: number | undefined,
+  history: { time: number; rate: number }[],
+  nowMs: number,
+): Feat[] {
+  if (currentFunding === undefined || history.length < 10) return [];
+  const out: Feat[] = [];
+  const last7d = history.filter((h) => h.time >= nowMs - 7 * 86_400_000).map((h) => h.rate);
+  if (last7d.length) out.push({ name: "funding7dAvg", num: Number((last7d.reduce((s, x) => s + x, 0) / last7d.length).toExponential(3)) });
+  const rates = history.map((h) => h.rate).sort((a, b) => a - b);
+  const rank = rates.filter((r) => r <= currentFunding).length;
+  const pctl = rank / rates.length;
+  out.push({ name: "fundingPercentile", num: Number(pctl.toFixed(3)) });
+  // Crowded INTO the trade: a long paying top-decile funding, or a short paying
+  // (receiving negative) bottom-decile — the side that's expensive to hold.
+  const crowdedExtreme = side === "long" ? pctl >= 0.9 : pctl <= 0.1;
+  out.push({ name: "fundingExtremeVsTrade", num: crowdedExtreme ? 1 : 0 });
+  return out;
+}
+
 /* -------------------------- 2.6 trader stats --------------------------- */
 export interface TraderStats {
   resolved: number;       // resolved trades used for the stats
