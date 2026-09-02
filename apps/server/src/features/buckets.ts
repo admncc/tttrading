@@ -3,7 +3,7 @@
  * per-signal feature values + outcomes, produce win-rate and expectancy per
  * bucket with n + Wilson CI. No modelling — this only describes the data.
  */
-import { wilson, mean } from "@tttrading/shared";
+import { wilson, mean } from "../lib/metrics.js";
 
 export interface SignalDatum {
   win: boolean | undefined; // undefined = not a scored win/loss

@@ -5,7 +5,7 @@
  * throws into the signal path and never influences execution.
  */
 import type { Group, ParsedSignal, SignalFeature } from "@tttrading/shared";
-import { rMultiple } from "@tttrading/shared";
+import { rMultiple } from "../lib/metrics.js";
 import { trades as tradesRepo, signalFeatures as featRepo, secondOpinions as soRepo } from "../db/repositories.js";
 import { activeHyperliquid } from "../exchanges/registry.js";
 import { capTier } from "../risk/score.js";

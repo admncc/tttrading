@@ -2,7 +2,7 @@ import { trades as tradesRepo } from "../db/repositories.js";
 import { all as allExchanges } from "../exchanges/registry.js";
 import { capTier, type CapTier } from "./score.js";
 import { log } from "../logger.js";
-import { rMultiple, classifyOutcome, type TradeOutcomeClass } from "@tttrading/shared";
+import { rMultiple, classifyOutcome, type TradeOutcomeClass } from "../lib/metrics.js";
 import { computeHeat, type HeatPosition, type HeatResult } from "./insightsMath.js";
 
 /** One settled trade, flattened for the Risk Insights page. All aggregation and

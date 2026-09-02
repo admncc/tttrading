@@ -9,7 +9,7 @@ import path from "node:path";
 import { config } from "../config.js";
 import { log, event } from "../logger.js";
 import { secondOpinions as soRepo, signalFeatures as featRepo } from "../db/repositories.js";
-import { wilson, brier, geoBaselineP } from "@tttrading/shared";
+import { wilson, brier, geoBaselineP } from "../lib/metrics.js";
 import { bucketFeature, renderFeatureReport, type SignalDatum } from "../features/buckets.js";
 
 const WEEK = 7 * 86_400_000;

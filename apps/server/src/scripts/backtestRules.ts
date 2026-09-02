@@ -23,7 +23,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { computeFrame, buildTA, heuristicVerdict } from "../secondopinion/index.js";
 import { computeOutcome } from "../secondopinion/outcome.js";
-import { wilson, geoBaselineP, brier, discriminationNote, mean, stdSample } from "@tttrading/shared";
+import { wilson, geoBaselineP, brier, discriminationNote, mean, stdSample } from "../lib/metrics.js";
 import type { ParsedSignal, SecondOpinionTFrame } from "@tttrading/shared";
 
 type AnyOp = {

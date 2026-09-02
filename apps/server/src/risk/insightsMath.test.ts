@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { computeHeat, type HeatPosition } from "./insightsMath.js";
-import { rMultiple, classifyOutcome, sqn, wilson, profitFactor } from "@tttrading/shared";
+import { rMultiple, classifyOutcome, sqn, wilson, profitFactor } from "../lib/metrics.js";
 
 describe("rMultiple — RI-3 (R from initial risk, not post-partial size)", () => {
   it("50% off at +1R, rest at +2R ⇒ 1.5R (net 150 on initial risk 100)", () => {
@@ -85,7 +85,7 @@ describe("frozen regression tests — verified-correct formulas", () => {
   });
 });
 
-import { geoBaselineP, brier, discriminationNote } from "@tttrading/shared";
+import { geoBaselineP, brier, discriminationNote } from "../lib/metrics.js";
 
 describe("geoBaselineP — geometry baseline (P1-R5)", () => {
   it("3R setup ⇒ 25% baseline win-rate", () => {

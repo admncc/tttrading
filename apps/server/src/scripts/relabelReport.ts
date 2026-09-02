@@ -15,7 +15,7 @@
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { computeOutcome, type OutcomeCandle } from "../secondopinion/outcome.js";
-import { wilson } from "@tttrading/shared";
+import { wilson } from "../lib/metrics.js";
 
 type AnyOp = {
   id: string;
