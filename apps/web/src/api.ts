@@ -26,6 +26,7 @@ export interface InsightTrade {
   notional: number;
   riskUsd?: number;
   r?: number;
+  outcomeClass: "win" | "loss" | "scratch";
   holdHours?: number;
   slipPct?: number;
 }
@@ -34,10 +35,29 @@ export interface OpenRisk {
   tier: CapTier;
   channel: string;
   side: "long" | "short";
+  venue: string;
   notional: number;
   leverage: number;
   riskUsd?: number;
   hasStop: boolean;
+  working: boolean;
+}
+export interface PerVenueHeat {
+  venue: string;
+  equity: number;
+  riskUsd: number;
+  notional: number;
+  heat?: number;
+}
+export interface RiskHeat {
+  totalEquity?: number;
+  heatLive?: number;
+  heatIfAllFilled?: number;
+  riskLiveUsd: number;
+  riskIfAllFilledUsd: number;
+  grossNotionalLive: number;
+  netExposureLive: number;
+  perVenue: PerVenueHeat[];
 }
 
 export interface AccountInfo {
@@ -241,9 +261,16 @@ export const api = {
       checks: { key: string; ok: boolean; label: string }[];
     }>("/api/readiness"),
   riskInsights: () =>
-    req<{ generatedAt: string; totalClosed: number; trades: InsightTrade[]; open: OpenRisk[]; equity?: number }>(
-      "/api/risk-insights",
-    ),
+    req<{
+      generatedAt: string;
+      totalClosed: number;
+      totalClosedAll: number;
+      trades: InsightTrade[];
+      open: OpenRisk[];
+      equity?: number;
+      equityByVenue: Record<string, number>;
+      heat: RiskHeat;
+    }>("/api/risk-insights"),
   rules: () =>
     req<{
       note: string;

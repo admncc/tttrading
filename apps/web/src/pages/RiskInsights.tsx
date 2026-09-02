@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { api, type CapTier, type InsightTrade, type OpenRisk } from "../api.js";
+import { api, type CapTier, type InsightTrade, type OpenRisk, type RiskHeat } from "../api.js";
 
 const pct = (n: number) => `${(n * 100).toFixed(0)}%`;
 const usd = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(0)}`;
@@ -79,8 +79,11 @@ function std(xs: number[]): number {
 
 function edgeOf(trades: InsightTrade[]): Edge {
   const n = trades.length;
-  const wins = trades.filter((t) => t.net >= 0);
-  const losses = trades.filter((t) => t.net < 0);
+  // RI-4: classify by outcomeClass — scratch (≈0R break-even) is neither a win
+  // nor a loss, so it drops out of win-rate but stays in expectancy/net.
+  const wins = trades.filter((t) => t.outcomeClass === "win");
+  const losses = trades.filter((t) => t.outcomeClass === "loss");
+  const decided = wins.length + losses.length; // win-rate denominator excludes scratch
   const net = trades.reduce((s, t) => s + t.net, 0);
   const grossProfit = wins.reduce((s, t) => s + t.net, 0);
   const grossLoss = Math.abs(losses.reduce((s, t) => s + t.net, 0));
@@ -123,7 +126,7 @@ function edgeOf(trades: InsightTrade[]): Edge {
   const top3Share = grossProfit > 0 ? top3 / grossProfit : undefined;
 
   return {
-    n, winRate: n ? wins.length / n : 0, net, avg: n ? net / n : 0,
+    n, winRate: decided ? wins.length / decided : 0, net, avg: n ? net / n : 0,
     profitFactor, payoff, breakEvenWr, nR, expectancyR, stdR, sqn,
     maxDD, maxDDpct, maxLossStreak: maxLoss, maxWinStreak: maxWin, avgHold, avgSlip, top3Share,
   };
@@ -172,39 +175,41 @@ const SPOT_SUBSETS: number[][] = (() => {
   return out;
 })();
 function bestCombos(trades: InsightTrade[], topN = 3, minN = 3): Combo[] {
-  const m = new Map<string, { n: number; wins: number; net: number; label: string }>();
+  const m = new Map<string, { n: number; wins: number; losses: number; net: number; label: string }>();
   for (const t of trades) {
     for (const sub of SPOT_SUBSETS) {
       const toks = sub.map((i) => SPOT_DIMS[i]!(t));
       if (toks.some((x) => !x)) continue;
       const key = sub.join(",") + "::" + toks.join("|");
-      const e = m.get(key) ?? { n: 0, wins: 0, net: 0, label: toks.join(" · ") };
+      const e = m.get(key) ?? { n: 0, wins: 0, losses: 0, net: 0, label: toks.join(" · ") };
       e.n += 1;
-      if (t.net >= 0) e.wins += 1;
+      if (t.outcomeClass === "win") e.wins += 1;
+      else if (t.outcomeClass === "loss") e.losses += 1;
       e.net += t.net;
       m.set(key, e);
     }
   }
   return [...m.values()]
-    .filter((e) => e.n >= minN && e.wins / e.n >= 0.5)
-    .map((e) => ({ label: e.label, n: e.n, winRate: e.wins / e.n, net: e.net }))
+    .filter((e) => e.n >= minN && e.wins + e.losses > 0 && e.wins / (e.wins + e.losses) >= 0.5)
+    .map((e) => ({ label: e.label, n: e.n, winRate: e.wins / (e.wins + e.losses), net: e.net }))
     .sort((a, b) => b.net - a.net || b.winRate - a.winRate)
     .slice(0, topN);
 }
 
 function agg(trades: InsightTrade[], keyOf: (t: InsightTrade) => string, tierOf?: (t: InsightTrade) => CapTier): Bucket[] {
-  const m = new Map<string, { n: number; wins: number; net: number; tier?: CapTier }>();
+  const m = new Map<string, { n: number; wins: number; losses: number; net: number; tier?: CapTier }>();
   for (const t of trades) {
     const k = keyOf(t);
     if (!k) continue;
-    const e = m.get(k) ?? { n: 0, wins: 0, net: 0, tier: tierOf?.(t) };
+    const e = m.get(k) ?? { n: 0, wins: 0, losses: 0, net: 0, tier: tierOf?.(t) };
     e.n += 1;
-    if (t.net >= 0) e.wins += 1;
+    if (t.outcomeClass === "win") e.wins += 1; // RI-4: scratch excluded from win-rate
+    else if (t.outcomeClass === "loss") e.losses += 1;
     e.net += t.net;
     m.set(k, e);
   }
   return [...m.entries()]
-    .map(([key, e]) => ({ key, tier: e.tier, n: e.n, winRate: e.wins / e.n, net: e.net, avg: e.net / e.n }))
+    .map(([key, e]) => ({ key, tier: e.tier, n: e.n, winRate: e.wins + e.losses ? e.wins / (e.wins + e.losses) : 0, net: e.net, avg: e.net / e.n }))
     .sort((a, b) => b.net - a.net);
 }
 
@@ -369,19 +374,26 @@ function StatTile({ label, value, color, sub }: { label: string; value: ReactNod
 }
 
 /* ================= portfolio risk (live open positions) ==================== */
-function PortfolioRisk({ open, equity }: { open: OpenRisk[]; equity?: number }) {
-  const real = open;
-  if (real.length === 0) return <div className="muted" style={{ fontSize: 12 }}>No open positions.</div>;
+function PortfolioRisk({ open, heat }: { open: OpenRisk[]; heat?: RiskHeat }) {
+  // RI-2: heat is measured on FILLED positions only; working limit orders are
+  // shown separately as the worst-case "if all fill" number, never as live heat.
+  const real = open.filter((p) => !p.working);
+  const workingOrders = open.filter((p) => p.working);
+  if (real.length === 0 && workingOrders.length === 0)
+    return <div className="muted" style={{ fontSize: 12 }}>No open positions.</div>;
   const longN = real.filter((p) => p.side === "long").reduce((s, p) => s + p.notional, 0);
   const shortN = real.filter((p) => p.side === "short").reduce((s, p) => s + p.notional, 0);
   const gross = longN + shortN;
   const netExp = longN - shortN;
-  const knownRisk = real.filter((p) => p.riskUsd !== undefined).reduce((s, p) => s + (p.riskUsd ?? 0), 0);
+  const knownRisk = heat?.riskLiveUsd ?? real.filter((p) => p.riskUsd !== undefined).reduce((s, p) => s + (p.riskUsd ?? 0), 0);
   const naked = real.filter((p) => !p.hasStop);
   const nakedNotional = naked.reduce((s, p) => s + p.notional, 0);
-  const heatPct = equity && equity > 0 ? knownRisk / equity : undefined;
+  const equity = heat?.totalEquity; // RI-1: summed across all venues
+  const heatPct = heat?.heatLive ?? (equity && equity > 0 ? knownRisk / equity : undefined);
+  const heatIfAll = heat?.heatIfAllFilled;
   const grossPct = equity && equity > 0 ? gross / equity : undefined;
   const netPct = equity && equity > 0 ? netExp / equity : undefined;
+  const perVenue = (heat?.perVenue ?? []).filter((v) => v.equity > 0 || v.riskUsd > 0);
 
   // Single-name + tier concentration (share of gross exposure).
   const byCoin = new Map<string, number>();
@@ -400,10 +412,14 @@ function PortfolioRisk({ open, equity }: { open: OpenRisk[]; equity?: number }) 
     <>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
         <StatTile
-          label="Portfolio heat (risk to stops)"
+          label="Portfolio heat (live, all venues)"
           value={heatPct === undefined ? `${knownRisk.toFixed(0)}` : `${(heatPct * 100).toFixed(1)}%`}
           color={heatColor}
-          sub={heatPct === undefined ? "risk USDC (equity n/a)" : `${knownRisk.toFixed(0)} USDC · cap ~6%`}
+          sub={
+            heatPct === undefined
+              ? "risk USDC (equity n/a)"
+              : `${knownRisk.toFixed(0)} USDC · cap ~6%${heatIfAll !== undefined ? ` · if all fill ${(heatIfAll * 100).toFixed(1)}%` : ""}`
+          }
         />
         <StatTile
           label="Naked positions (no stop)"
@@ -431,9 +447,28 @@ function PortfolioRisk({ open, equity }: { open: OpenRisk[]; equity?: number }) 
         <StatTile
           label="Open positions"
           value={real.length}
-          sub={[...byTier.entries()].map(([t, v]) => `${t} ${((v / gross) * 100).toFixed(0)}%`).join(" · ")}
+          sub={
+            (gross > 0 ? [...byTier.entries()].map(([t, v]) => `${t} ${((v / gross) * 100).toFixed(0)}%`).join(" · ") : "") +
+            (workingOrders.length ? ` · ${workingOrders.length} working` : "")
+          }
         />
       </div>
+      {perVenue.length > 1 && (
+        <div className="panel" style={{ marginTop: 10, fontSize: 12 }}>
+          <b>Per-venue heat</b> <span className="muted">(margin isn't shared — liquidation risk is per venue)</span>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginTop: 6 }}>
+            {perVenue.map((v) => (
+              <span key={v.venue}>
+                {v.venue}:{" "}
+                <b style={{ color: v.heat !== undefined && v.heat > 0.06 ? "#ef4444" : v.heat !== undefined && v.heat > 0.03 ? "#f59e0b" : "#22c55e" }}>
+                  {v.heat === undefined ? "—" : `${(v.heat * 100).toFixed(1)}%`}
+                </b>{" "}
+                <span className="muted">({v.riskUsd.toFixed(0)} / {v.equity.toFixed(0)} USDC)</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
       {(naked.length > 0 || (heatPct !== undefined && heatPct > 0.06) || Math.abs(netPct ?? 0) > 1.2 || topCoinPct > 0.5) && (
         <div className="panel" style={{ marginTop: 10, borderColor: "#b45309", fontSize: 12 }}>
           <b>⚠ Risk flags:</b>{" "}
@@ -454,7 +489,7 @@ const ALL = "__all__";
 export function RiskInsights() {
   const [trades, setTrades] = useState<InsightTrade[] | null>(null);
   const [open, setOpen] = useState<OpenRisk[]>([]);
-  const [equity, setEquity] = useState<number | undefined>(undefined);
+  const [heat, setHeat] = useState<RiskHeat | undefined>(undefined);
   const [err, setErr] = useState<string | null>(null);
   const [fChannel, setFChannel] = useState(ALL);
   const [fCoin, setFCoin] = useState(ALL);
@@ -465,7 +500,7 @@ export function RiskInsights() {
   const load = () => {
     api
       .riskInsights()
-      .then((d) => { setTrades(d.trades); setOpen(d.open ?? []); setEquity(d.equity); setErr(null); })
+      .then((d) => { setTrades(d.trades); setOpen(d.open ?? []); setHeat(d.heat); setErr(null); })
       .catch((e) => setErr(e instanceof Error ? e.message : String(e)));
   };
   useEffect(load, []);
@@ -556,7 +591,7 @@ export function RiskInsights() {
             open risk near 6%); naked = positions with no stop (unbounded); net exposure &gt; ~100% of equity is a
             one-way directional bet.
           </p>
-          <div className="panel"><PortfolioRisk open={open} equity={equity} /></div>
+          <div className="panel"><PortfolioRisk open={open} heat={heat} /></div>
 
           {trades.length === 0 ? (
             <div className="empty" style={{ marginTop: 12 }}>No settled trades yet — edge stats appear once trades close.</div>

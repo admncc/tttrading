@@ -6,6 +6,7 @@ import { activeHyperliquid } from "../exchanges/registry.js";
 import { secondOpinions as repo } from "../db/repositories.js";
 import { proAnalystReview, type SignalImage } from "../signals/llm.js";
 import { broadcast } from "../ws/hub.js";
+import { computeOutcome } from "./outcome.js";
 
 type Candle = { t: number; o: number; h: number; l: number; c: number; v: number };
 
@@ -32,13 +33,16 @@ function atr(candles: Candle[], period = 14): number {
   const s = trs.slice(-period);
   return s.reduce((a, x) => a + x, 0) / (s.length || 1);
 }
-function rsi(closes: number[], period = 14): number {
-  if (closes.length <= period) return 50;
+export function rsi(closes: number[], period = 14): number | undefined {
+  if (closes.length <= period) return undefined;
   let gain = 0, loss = 0;
   for (let i = closes.length - period; i < closes.length; i++) {
     const d = closes[i]! - closes[i - 1]!;
     if (d >= 0) gain += d; else loss -= d;
   }
+  // SO-4: a dead-flat window (no gains AND no losses) has no meaningful RSI —
+  // return undefined so no rule fires on it (was 99 via the loss===0 shortcut).
+  if (gain === 0 && loss === 0) return undefined;
   const rs = loss === 0 ? 100 : gain / loss;
   return 100 - 100 / (1 + rs);
 }
@@ -86,8 +90,13 @@ export function computeFrame(interval: string, candles: Candle[]): SecondOpinion
     atr: r6(atr(candles, 14)),
     support: r6(support),
     resistance: r6(resistance),
-    rsi: Math.round(rsi(closes, 14)),
+    rsi: rsiRound(rsi(closes, 14)),
   };
+}
+
+/** Round RSI for display, propagating undefined (SO-4: a flat window has no RSI). */
+function rsiRound(v: number | undefined): number | undefined {
+  return v === undefined ? undefined : Math.round(v);
 }
 
 export function buildTA(
@@ -181,7 +190,7 @@ export function buildTA(
     entryLocation,
     entryVsPricePct: entryVsPricePct !== undefined ? r6(entryVsPricePct) : undefined,
     entryStale,
-    rsi: Math.round(rsi(closes, 14)),
+    rsi: rsiRound(rsi(closes, 14)),
     rangePosition: r6(rangePosition),
     volumeTrendPct: r6(volumeTrendPct),
     funding: ctx.funding,
@@ -403,9 +412,14 @@ export async function generateSecondOpinion(
 
 /* ------------------------ claim verification (B) ------------------------ */
 
+/** Timeout horizon per second-opinion (ms). Default 14 d (SO-2); overridable
+ *  later from a trader's median hold time. */
+const TIMEOUT_HORIZON_MS = 14 * 86_400_000;
+/** How long a limit entry may wait for a fill before it is `notFilled` (SO-3). */
+const FILL_WINDOW_MS = 3 * 86_400_000;
+
 async function verifyOne(op: SecondOpinion): Promise<void> {
   const createdMs = new Date(op.createdAt).getTime();
-  const ageMs = Date.now() - createdMs;
   let candles: Candle[] = [];
   try {
     candles = await activeHyperliquid().getCandles(op.symbol, "15m", createdMs, Date.now());
@@ -413,62 +427,52 @@ async function verifyOne(op: SecondOpinion): Promise<void> {
     return;
   }
   if (candles.length === 0) return;
-  const base = op.entry ?? candles[0]!.o;
-  if (!(base > 0)) return;
-  const long = op.side === "long";
-  const tps = op.takeProfits ?? [];
-  const tp1 = tps[0];
-  const sl = op.stopLoss;
-  const risk = sl !== undefined ? Math.abs(base - sl) : undefined;
 
-  let maxHigh = -Infinity, minLow = Infinity;
-  let firstHit: "tp" | "sl" | "none" = "none";
-  let hitMs: number | undefined;
-  for (const c of candles) {
-    maxHigh = Math.max(maxHigh, c.h);
-    minLow = Math.min(minLow, c.l);
-    if (firstHit === "none") {
-      const tpTouched = tp1 !== undefined && (long ? c.h >= tp1 : c.l <= tp1);
-      const slTouched = sl !== undefined && (long ? c.l <= sl : c.h >= sl);
-      if (slTouched) { firstHit = "sl"; hitMs = c.t; }
-      else if (tpTouched) { firstHit = "tp"; hitMs = c.t; }
-    }
-  }
-  const mfe = long ? maxHigh - base : base - minLow;
-  const mfePct = (mfe / base) * 100;
-  const maePct = ((long ? base - minLow : maxHigh - base) / base) * 100;
-  const tp1Hit = tp1 !== undefined ? (long ? maxHigh >= tp1 : minLow <= tp1) : undefined;
-  const slHit = sl !== undefined ? (long ? minLow <= sl : maxHigh >= sl) : undefined;
-  const allTpHit = tps.length > 0 ? tps.every((t) => (long ? maxHigh >= t : minLow <= t)) : undefined;
-  const maxR = risk && risk > 0 ? mfe / risk : undefined;
-  const resolved = firstHit !== "none" || ageMs > 14 * 86_400_000;
-  const hoursToFirstHit = hitMs ? Number(((hitMs - createdMs) / 3_600_000).toFixed(1)) : undefined;
-
-  const outcome = {
-    checkedAt: new Date().toISOString(),
-    mfePct: Number(mfePct.toFixed(2)),
-    maePct: Number(maePct.toFixed(2)),
-    tp1Hit,
-    slHit,
-    firstHit,
-    resolved,
-    hoursToFirstHit,
-    maxR: maxR !== undefined ? Number(maxR.toFixed(2)) : undefined,
-    allTpHit,
-  };
+  // SO-1/2/3/3b: clean, look-ahead-free outcome via the pure engine.
+  const outcome = computeOutcome(
+    {
+      side: op.side,
+      entry: op.entry,
+      stopLoss: op.stopLoss,
+      takeProfits: op.takeProfits,
+      createdMs,
+    },
+    candles,
+    { timeoutHorizonMs: TIMEOUT_HORIZON_MS, fillWindowMs: FILL_WINDOW_MS },
+  );
+  if (!outcome) return;
   repo.setOutcome(op.id, outcome);
 
   // Log the moment a call RESOLVES (once), so the full lifecycle is traceable.
-  if (!op.outcome?.resolved && resolved) {
+  if (!op.outcome?.resolved && outcome.resolved) {
     const called = op.verdict?.stance;
-    // Favorable = provider TP hit first OR the trade reached at least 1R in its favor.
-    const good = firstHit === "tp" || (maxR ?? 0) >= 1;
-    const rightWrong = called ? (good === (called === "positive") ? "our call RIGHT" : "our call WRONG") : "no stance";
+    const cls = outcome.outcomeClass;
+    // Only win/loss are scored against the stance; timeout/scratch/notFilled/
+    // ambiguous carry no verdict judgement (SO-2/SO-3).
+    let rightWrong = "no scored outcome";
+    if (called && (cls === "win" || cls === "loss")) {
+      const good = cls === "win";
+      const positive = called === "positive";
+      rightWrong = called === "neutral" ? "neutral call" : good === positive ? "our call RIGHT" : "our call WRONG";
+    }
+    const headline =
+      cls === "win"
+        ? "WIN (TP first)"
+        : cls === "loss"
+          ? "LOSS (SL first)"
+          : cls === "timeout"
+            ? `TIMEOUT (${outcome.rAtClose ?? "?"}R at close)`
+            : cls === "notFilled"
+              ? "NOT FILLED (limit never traded through)"
+              : cls === "ambiguous"
+                ? "AMBIGUOUS (fill/SL same bar)"
+                : "resolved";
     event(
       "review",
-      `Outcome ${op.symbol} ${op.side.toUpperCase()}: ${firstHit === "tp" ? "TP hit first" : firstHit === "sl" ? "SL hit first" : "no hit (timeout)"}` +
-        (hoursToFirstHit !== undefined ? ` after ${hoursToFirstHit}h` : "") +
-        ` · MFE ${outcome.mfePct}% / MAE ${outcome.maePct}% · maxR ${outcome.maxR ?? "?"} · ${rightWrong} (we were ${called ?? "—"})`,
+      `Outcome ${op.symbol} ${op.side.toUpperCase()}: ${headline}` +
+        (outcome.hoursToFirstHit !== undefined ? ` after ${outcome.hoursToFirstHit}h` : "") +
+        ` · MFE ${outcome.mfePct}% / MAE ${outcome.maePct}% · mfeR ${outcome.maxR ?? "?"} / maeR ${outcome.maeR ?? "?"}` +
+        (cls === "win" || cls === "loss" ? ` · ${rightWrong} (we were ${called ?? "—"})` : ""),
       { outcome, ourStance: called },
       { level: "info", groupId: op.groupId, signalId: op.signalId },
     );
@@ -476,7 +480,9 @@ async function verifyOne(op: SecondOpinion): Promise<void> {
 }
 
 export async function verifySecondOpinions(): Promise<void> {
-  const since = new Date(Date.now() - 14 * 86_400_000).toISOString();
+  // SO-2: the fetch/verify window must exceed the timeout horizon + fill window
+  // so chop trades actually reach a `timeout` resolution instead of hanging.
+  const since = new Date(Date.now() - 21 * 86_400_000).toISOString();
   for (const op of repo.unresolvedSince(since)) {
     try {
       await verifyOne(op);

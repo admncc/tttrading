@@ -1,7 +1,9 @@
 import { trades as tradesRepo } from "../db/repositories.js";
-import { activeHyperliquid } from "../exchanges/registry.js";
+import { all as allExchanges } from "../exchanges/registry.js";
 import { capTier, type CapTier } from "./score.js";
 import { log } from "../logger.js";
+import { rMultiple, classifyOutcome, type TradeOutcomeClass } from "@tttrading/shared";
+import { computeHeat, type HeatPosition, type HeatResult } from "./insightsMath.js";
 
 /** One settled trade, flattened for the Risk Insights page. All aggregation and
  *  filtering (by channel, coin, cap-tier, side, session, hold-time …) happen
@@ -19,10 +21,12 @@ export interface InsightTrade {
   openedAt: string;
   leverage: number;
   notional: number;
-  /** Initial risk in USDC = |entry − stop| × size (undefined when no stop). */
+  /** Initial risk in USDC = |entry − stop| × INITIAL size, frozen at entry (RI-3). */
   riskUsd?: number;
-  /** R-multiple = realized PnL / initial risk (undefined when risk unknown). */
+  /** R-multiple = realized net PnL / initial risk (RI-3; undefined when risk unknown). */
   r?: number;
+  /** Clean class: win / loss / scratch (RI-4). Scratch is out of win-rate, in expectancy. */
+  outcomeClass: TradeOutcomeClass;
   /** Hold time in hours (closed − opened). */
   holdHours?: number;
   /** Signed entry slippage vs the signal's asked price, in % (+ = worse fill). */
@@ -35,23 +39,34 @@ export interface OpenRisk {
   tier: CapTier;
   channel: string;
   side: "long" | "short";
+  venue: string;
   notional: number;
   leverage: number;
   /** Risk to stop in USDC = |entry − stop| × size (undefined when no stop). */
   riskUsd?: number;
   hasStop: boolean;
+  /** True for an unfilled working limit order (excluded from live heat, RI-2). */
+  working: boolean;
 }
 
 export interface RiskInsightsResult {
   generatedAt: string;
+  /** Trades returned in this payload (capped). */
   totalClosed: number;
+  /** Total closed trades in the DB — so the UI can label a capped window (RI-5). */
+  totalClosedAll: number;
   trades: InsightTrade[];
   open: OpenRisk[];
-  /** Account equity (primary Hyperliquid venue) for heat % — undefined if unreachable. */
+  /** Account equity (primary Hyperliquid venue) for heat % — legacy field. */
   equity?: number;
+  /** Equity per venue, USD (RI-1). */
+  equityByVenue: Record<string, number>;
+  /** Portfolio heat maths across all venues (RI-1, RI-2). */
+  heat: HeatResult;
 }
 
 const HOURS = 3_600_000;
+const CLOSED_CAP = 3000;
 
 function riskUsdOf(entry: number, stop: number | undefined, size: number): number | undefined {
   if (stop === undefined || !(size > 0)) return undefined;
@@ -60,10 +75,14 @@ function riskUsdOf(entry: number, stop: number | undefined, size: number): numbe
 }
 
 export async function riskInsights(): Promise<RiskInsightsResult> {
-  const closed = tradesRepo.closed(3000).filter((t) => Number.isFinite(t.realizedPnl) && !t.shadow);
+  const closed = tradesRepo.closed(CLOSED_CAP).filter((t) => Number.isFinite(t.realizedPnl) && !t.shadow);
+  const totalClosedAll = tradesRepo.closedCount();
   const trades: InsightTrade[] = closed.map((t) => {
     const net = t.realizedPnl ?? 0;
-    const riskUsd = riskUsdOf(t.entryPrice, t.stopLoss, t.size);
+    // RI-3: R from the INITIAL risk (frozen at entry), not the post-partial size.
+    // Fall back to a live recompute for legacy rows the migration couldn't fill.
+    const riskUsd = t.initialRisk ?? riskUsdOf(t.entryPrice, t.stopLoss, t.initialSize ?? t.size);
+    const r = rMultiple(net, riskUsd);
     const opened = t.openedAt ? new Date(t.openedAt).getTime() : NaN;
     const settled = t.closedAt ? new Date(t.closedAt).getTime() : NaN;
     const holdHours =
@@ -88,34 +107,63 @@ export async function riskInsights(): Promise<RiskInsightsResult> {
       leverage: t.leverage,
       notional: t.notionalUsd,
       riskUsd,
-      r: riskUsd ? Number((net / riskUsd).toFixed(3)) : undefined,
+      r: r !== undefined ? Number(r.toFixed(3)) : undefined,
+      outcomeClass: classifyOutcome(net, r),
       holdHours,
       slipPct,
     };
   });
 
-  const open: OpenRisk[] = [...tradesRepo.open(), ...tradesRepo.working()]
-    .filter((t) => !t.shadow)
-    .map((t) => {
-      const riskUsd = riskUsdOf(t.entryPrice || t.signalEntry || 0, t.stopLoss, t.size);
-      return {
-        symbol: t.symbol.toUpperCase(),
-        tier: capTier(t.symbol),
-        channel: t.groupName,
-        side: t.side,
-        notional: t.notionalUsd,
-        leverage: t.leverage,
-        riskUsd,
-        hasStop: t.stopLoss !== undefined,
-      };
-    });
+  const openTrades = tradesRepo.open().filter((t) => !t.shadow);
+  const workingTrades = tradesRepo.working().filter((t) => !t.shadow);
+  const toOpenRisk = (working: boolean) => (t: (typeof openTrades)[number]): OpenRisk => ({
+    symbol: t.symbol.toUpperCase(),
+    tier: capTier(t.symbol),
+    channel: t.groupName,
+    side: t.side,
+    venue: t.exchange ?? "hyperliquid",
+    notional: t.notionalUsd,
+    leverage: t.leverage,
+    riskUsd: riskUsdOf(t.entryPrice || t.signalEntry || 0, t.stopLoss, t.size),
+    hasStop: t.stopLoss !== undefined,
+    working,
+  });
+  const open: OpenRisk[] = [...openTrades.map(toOpenRisk(false)), ...workingTrades.map(toOpenRisk(true))];
 
-  let equity: number | undefined;
-  try {
-    equity = (await activeHyperliquid().getAccountSummary())?.accountValue;
-  } catch (err) {
-    log.warn("risk-insights: equity unavailable:", err instanceof Error ? err.message : err);
-  }
+  // RI-1: sum equity across every live venue (margin isn't shared, but the
+  // portfolio-level heat needs the whole account).
+  const equityByVenue: Record<string, number> = {};
+  await Promise.all(
+    allExchanges().map(async (ex) => {
+      try {
+        const summ = await ex.getAccountSummary();
+        if (summ && Number.isFinite(summ.accountValue)) equityByVenue[ex.name] = summ.accountValue;
+      } catch (err) {
+        log.warn(`risk-insights: equity unavailable (${ex.name}):`, err instanceof Error ? err.message : err);
+      }
+    }),
+  );
 
-  return { generatedAt: new Date().toISOString(), totalClosed: trades.length, trades, open, equity };
+  const heatPos = (r: OpenRisk): HeatPosition => ({
+    venue: r.venue,
+    notional: r.notional,
+    riskUsd: r.riskUsd,
+    side: r.side,
+  });
+  const heat = computeHeat(
+    open.filter((o) => !o.working).map(heatPos),
+    open.filter((o) => o.working).map(heatPos),
+    equityByVenue,
+  );
+
+  return {
+    generatedAt: new Date().toISOString(),
+    totalClosed: trades.length,
+    totalClosedAll,
+    trades,
+    open,
+    equity: equityByVenue["hyperliquid"] ?? heat.totalEquity,
+    equityByVenue,
+    heat,
+  };
 }

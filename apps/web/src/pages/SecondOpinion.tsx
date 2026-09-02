@@ -4,8 +4,10 @@ import { shortTime } from "../format.js";
 
 const ALL = "__all__";
 
-function StanceBadge({ s }: { s?: "positive" | "negative" }) {
+function StanceBadge({ s }: { s?: "positive" | "negative" | "neutral" }) {
   if (!s) return <span className="tag">pending</span>;
+  if (s === "neutral")
+    return <span className="tag" style={{ background: "#64748b", color: "#fff", fontWeight: 600 }}>NEUTRAL</span>;
   const pos = s === "positive";
   return (
     <span className="tag" style={{ background: pos ? "#16a34a" : "#dc2626", color: "#fff", fontWeight: 600 }}>
@@ -132,7 +134,12 @@ export function SecondOpinion() {
                 const o = r.outcome;
                 const outcomeTxt = !o
                   ? "—"
-                  : o.firstHit === "tp" ? "TP hit first ✅" : o.firstHit === "sl" ? "SL hit first ⛔" : o.resolved ? "no hit (timeout)" : "running";
+                  : o.outcomeClass === "win" ? "WIN (TP first) ✅"
+                  : o.outcomeClass === "loss" ? "LOSS (SL first) ⛔"
+                  : o.outcomeClass === "timeout" ? `timeout (${o.rAtClose ?? "?"}R)`
+                  : o.outcomeClass === "notFilled" ? "not filled"
+                  : o.outcomeClass === "ambiguous" ? "ambiguous"
+                  : o.resolved ? "resolved" : "running";
                 return (
                   <Fragment key={r.id}>
                     <tr key={r.id}>

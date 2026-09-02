@@ -45,6 +45,8 @@ CREATE TABLE IF NOT EXISTS trades (
   leverage REAL NOT NULL,
   notional_usd REAL NOT NULL,
   size REAL NOT NULL,
+  initial_size REAL,             -- size at entry, before partials (RI-3)
+  initial_risk REAL,             -- |entry-stop| × initial_size, frozen at entry (RI-3)
   entry_price REAL NOT NULL,
   signal_entry REAL,
   exit_price REAL,
@@ -146,6 +148,8 @@ function migrate(database: Database.Database): void {
       banked_fees: "REAL",
       exchange: "TEXT",
       signal_entry: "REAL",
+      initial_size: "REAL",
+      initial_risk: "REAL",
     },
     signals: {
       risk: "TEXT",
@@ -183,6 +187,27 @@ function migrate(database: Database.Database): void {
     }
   } catch (err) {
     log.warn("Trade venue relabel migration skipped:", err instanceof Error ? err.message : err);
+  }
+
+  // RI-3: back-fill initial_size / initial_risk for rows that predate the columns
+  // so historical R-multiples use the entry risk, not the post-partial size. Best
+  // effort: current size is the closest proxy for the original for legacy rows.
+  // Idempotent — only fills NULLs, so a value set at entry going forward is kept.
+  try {
+    const sizeRes = database
+      .prepare("UPDATE trades SET initial_size = size WHERE initial_size IS NULL")
+      .run();
+    const riskRes = database
+      .prepare(
+        "UPDATE trades SET initial_risk = ABS(entry_price - stop_loss) * initial_size " +
+          "WHERE initial_risk IS NULL AND stop_loss IS NOT NULL AND initial_size > 0",
+      )
+      .run();
+    if (sizeRes.changes || riskRes.changes) {
+      log.info(`Migrated: back-filled initial_size on ${sizeRes.changes} and initial_risk on ${riskRes.changes} trade(s).`);
+    }
+  } catch (err) {
+    log.warn("initial-risk migration skipped:", err instanceof Error ? err.message : err);
   }
 
   // Working-limit TTL default raised from 7d (168h) to 14d (336h). One-time bump

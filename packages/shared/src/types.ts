@@ -271,6 +271,14 @@ export interface Trade {
   notionalUsd: number;
   /** Position size in asset units. */
   size: number;
+  /**
+   * Position size in asset units at the ORIGINAL entry, before any partial exits
+   * (RI-3). Used to compute R-multiples from the initial risk so scaling out
+   * doesn't inflate R/expectancy/SQN. Falls back to `size` for legacy rows.
+   */
+  initialSize?: number;
+  /** Initial risk in USDC = |entryPrice − stopLoss| × initialSize, frozen at entry (RI-3). */
+  initialRisk?: number;
   entryPrice: number;
   /** The entry price the signal asked for (planned) — for slippage analysis. */
   signalEntry?: number;
@@ -337,7 +345,7 @@ export interface SecondOpinionTFrame {
   atr: number;
   support: number;
   resistance: number;
-  rsi: number;
+  rsi?: number; // undefined on a dead-flat window (SO-4)
 }
 /** Our OWN independent plan for the trade — for comparison vs the provider's. */
 export interface SecondOpinionSuggestion {
@@ -375,7 +383,9 @@ export interface SecondOpinionTA {
   suggestion?: SecondOpinionSuggestion; // our own SL/TP vs the provider's
 }
 export interface SecondOpinionVerdict {
-  stance: "positive" | "negative";
+  // Three zones (P0/Phase-1): "neutral" = no edge detectable. Kept "positive"/
+  // "negative" for back-compat with old rows.
+  stance: "positive" | "negative" | "neutral";
   score: number; // 0..100 — our confidence the setup is technically sound
   summary: string;
   redFlags: string[];
@@ -392,8 +402,17 @@ export interface SecondOpinionOutcome {
   firstHit?: "tp" | "sl" | "none";
   resolved: boolean;
   hoursToFirstHit?: number; // hours from signal to the first TP/SL touch
-  maxR?: number; // best favorable excursion in R multiples (using the provider's risk)
+  maxR?: number; // best favorable excursion in R (cut at the SL candle for losers, SO-1)
+  maeR?: number; // worst adverse excursion in R (cut at the TP candle for winners, SO-1)
   allTpHit?: boolean; // every listed take-profit was reached
+  /**
+   * Clean outcome class (Phase 0). Only "win"/"loss" count toward win-rate;
+   * "timeout" carries rAtClose; "scratch" is ~0R; "notFilled" has no outcome
+   * (a limit that never traded through entry); "ambiguous" = fill+SL in one bar.
+   */
+  outcomeClass?: "win" | "loss" | "timeout" | "scratch" | "notFilled" | "ambiguous";
+  filled?: boolean; // did price trade through the entry within the validity window
+  rAtClose?: number; // realized R at the timeout close (only for outcomeClass "timeout")
 }
 export interface SecondOpinion {
   id: string;
