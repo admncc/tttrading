@@ -11,7 +11,7 @@ import { computeFrame } from "../secondopinion/index.js";
 import { computeOutcome } from "../secondopinion/outcome.js";
 import {
   timeFeatures, geometryFeatures, taFeatures, btcRegimeFeatures, betaFeatures,
-  derivativeFeatures, assetFeatures, coinBaseRateFeatures, type Feat,
+  derivativeFeatures, assetFeatures, coinBaseRateFeatures, eventFeatures, type Feat,
 } from "../features/compute.js";
 import { capTier } from "../risk/score.js";
 import { bucketFeature, renderFeatureReport, type SignalDatum } from "../features/buckets.js";
@@ -50,6 +50,7 @@ for (const op of chrono) {
   }
   const feats: Feat[] = [];
   feats.push(...timeFeatures(signalMs));
+  feats.push(...eventFeatures(signalMs, 48 * 3_600_000)); // 48h default window (no trader stats offline)
   feats.push(...assetFeatures(op.symbol, capTier(op.symbol)));
   const cb = coinHist.get(op.symbol.toUpperCase()) ?? { resolved: 0, tpFirst: 0 };
   feats.push(...coinBaseRateFeatures(cb));

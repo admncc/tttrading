@@ -1,7 +1,6 @@
 <!-- Reproduce: scratchpad/fetch_all.py -> bundle.json, fetch BTC 1d -> btc_d1.json, then:
      tsx apps/server/src/scripts/backfillFeatureReport.ts <so.json> <bundle.json> <btc_d1.json> docs/phase2-feature-buckets.md
-     Live equivalent: tsx apps/server/src/scripts/featureBuckets.ts [days] [out.md]  (reads the DB once features accrue).
-     Numbers are computed by that script; do not edit by hand. -->
+     Live equivalent: tsx apps/server/src/scripts/featureBuckets.ts [days] [out.md]. Numbers computed by the script; do not edit by hand. -->
 
 # Phase 2 — feature bucket report (offline backfill over history)
 
@@ -113,6 +112,26 @@ Signals with recomputed features: **70** (HL-listed) · scored win/loss: **40**.
 | 1.033–2.264 | 9 | 44.4% (19–73) ·small | +1.26R |
 | > 2.264 | 13 | 38.5% (18–64) ·small | +0.02R |
 
+### eventHoursToNext (numeric, n=70)
+| bucket | n | win-rate (95% CI) | expectancy R |
+|---|---|---|---|
+| ≤ 76.600 | 7 | 42.9% (16–75) ·small | -0.23R |
+| 76.600–168.000 | 8 | 37.5% (14–69) ·small | -0.34R |
+| 168.000–233.100 | 11 | 54.5% (28–79) ·small | +0.15R |
+| > 233.100 | 14 | 42.9% (21–67) ·small | +0.91R |
+
+### eventInTpWindow (categorical, n=70)
+| bucket | n | win-rate (95% CI) | expectancy R |
+|---|---|---|---|
+| 0 | 37 | 45.9% (31–62) | +0.33R |
+| 1 | 3 | 33.3% (6–79) ·small | -0.32R |
+
+### eventKindNext (categorical, n=70)
+| bucket | n | win-rate (95% CI) | expectancy R |
+|---|---|---|---|
+| optionsExpiry | 35 | 40.0% (26–56) | +0.27R |
+| nfp | 5 | 80.0% (38–96) ·small | +0.39R |
+
 ### extensionZ20 (numeric, n=70)
 | bucket | n | win-rate (95% CI) | expectancy R |
 |---|---|---|---|
@@ -187,11 +206,12 @@ Signals with recomputed features: **70** (HL-listed) · scored win/loss: **40**.
 | 3.760–7.735 | 10 | 40.0% (17–69) ·small | +0.02R |
 | > 7.735 | 6 | 33.3% (10–70) ·small | +0.56R |
 
-### tradeWithTrendD1 (numeric, n=70)
+### tradeWithTrendD1 (categorical, n=70)
 | bucket | n | win-rate (95% CI) | expectancy R |
 |---|---|---|---|
-| -1.000–0.000 | 13 | 46.2% (23–71) ·small | +0.87R |
-| > 0.000 | 27 | 44.4% (28–63) | -0.04R |
+| 0 | 24 | 50.0% (31–69) | +0.07R |
+| -1 | 13 | 46.2% (23–71) ·small | +0.87R |
+| 1 | 3 | 0.0% (0–56) ·small | -1.00R |
 
 ### weekday (categorical, n=70)
 | bucket | n | win-rate (95% CI) | expectancy R |
@@ -204,7 +224,8 @@ Signals with recomputed features: **70** (HL-listed) · scored win/loss: **40**.
 | Sat | 4 | 25.0% (5–70) ·small | -0.46R |
 | Sun | 3 | 33.3% (6–79) ·small | -0.44R |
 
-### weekend (numeric, n=70)
+### weekend (categorical, n=70)
 | bucket | n | win-rate (95% CI) | expectancy R |
 |---|---|---|---|
-| > 0.000 | 40 | 45.0% (31–60) | +0.28R |
+| 0 | 33 | 48.5% (33–65) | +0.43R |
+| 1 | 7 | 28.6% (8–64) ·small | -0.46R |

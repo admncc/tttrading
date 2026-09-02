@@ -7,8 +7,10 @@
  * Only bucket-reportable features live here — no model integration (§11.3).
  */
 
+import { eventContext } from "./calendar.js";
+
 export type Feat = { name: string; num?: number; text?: string };
-export const FEATURE_VERSION = "p2.1";
+export const FEATURE_VERSION = "p2.2";
 
 type Candle = { t: number; o: number; h: number; l: number; c: number; v?: number };
 
@@ -54,6 +56,16 @@ export function timeFeatures(signalMs: number): Feat[] {
     { name: "hourUtc", num: h },
     { name: "weekend", num: dow === 0 || dow === 6 ? 1 : 0 },
   ];
+}
+
+/* ----------------------------- 2.4 events ------------------------------ */
+/** Nearest scheduled event + whether one lands inside the trade horizon. */
+export function eventFeatures(nowMs: number, windowMs: number): Feat[] {
+  const c = eventContext(nowMs, windowMs);
+  const out: Feat[] = [{ name: "eventInTpWindow", num: c.inWindow ? 1 : 0 }];
+  if (c.hoursToNext !== undefined) out.push({ name: "eventHoursToNext", num: c.hoursToNext });
+  if (c.nextKind) out.push({ name: "eventKindNext", text: String(c.nextKind) });
+  return out;
 }
 
 /* --------------------------- 3.6 geometry ------------------------------ */

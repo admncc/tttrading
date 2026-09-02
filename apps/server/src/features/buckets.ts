@@ -57,7 +57,10 @@ function quantileEdges(vals: number[], q = 4): number[] {
 export function bucketFeature(signals: SignalDatum[], feature: string): FeatureReport {
   const present = signals.filter((s) => s.feats[feature] !== undefined);
   const numeric = present.filter((s) => typeof s.feats[feature] === "number");
-  const isNumeric = numeric.length >= present.length * 0.8 && present.length > 0;
+  const distinctNums = new Set(numeric.map((s) => s.feats[feature] as number));
+  // Low-cardinality numerics (0/1 flags, small integer codes) read better as
+  // discrete buckets than as quantiles.
+  const isNumeric = numeric.length >= present.length * 0.8 && present.length > 0 && distinctNums.size > 3;
 
   if (!isNumeric) {
     const byVal = new Map<string, SignalDatum[]>();

@@ -14,6 +14,7 @@ import { startAutoRefine, stopAutoRefine } from "./signals/autorefine.js";
 import { startPriceTicker, stopPriceTicker } from "./market/ticker.js";
 import { startSecondOpinionTracker, stopSecondOpinionTracker } from "./secondopinion/index.js";
 import { startWeeklyReport, stopWeeklyReport } from "./reports/weekly.js";
+import { loadMacroCalendarFromEnv } from "./features/calendar.js";
 import { broadcast } from "./ws/hub.js";
 
 async function main(): Promise<void> {
@@ -50,6 +51,7 @@ async function main(): Promise<void> {
   startPriceTicker();
   startSecondOpinionTracker();
   startWeeklyReport();
+  void loadMacroCalendarFromEnv().then((n) => n && log.info(`Loaded ${n} macro calendar event(s) from MACRO_CALENDAR_FILE.`));
 
   log.info(`Alerts ${alertsEnabled ? "enabled (Telegram bot)" : "disabled"}.`);
   log.info(`LLM signal fallback ${llmReady() ? "enabled" : "disabled (regex only)"}.`);

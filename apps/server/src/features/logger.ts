@@ -13,7 +13,7 @@ import { log } from "../logger.js";
 import {
   FEATURE_VERSION, type Feat, timeFeatures, geometryFeatures, taFeatures,
   btcRegimeFeatures, betaFeatures, derivativeFeatures, traderStatsFeatures, horizonForHold,
-  assetFeatures, coinBaseRateFeatures, ethBtcFeatures, fundingHistoryFeatures, type TraderStats,
+  assetFeatures, coinBaseRateFeatures, ethBtcFeatures, fundingHistoryFeatures, eventFeatures, type TraderStats,
 } from "./compute.js";
 
 type Candle = { t: number; o: number; h: number; l: number; c: number; v: number };
@@ -95,6 +95,8 @@ export async function logSignalFeatures(
       atrH = trs.slice(-14).reduce((s, x) => s + x, 0) / Math.min(14, trs.length);
     }
     feats.push({ name: "horizonTf", text: horizonTf });
+    // 2.4 events: window = the trade's expected horizon (trader median hold, else 48h).
+    feats.push(...eventFeatures(signalMs, (stats.medianHoldHours ?? 48) * 3_600_000));
     feats.push(...geometryFeatures(parsed.side, parsed.entry, parsed.stopLoss, parsed.takeProfits?.[0], inputs.price, atrH));
     feats.push(...taFeatures(parsed.side, inputs.frames, inputs.byTf["1h"] ?? []));
     feats.push(...traderStatsFeatures(stats));
@@ -146,6 +148,7 @@ function sourceOf(name: string): string {
   if (name.startsWith("trader") || name === "concurrentSignalsSameDir") return "trader-stats";
   if (name.startsWith("funding") || ["openInterest", "premiumBps"].includes(name)) return "derivatives";
   if (["session", "weekday", "hourUtc", "weekend"].includes(name)) return "time";
+  if (name.startsWith("event")) return "events";
   if (["rr", "slAtrH", "tpAtrH", "feeDragR", "horizonTf"].includes(name)) return "geometry";
   return "ta";
 }
