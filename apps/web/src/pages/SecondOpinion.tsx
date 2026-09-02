@@ -17,7 +17,8 @@ function StanceBadge({ s }: { s?: "positive" | "negative" | "neutral" }) {
 }
 
 function scoreColor(n: number) {
-  return n >= 60 ? "#22c55e" : n >= 45 ? "#f59e0b" : "#ef4444";
+  // Aligned with the 3 verdict zones: >60 positive, 40–60 neutral, <40 negative.
+  return n > 60 ? "#22c55e" : n >= 40 ? "#f59e0b" : "#ef4444";
 }
 
 export function SecondOpinion() {
@@ -181,6 +182,19 @@ export function SecondOpinion() {
                             <div><b>Verdict:</b> {r.verdict?.summary || "—"}</div>
                             {r.verdict?.redFlags?.length ? <div style={{ color: "#ef4444" }}>⚠ {r.verdict.redFlags.join(" · ")}</div> : null}
                             {r.verdict?.strengths?.length ? <div style={{ color: "#22c55e" }}>✓ {r.verdict.strengths.join(" · ")}</div> : null}
+                            {r.verdict?.contributions?.length ? (
+                              <div className="muted" style={{ fontSize: 12 }}>
+                                <b>Score breakdown:</b>{" "}
+                                {r.verdict.contributions
+                                  .slice()
+                                  .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
+                                  .map((c) => (
+                                    <span key={c.rule} style={{ color: c.delta >= 0 ? "#22c55e" : "#ef4444" }}>
+                                      {c.rule} {c.delta >= 0 ? "+" : ""}{c.delta}{"  "}
+                                    </span>
+                                  ))}
+                              </div>
+                            ) : null}
                             {r.ta ? (
                               <>
                                 {r.ta.frames?.length ? (
@@ -194,7 +208,7 @@ export function SecondOpinion() {
                                   price {r.ta.price} · ATR {r.ta.atr} ({(r.ta.atrPct * 100).toFixed(2)}%) · RSI {r.ta.rsi ?? "?"} ·
                                   {" "}range {r.ta.rangePosition !== undefined ? `${Math.round(r.ta.rangePosition * 100)}%` : "?"} ·
                                   {" "}support {r.ta.support} · resistance {r.ta.resistance} ·
-                                  {" "}SL={r.ta.slAtrMultiple?.toFixed(2) ?? "?"}×ATR · {r.ta.entryLocation ?? ""}
+                                  {" "}SL={r.ta.slAtrMultiple?.toFixed(2) ?? "?"}×ATR{r.ta.slAtrH !== undefined ? ` (${r.ta.slAtrH.toFixed(2)}× ${r.ta.atrHorizonTf}-ATR)` : ""} · {r.ta.entryLocation ?? ""}
                                   {r.ta.entryVsPricePct !== undefined ? (
                                     <span style={{ color: r.ta.entryStale ? "#ef4444" : undefined }}>
                                       {" · "}entry {r.ta.entryVsPricePct > 0 ? "+" : ""}{r.ta.entryVsPricePct.toFixed(2)}% vs live

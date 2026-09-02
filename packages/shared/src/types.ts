@@ -365,7 +365,17 @@ export interface SecondOpinionTA {
   atrPct: number; // atr / price
   support: number;
   resistance: number;
-  slAtrMultiple?: number; // |entry - SL| / atr — <1 ≈ inside the noise
+  slAtrMultiple?: number; // |entry - SL| / atr(1h) — legacy, kept for display
+  /** |entry − SL| / ATR of the TRADER'S HORIZON timeframe (SO-6/1.2). A swing
+   *  stop measured against the horizon ATR, not the 1h ATR, so a normal
+   *  multi-day stop no longer looks "recklessly wide". */
+  slAtrH?: number;
+  /** The horizon timeframe slAtrH was measured on (e.g. "4h", "1d"). */
+  atrHorizonTf?: string;
+  /** Signed distance from entry to the nearest opposing level, in horizon ATR
+   *  (1.3). Positive = level is still ahead (room); negative = price is already
+   *  through it (a break/retest, the opposite of "into resistance"). */
+  distToLevelAtrH?: number;
   rrClaimed?: number; // to the provider's TP1
   rrRealistic?: number; // to the nearest opposing swing (support/resistance)
   entryLocation?: string; // e.g. "long into resistance", "short into support"
@@ -392,6 +402,8 @@ export interface SecondOpinionVerdict {
   strengths: string[];
   source: "llm" | "heuristic";
   confidence: number; // 0..1
+  /** Per-rule score contributions for explainability (Phase-1 leitplanke 8). */
+  contributions?: { rule: string; delta: number }[];
 }
 export interface SecondOpinionOutcome {
   checkedAt: string;

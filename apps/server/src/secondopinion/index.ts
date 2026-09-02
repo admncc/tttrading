@@ -103,7 +103,7 @@ export function buildTA(
   parsed: ParsedSignal,
   primary: Candle[],
   frames: SecondOpinionTFrame[],
-  ctx: { funding?: number; openInterest?: number; premiumBps?: number },
+  ctx: { funding?: number; openInterest?: number; premiumBps?: number; horizonTf?: string },
 ): SecondOpinionTA | undefined {
   if (primary.length < 30) return undefined;
   const closes = primary.map((c) => c.c);
@@ -122,6 +122,22 @@ export function buildTA(
   const rewardReal = long ? resistance - entry : entry - support;
   const rrRealistic = risk && risk > 0 && rewardReal > 0 ? rewardReal / risk : undefined;
   const slAtrMultiple = risk && a > 0 ? risk / a : undefined;
+
+  // SO-6 / 1.2: measure the stop against the TRADER-HORIZON ATR, not the 1h ATR.
+  // ATR scales ~√time, so a normal multi-day swing stop is 5–7× the 1h ATR but
+  // only ~1× the daily ATR. Default horizon = 4h (a middle ground) unless caller
+  // overrides; fall back to scaling the 1h ATR when that frame is missing.
+  const horizonTf = ctx.horizonTf ?? "4h";
+  const ATR_SCALE: Record<string, number> = { "15m": 0.5, "1h": 1, "4h": 2, "1d": 4.5 };
+  const horizonFrame = frames.find((f) => f.interval === horizonTf);
+  const atrHorizon = horizonFrame?.atr ?? (a > 0 ? a * (ATR_SCALE[horizonTf] ?? 2) : undefined);
+  const slAtrH = risk && atrHorizon && atrHorizon > 0 ? risk / atrHorizon : undefined;
+  // 1.3: signed distance to the nearest opposing level in horizon ATR. Positive =
+  // the level is still ahead (room to run); negative = price has already traded
+  // through it (a breakout/retest, NOT "into resistance").
+  const oppLevel = long ? resistance : support;
+  const signedToLevel = long ? oppLevel - entry : entry - oppLevel;
+  const distToLevelAtrH = atrHorizon && atrHorizon > 0 ? signedToLevel / atrHorizon : undefined;
 
   // Stale-entry check: a limit entry far from the live market means price has
   // moved past the intended fill — the signal is stale / mismatched (e.g. a long
@@ -185,6 +201,9 @@ export function buildTA(
     support: r6(support),
     resistance: r6(resistance),
     slAtrMultiple: slAtrMultiple !== undefined ? r6(slAtrMultiple) : undefined,
+    slAtrH: slAtrH !== undefined ? r6(slAtrH) : undefined,
+    atrHorizonTf: slAtrH !== undefined ? horizonTf : undefined,
+    distToLevelAtrH: distToLevelAtrH !== undefined ? r6(distToLevelAtrH) : undefined,
     rrClaimed: rrClaimed !== undefined ? r6(rrClaimed) : undefined,
     rrRealistic: rrRealistic !== undefined ? r6(rrRealistic) : undefined,
     entryLocation,
@@ -202,116 +221,152 @@ export function buildTA(
   };
 }
 
+/** No single rule may move the score by more than this (dev-brief 1.4). */
+const RULE_CAP = 25;
+
 export function heuristicVerdict(parsed: ParsedSignal, ta?: SecondOpinionTA): SecondOpinionVerdict {
   let score = 50;
   const red: string[] = [], good: string[] = [];
+  const contributions: { rule: string; delta: number }[] = [];
+  // Every rule goes through add(): it is capped at ±RULE_CAP and recorded for the
+  // explainability breakdown (leitplanke 8). One concept = one add() call (SO-8).
+  const add = (rule: string, deltaRaw: number, note: string, positive: boolean) => {
+    const delta = Math.max(-RULE_CAP, Math.min(RULE_CAP, deltaRaw));
+    if (delta === 0) return;
+    score += delta;
+    contributions.push({ rule, delta });
+    (positive ? good : red).push(note);
+  };
+
   if (ta) {
     const long = parsed.side === "long";
-    const withTrend = long ? ta.trend === "up" : ta.trend === "down";
-    const alignedFrames = (ta.frames ?? []).filter((f) => (long ? f.trend === "up" : f.trend === "down")).length;
-    const totalFrames = ta.frames?.length ?? 0;
-    const weakConfluence = totalFrames > 0 && alignedFrames <= Math.floor(totalFrames * 0.25);
-    // A stop many ATRs away makes a "great" stated R/R illusory — the target is
-    // proportionally far too, and the trade needs an outsized move to pay. Treat
-    // >5× ATR as reckless; it voids the R/R bonus and draws its own penalty.
-    const recklessWide = ta.slAtrMultiple !== undefined && ta.slAtrMultiple > 5;
-    // Trading AGAINST a real primary trend (shorting an uptrend / longing a
-    // downtrend). Don't fight the tape: a great R/R here is usually a trap — the
-    // "room to target" is exactly where price runs against you (the Vip BTC shorts
-    // that scored high on geometry then got run over by the bull). Voids the R/R
-    // bonus, like a reckless-wide stop. A genuine mean-reversion at a level is
-    // caught separately by neutral RSI + good location, which still score.
-    const againstTrend = !withTrend && ta.trend !== "sideways";
+    const frames = ta.frames ?? [];
+    const totalFrames = frames.length;
 
-    // 1) Multi-timeframe confluence — a real edge; weak confluence is a soft flag
-    // (a counter-trend entry can still be a valid mean-reversion play).
-    if (totalFrames) {
-      if (alignedFrames >= Math.ceil(totalFrames * 0.75)) { score += 16; good.push(ta.mtfAlignment ?? "multi-timeframe aligned"); }
-      else if (weakConfluence) { score -= 8; red.push(`limited timeframe support (${ta.mtfAlignment})`); }
+    // SO-7: confluence/trend signals need at least TWO computed timeframes; a lone
+    // frame is not "confluence". When we can't see ≥2, we award/deduct nothing and
+    // flag it, rather than crediting a single-frame illusion.
+    const mtfAvailable = totalFrames >= 2;
+
+    // SO-10: ONE trade-with-trend feature — sum of (+1 with / −1 against / 0 flat)
+    // across the computed frames, scaled. Replaces the old stack of overlapping
+    // with-trend / against-trend / confluence penalties.
+    if (mtfAvailable) {
+      let twt = 0;
+      for (const f of frames) {
+        if (f.trend === "up") twt += long ? 1 : -1;
+        else if (f.trend === "down") twt += long ? -1 : 1;
+      }
+      const per = 6; // points per net-aligned frame, capped by RULE_CAP
+      if (twt > 0) add("tradeWithTrend", twt * per, `with the trend on ${twt}/${totalFrames} frames (${ta.mtfAlignment})`, true);
+      else if (twt < 0) add("tradeWithTrend", twt * per, `against the trend on ${-twt}/${totalFrames} frames (${ta.mtfAlignment})`, false);
+    } else {
+      red.push("multi-timeframe unavailable (mtfUnavailable)");
     }
 
-    // 2) Trading WITH the primary trend is the most reliable positive — but only
-    // credit it when the broader timeframes actually confirm (a lone 1h uptrend
-    // while the higher frames roll over is a trap, not a trend).
-    if (withTrend && !weakConfluence) { score += 12; good.push(`with the ${ta.trend} trend`); }
+    // Trend-context flag used to gate the R/R credit (a great R/R while fighting
+    // the tape is usually a trap). Only meaningful with the MTF view.
+    const primaryWithTrend = long ? ta.trend === "up" : ta.trend === "down";
+    const againstTrend = mtfAvailable && !primaryWithTrend && ta.trend !== "sideways";
 
-    // 3) Risk/reward — the trader's stated R/R to TP1 is the primary geometry
-    // signal, BUT it counts only when the stop is sane: a big R/R built on a
-    // reckless-wide stop is not a real edge. rrRealistic (reward to the nearest
-    // pivot) is only a waypoint — context, never a hard veto.
-    const rrCredit = !recklessWide && !againstTrend;
+    // SO-6 + 1.2: stop sanity on the HORIZON ATR. Two flags, no legacy 1h rule.
+    //   stopTooTight (< 0.7 horizon-ATR)  — a noise stop, likely to get wicked out.
+    //   stopTooWide  (> 3.5 horizon-ATR)  — genuinely oversized for the horizon.
+    // Thresholds are start-hypotheses to be refined from bucket stats (not tuned
+    // against outcomes here). A normal multi-day swing stop now reads ~1× and
+    // scores neither flag — the whole point of the horizon fix.
+    if (ta.slAtrH !== undefined) {
+      if (ta.slAtrH < 0.7) add("stopTooTight", -10, `stop tight for the horizon (${ta.slAtrH.toFixed(2)}× ${ta.atrHorizonTf}-ATR)`, false);
+      else if (ta.slAtrH > 3.5) add("stopTooWide", -8, `stop wide for the horizon (${ta.slAtrH.toFixed(1)}× ${ta.atrHorizonTf}-ATR)`, false);
+      else add("stopWellPlaced", 5, `stop sized to the horizon (${ta.slAtrH.toFixed(1)}× ${ta.atrHorizonTf}-ATR)`, true);
+    }
+
+    // SO-8: risk/reward is ONE feature (no more double-counting a weak R/R). The
+    // stated R/R to TP1 counts only when the stop is sane and we're not fighting
+    // the tape.
+    const rrCredit = !(ta.slAtrH !== undefined && ta.slAtrH > 3.5) && !againstTrend;
     if (ta.rrClaimed !== undefined) {
-      if (rrCredit && ta.rrClaimed >= 3) { score += 14; good.push(`strong R/R (${ta.rrClaimed.toFixed(1)})`); }
-      else if (rrCredit && ta.rrClaimed >= 2) { score += 10; good.push(`good R/R (${ta.rrClaimed.toFixed(1)})`); }
-      else if (ta.rrClaimed < 1) { score -= 12; red.push(`weak R/R to TP1 (${ta.rrClaimed.toFixed(1)})`); }
-    }
-    if (againstTrend) { score -= 6; red.push(`against the ${ta.trend} trend — fighting the tape`); }
-    if (ta.rrRealistic !== undefined) {
-      if (ta.rrRealistic >= 2) { score += 6; good.push(`clean room to the next level (${ta.rrRealistic.toFixed(1)}R)`); }
-      else if (ta.rrRealistic < 0.5 && (ta.rrClaimed ?? 0) < 1.5) { score -= 6; red.push(`little room before the next level`); }
+      if (rrCredit && ta.rrClaimed >= 3) add("riskReward", 14, `strong R/R (${ta.rrClaimed.toFixed(1)})`, true);
+      else if (rrCredit && ta.rrClaimed >= 2) add("riskReward", 10, `good R/R (${ta.rrClaimed.toFixed(1)})`, true);
+      else if (ta.rrClaimed < 1) add("riskReward", -12, `weak R/R to TP1 (${ta.rrClaimed.toFixed(1)})`, false);
     }
 
-    // 4) Stop placement vs volatility — sweet spot ~1.2–3.5× ATR; a very wide
-    // stop is a real risk-management flag, an extreme one (>7× ATR) reckless.
-    if (ta.slAtrMultiple !== undefined) {
-      if (ta.slAtrMultiple >= 1.2 && ta.slAtrMultiple <= 3.5) { score += 6; good.push(`stop well-placed (${ta.slAtrMultiple.toFixed(1)}×ATR)`); }
-      else if (ta.slAtrMultiple < 1) { score -= 8; red.push(`SL inside 1× ATR — noise risk (${ta.slAtrMultiple.toFixed(2)})`); }
-      else if (ta.slAtrMultiple > 7) { score -= 16; red.push(`SL recklessly wide (${ta.slAtrMultiple.toFixed(1)}×ATR)`); }
-      else if (ta.slAtrMultiple > 5) { score -= 8; red.push(`SL very wide (${ta.slAtrMultiple.toFixed(1)}×ATR)`); }
+    // 1.3: entry location as a CONTINUOUS signed distance to the opposing level,
+    // in horizon ATR. Negative distance = price has already traded THROUGH the
+    // level (a breakout/retest) — the opposite of "into resistance", and it must
+    // NOT be penalised (SO-9-style false negative). Positive & very small = the
+    // entry is jammed right under the level (little room) → a mild flag.
+    if (ta.distToLevelAtrH !== undefined) {
+      const d = ta.distToLevelAtrH;
+      if (d < -0.25) add("breakout", 8, `${long ? "above resistance" : "below support"} — breakout/retest, room opened`, true);
+      else if (d >= 0 && d < 0.5) add("intoLevel", -8, `entry jammed into the ${long ? "resistance" : "support"} (${d.toFixed(2)}×ATR room)`, false);
+      else if (d >= 1.5) add("roomToLevel", 6, `clean room to the next level (${d.toFixed(1)}×ATR)`, true);
     }
 
-    // 4b) Fighting strong momentum against the trade — a counter-trend entry into
-    // an extended RSI (shorting a rip, or knife-catching a plunge) is a classic
-    // way to lose. Only when the entry is NOT with the trend.
-    if (!withTrend && ta.rsi !== undefined) {
-      const extreme = (!long && ta.rsi >= 80) || (long && ta.rsi <= 20);
-      const strong = (!long && ta.rsi >= 68) || (long && ta.rsi <= 32);
-      if (extreme) { score -= 18; red.push(`fading EXTREME momentum (RSI ${ta.rsi})`); }
-      else if (strong) { score -= 10; red.push(`fading strong momentum (RSI ${ta.rsi})`); }
-    }
-
-    // 5) Entry location vs structure.
-    if (ta.entryLocation?.includes("poor")) { score -= 8; red.push(ta.entryLocation); }
-    if (ta.entryLocation?.includes("good")) { score += 10; good.push(ta.entryLocation); }
-
-    // 6) Where in the recent range — buying low / selling high is a plus.
+    // Where in the recent range — buying low / selling high is a small plus.
     if (ta.rangePosition !== undefined) {
       const rp = ta.rangePosition;
-      if (long && rp <= 0.4) { score += 5; good.push(`buying the lower range (${Math.round(rp * 100)}%)`); }
-      else if (long && rp >= 0.9) { score -= 5; red.push(`buying the very top of the range (${Math.round(rp * 100)}%)`); }
-      else if (!long && rp >= 0.6) { score += 5; good.push(`selling the upper range (${Math.round(rp * 100)}%)`); }
-      else if (!long && rp <= 0.1) { score -= 5; red.push(`selling the very bottom of the range (${Math.round(rp * 100)}%)`); }
+      if (long && rp <= 0.4) add("rangePos", 5, `buying the lower range (${Math.round(rp * 100)}%)`, true);
+      else if (long && rp >= 0.9) add("rangePos", -5, `buying the very top of the range (${Math.round(rp * 100)}%)`, false);
+      else if (!long && rp >= 0.6) add("rangePos", 5, `selling the upper range (${Math.round(rp * 100)}%)`, true);
+      else if (!long && rp <= 0.1) add("rangePos", -5, `selling the very bottom of the range (${Math.round(rp * 100)}%)`, false);
     }
 
-    // 7) RSI — only an EXTREME reading, and only when it fights the entry, is a
-    // flag. Overbought in an uptrend is momentum, not a reason to fade.
-    if (ta.rsi !== undefined) {
-      if (long && ta.rsi >= 82) { score -= 8; red.push(`extremely overbought (RSI ${ta.rsi})`); }
-      if (!long && ta.rsi <= 18) { score -= 8; red.push(`extremely oversold (RSI ${ta.rsi})`); }
+    // SO-9: NO blanket "RSI ≥ 82 → penalty". Overbought in an uptrend is healthy
+    // momentum, not a reason to fade. RSI only matters when the entry FIGHTS an
+    // extreme reading (fading a rip / catching a knife) — one feature, extremes
+    // only, and only counter-trend.
+    if (!primaryWithTrend && ta.rsi !== undefined) {
+      const extreme = (!long && ta.rsi >= 80) || (long && ta.rsi <= 20);
+      if (extreme) add("fadingExtreme", -12, `fading extreme momentum (RSI ${ta.rsi})`, false);
     }
 
-    // 8) Stale limit far from market (deliberate scale-in adds are not stale).
+    // Stale limit far from market (deliberate scale-in adds are not stale).
     if (ta.entryStale) {
-      score -= 8;
-      red.push(`stale/mismatched entry — ${ta.entryVsPricePct! > 0 ? "+" : ""}${ta.entryVsPricePct?.toFixed(1)}% from live price`);
+      add("staleEntry", -8, `stale/mismatched entry — ${ta.entryVsPricePct! > 0 ? "+" : ""}${ta.entryVsPricePct?.toFixed(1)}% from live price`, false);
     }
 
-    // 9) Funding crowding — a mild contrarian flag.
+    // Funding crowding — a mild contrarian flag.
     if (ta.funding !== undefined) {
       const crowded = long ? ta.funding > 0.0004 : ta.funding < -0.0004;
-      if (crowded) { score -= 5; red.push(`crowded funding (${(ta.funding * 100).toFixed(3)}%)`); }
+      if (crowded) add("funding", -5, `crowded funding (${(ta.funding * 100).toFixed(3)}%)`, false);
     }
   }
+
   score = Math.max(0, Math.min(100, Math.round(score)));
+  // Three zones (1.4): the model is allowed to say "no edge detectable".
+  const stance: SecondOpinionVerdict["stance"] = score > 60 ? "positive" : score < 40 ? "negative" : "neutral";
   return {
-    stance: score >= 50 ? "positive" : "negative",
+    stance,
     score,
     summary: ta ? `Heuristic: ${good.concat(red).join("; ") || "neutral setup"}.` : "No candle data — no technical read.",
     redFlags: red,
     strengths: good,
     source: "heuristic",
     confidence: ta ? 0.45 : 0.2,
+    contributions,
   };
+}
+
+/**
+ * Degeneration alarm (dev-brief 1.4): if the share of POSITIVE verdicts over the
+ * last N signals collapses (< 15%) or saturates (> 85%), the scorer has drifted
+ * into a rubber-stamp — exactly the "74/81 negative" state that went unnoticed.
+ * Logs a warning so it can never happen silently again.
+ */
+function checkDegeneration(): void {
+  const recent = repo.list(30).filter((o) => o.verdict);
+  if (recent.length < 20) return; // too few to judge
+  const pos = recent.filter((o) => o.verdict!.stance === "positive").length;
+  const share = pos / recent.length;
+  if (share < 0.15 || share > 0.85) {
+    event(
+      "review",
+      `⚠ Second Opinion degeneration: only ${(share * 100).toFixed(0)}% positive over the last ${recent.length} verdicts — the scorer has drifted to a rubber-stamp. Review the rule calibration.`,
+      { positiveShare: share, sample: recent.length },
+      { level: "warn" },
+    );
+  }
 }
 
 /* --------------------------- generation (A) ----------------------------- */
@@ -396,6 +451,7 @@ export async function generateSecondOpinion(
       verdict,
     });
     broadcast({ type: "secondOpinion", secondOpinion: op });
+    checkDegeneration();
     event(
       "review",
       `Verdict ${symbol} ${parsed.side.toUpperCase()}: ${verdict.stance.toUpperCase()} ${verdict.score}/100 (${verdict.source}, conf ${verdict.confidence.toFixed(2)}) — ${verdict.summary}` +
