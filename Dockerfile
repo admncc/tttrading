@@ -23,7 +23,11 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY . .
-RUN pnpm install --frozen-lockfile && pnpm build
+# Build, then smoke-test the compiled server actually boots (fails the image
+# build if `node dist/index.js` can't reach "listening" — e.g. a runtime module
+# it can't resolve), so a non-booting build never reaches deploy.
+RUN pnpm install --frozen-lockfile && pnpm build \
+  && pnpm --filter @tttrading/server smoke
 
 ENV NODE_ENV=production
 ENV HOST=0.0.0.0
