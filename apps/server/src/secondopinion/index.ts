@@ -7,6 +7,7 @@ import { secondOpinions as repo } from "../db/repositories.js";
 import { proAnalystReview, type SignalImage } from "../signals/llm.js";
 import { broadcast } from "../ws/hub.js";
 import { computeOutcome } from "./outcome.js";
+import { logSignalFeatures } from "../features/logger.js";
 
 type Candle = { t: number; o: number; h: number; l: number; c: number; v: number };
 
@@ -403,6 +404,17 @@ export async function generateSecondOpinion(
 
     const frames = FRAMES.map((tf) => computeFrame(tf, byTf[tf] ?? [])).filter((f): f is SecondOpinionTFrame => !!f);
     const ta = buildTA(parsed, byTf["1h"] ?? [], frames, ctx);
+
+    // Phase 2: log point-in-time features (observe-only, never blocks the SO).
+    if (signalId) {
+      void logSignalFeatures(group, parsed, signalId, {
+        byTf,
+        ctx,
+        frames: frames.map((f) => ({ interval: f.interval, trend: f.trend })),
+        price: ta?.price ?? byTf["1h"]?.[byTf["1h"].length - 1]?.c ?? 0,
+        atrHorizon: undefined,
+      });
+    }
 
     event(
       "review",

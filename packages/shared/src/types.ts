@@ -433,6 +433,22 @@ export interface SecondOpinionOutcome {
   filled?: boolean; // did price trade through the entry within the validity window
   rAtClose?: number; // realized R at the timeout close (only for outcomeClass "timeout")
 }
+/**
+ * One point-in-time feature computed for a signal at signal time (Phase 2).
+ * Numeric features use `num`, categorical use `text`. Look-ahead-free by
+ * contract: `computedAt` must be ≤ the signal time.
+ */
+export interface SignalFeature {
+  signalId: string;
+  name: string;
+  num?: number;
+  text?: string;
+  source: string; // e.g. "ta", "btc-regime", "trader-stats", "time", "derivatives"
+  version: string; // feature-set version, for reproducibility
+  computedAt: string;
+  signalAt?: string;
+}
+
 export interface SecondOpinion {
   id: string;
   signalId?: string;

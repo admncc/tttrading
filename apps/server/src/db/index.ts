@@ -118,6 +118,25 @@ CREATE TABLE IF NOT EXISTS message_images (
   data BLOB NOT NULL,
   created_at TEXT NOT NULL
 );
+
+-- Phase 2: point-in-time features per signal (Shadow-Mode basis, dev-brief §7).
+-- One row per (signal, feature); computed at signal time and never recomputed with
+-- later data (computed_at <= signal_at). num_value for numeric, text_value for
+-- categorical. No model reads this yet — only bucket reports.
+CREATE TABLE IF NOT EXISTS signal_features (
+  id TEXT PRIMARY KEY,
+  signal_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  num_value REAL,
+  text_value TEXT,
+  source TEXT NOT NULL,
+  version TEXT NOT NULL,
+  computed_at TEXT NOT NULL,
+  signal_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sigfeat_signal ON signal_features(signal_id);
+CREATE INDEX IF NOT EXISTS idx_sigfeat_name ON signal_features(name);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sigfeat_uniq ON signal_features(signal_id, name);
 `;
 
 function open(): Database.Database {

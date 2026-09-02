@@ -11,6 +11,7 @@ import type {
   SecondOpinionTA,
   SecondOpinionVerdict,
   Signal,
+  SignalFeature,
   SignalStatus,
   Trade,
   TradeStatus,
@@ -966,6 +967,77 @@ export const secondOpinions = {
   },
   count(): number {
     const r = db.prepare("SELECT COUNT(*) AS c FROM second_opinions").get() as { c: number };
+    return r.c;
+  },
+};
+
+/* -------------------------- signal features (Phase 2) ------------------- */
+
+interface SignalFeatureRow {
+  id: string;
+  signal_id: string;
+  name: string;
+  num_value: number | null;
+  text_value: string | null;
+  source: string;
+  version: string;
+  computed_at: string;
+  signal_at: string | null;
+}
+function toSignalFeature(r: SignalFeatureRow): SignalFeature {
+  return {
+    signalId: r.signal_id,
+    name: r.name,
+    num: r.num_value ?? undefined,
+    text: r.text_value ?? undefined,
+    source: r.source,
+    version: r.version,
+    computedAt: r.computed_at,
+    signalAt: r.signal_at ?? undefined,
+  };
+}
+
+export const signalFeatures = {
+  /** Upsert a batch of features for one signal (idempotent on (signalId,name)). */
+  putMany(feats: SignalFeature[]): void {
+    if (feats.length === 0) return;
+    const stmt = db.prepare(
+      `INSERT INTO signal_features (id, signal_id, name, num_value, text_value, source, version, computed_at, signal_at)
+       VALUES (@id, @signal_id, @name, @num_value, @text_value, @source, @version, @computed_at, @signal_at)
+       ON CONFLICT(signal_id, name) DO UPDATE SET
+         num_value=excluded.num_value, text_value=excluded.text_value,
+         source=excluded.source, version=excluded.version, computed_at=excluded.computed_at, signal_at=excluded.signal_at`,
+    );
+    const tx = db.transaction((rows: SignalFeature[]) => {
+      for (const f of rows) {
+        stmt.run({
+          id: nanoid(),
+          signal_id: f.signalId,
+          name: f.name,
+          num_value: f.num ?? null,
+          text_value: f.text ?? null,
+          source: f.source,
+          version: f.version,
+          computed_at: f.computedAt,
+          signal_at: f.signalAt ?? null,
+        });
+      }
+    });
+    tx(feats);
+  },
+  forSignal(signalId: string): SignalFeature[] {
+    const rows = db.prepare("SELECT * FROM signal_features WHERE signal_id = ?").all(signalId) as SignalFeatureRow[];
+    return rows.map(toSignalFeature);
+  },
+  /** All features for signals created since `iso` (for bucket reports). */
+  since(iso: string): SignalFeature[] {
+    const rows = db
+      .prepare("SELECT * FROM signal_features WHERE signal_at >= ? OR (signal_at IS NULL AND computed_at >= ?)")
+      .all(iso, iso) as SignalFeatureRow[];
+    return rows.map(toSignalFeature);
+  },
+  count(): number {
+    const r = db.prepare("SELECT COUNT(*) AS c FROM signal_features").get() as { c: number };
     return r.c;
   },
 };
