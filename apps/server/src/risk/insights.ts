@@ -25,6 +25,8 @@ export interface InsightTrade {
   riskUsd?: number;
   /** R-multiple = realized net PnL / initial risk (RI-3; undefined when risk unknown). */
   r?: number;
+  /** Provenance of the risk used for R (P1-R8): recorded vs backfilled estimate. */
+  initialRiskSource?: "recorded" | "backfilled_estimate";
   /** Clean class: win / loss / scratch (RI-4). Scratch is out of win-rate, in expectancy. */
   outcomeClass: TradeOutcomeClass;
   /** Hold time in hours (closed − opened). */
@@ -108,6 +110,7 @@ export async function riskInsights(): Promise<RiskInsightsResult> {
       notional: t.notionalUsd,
       riskUsd,
       r: r !== undefined ? Number(r.toFixed(3)) : undefined,
+      initialRiskSource: t.initialRiskSource,
       outcomeClass: classifyOutcome(net, r),
       holdHours,
       slipPct,

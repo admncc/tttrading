@@ -84,3 +84,42 @@ describe("frozen regression tests — verified-correct formulas", () => {
     assert.ok(w.lo > 0.34 && w.lo < 0.5 && w.hi > 0.5 && w.hi < 0.67, `got ${w.lo}..${w.hi}`);
   });
 });
+
+import { geoBaselineP, brier, discriminationNote } from "@tttrading/shared";
+
+describe("geoBaselineP — geometry baseline (P1-R5)", () => {
+  it("3R setup ⇒ 25% baseline win-rate", () => {
+    // entry 100, stop 90 (risk 10), tp 130 (reward 30) → 10/40 = 0.25
+    assert.equal(geoBaselineP(100, 90, 130), 0.25);
+  });
+  it("1:1 ⇒ 50%", () => {
+    assert.equal(geoBaselineP(100, 90, 110), 0.5);
+  });
+});
+
+describe("brier (P1-R5)", () => {
+  it("perfect predictions ⇒ 0", () => {
+    assert.equal(brier([{ p: 1, win: true }, { p: 0, win: false }]), 0);
+  });
+  it("always 0.5 on a 50/50 set ⇒ 0.25", () => {
+    assert.equal(brier([{ p: 0.5, win: true }, { p: 0.5, win: false }]), 0.25);
+  });
+});
+
+describe("discriminationNote — sign matches wording (P1-R3)", () => {
+  it("bottom zone winning more ⇒ WRONG direction, direction −1", () => {
+    const r = discriminationNote(0.33, 20, 0.5, 20);
+    assert.equal(r.direction, -1);
+    assert.match(r.text, /WRONG/);
+  });
+  it("top zone winning more ⇒ correct direction, +1", () => {
+    const r = discriminationNote(0.6, 20, 0.4, 20);
+    assert.equal(r.direction, 1);
+    assert.match(r.text, /correct/);
+  });
+  it("n below threshold ⇒ no directional read, direction 0", () => {
+    const r = discriminationNote(1, 3, 0.4, 20);
+    assert.equal(r.direction, 0);
+    assert.match(r.text, /too small/);
+  });
+});

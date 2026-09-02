@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS trades (
   size REAL NOT NULL,
   initial_size REAL,             -- size at entry, before partials (RI-3)
   initial_risk REAL,             -- |entry-stop| × initial_size, frozen at entry (RI-3)
+  initial_risk_source TEXT,      -- 'recorded' | 'backfilled_estimate' (P1-R8)
   entry_price REAL NOT NULL,
   signal_entry REAL,
   exit_price REAL,
@@ -150,6 +151,7 @@ function migrate(database: Database.Database): void {
       signal_entry: "REAL",
       initial_size: "REAL",
       initial_risk: "REAL",
+      initial_risk_source: "TEXT",
     },
     signals: {
       risk: "TEXT",
@@ -203,8 +205,13 @@ function migrate(database: Database.Database): void {
           "WHERE initial_risk IS NULL AND stop_loss IS NOT NULL AND initial_size > 0",
       )
       .run();
-    if (sizeRes.changes || riskRes.changes) {
-      log.info(`Migrated: back-filled initial_size on ${sizeRes.changes} and initial_risk on ${riskRes.changes} trade(s).`);
+    // P1-R8: everything the migration touched is an ESTIMATE (reconstructed from
+    // the current size, not the true entry). New trades set 'recorded' at create().
+    const srcRes = database
+      .prepare("UPDATE trades SET initial_risk_source = 'backfilled_estimate' WHERE initial_risk_source IS NULL")
+      .run();
+    if (sizeRes.changes || riskRes.changes || srcRes.changes) {
+      log.info(`Migrated: back-filled initial_size on ${sizeRes.changes}, initial_risk on ${riskRes.changes}, source on ${srcRes.changes} trade(s).`);
     }
   } catch (err) {
     log.warn("initial-risk migration skipped:", err instanceof Error ? err.message : err);

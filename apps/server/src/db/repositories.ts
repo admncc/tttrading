@@ -88,6 +88,7 @@ interface TradeRow {
   size: number;
   initial_size: number | null;
   initial_risk: number | null;
+  initial_risk_source: string | null;
   entry_price: number;
   signal_entry: number | null;
   exit_price: number | null;
@@ -128,6 +129,7 @@ function toTrade(r: TradeRow): Trade {
     size: r.size,
     initialSize: r.initial_size ?? undefined,
     initialRisk: r.initial_risk ?? undefined,
+    initialRiskSource: (r.initial_risk_source as Trade["initialRiskSource"]) ?? undefined,
     entryPrice: r.entry_price,
     signalEntry: r.signal_entry ?? undefined,
     exitPrice: r.exit_price ?? undefined,
@@ -371,11 +373,11 @@ export const trades = {
     const openedAt = input.openedAt ?? now();
     db.prepare(
       `INSERT INTO trades (id, signal_id, group_id, group_name, symbol, side, status, env, exchange,
-        leverage, notional_usd, size, initial_size, initial_risk, entry_price, signal_entry, exit_price, stop_loss, take_profits,
+        leverage, notional_usd, size, initial_size, initial_risk, initial_risk_source, entry_price, signal_entry, exit_price, stop_loss, take_profits,
         realized_pnl, fees, banked_pnl, banked_fees, exchange_order_id, sl_order_id, tp_order_ids, bracket_protected,
         tp_filled_count, sl_moved_to_breakeven, risk, shadow, simulated, archived, error, opened_at, closed_at)
        VALUES (@id, @signal_id, @group_id, @group_name, @symbol, @side, @status, @env, @exchange,
-        @leverage, @notional_usd, @size, @initial_size, @initial_risk, @entry_price, @signal_entry, @exit_price, @stop_loss, @take_profits,
+        @leverage, @notional_usd, @size, @initial_size, @initial_risk, @initial_risk_source, @entry_price, @signal_entry, @exit_price, @stop_loss, @take_profits,
         @realized_pnl, @fees, @banked_pnl, @banked_fees, @exchange_order_id, @sl_order_id, @tp_order_ids, @bracket_protected,
         @tp_filled_count, @sl_moved_to_breakeven, @risk, @shadow, @simulated, @archived, @error, @opened_at, @closed_at)`,
     ).run({
@@ -397,6 +399,7 @@ export const trades = {
         (input.stopLoss !== undefined && (input.initialSize ?? input.size) > 0
           ? Math.abs(input.entryPrice - input.stopLoss) * (input.initialSize ?? input.size)
           : null),
+      initial_risk_source: input.initialRiskSource ?? "recorded",
       entry_price: input.entryPrice,
       signal_entry: input.signalEntry ?? null,
       exit_price: input.exitPrice ?? null,
@@ -432,7 +435,7 @@ export const trades = {
         signal_entry=@signal_entry, notional_usd=@notional_usd, leverage=@leverage,
         exit_price=@exit_price, stop_loss=@stop_loss,
         take_profits=@take_profits, realized_pnl=@realized_pnl, size=@size,
-        initial_size=@initial_size, initial_risk=@initial_risk,
+        initial_size=@initial_size, initial_risk=@initial_risk, initial_risk_source=@initial_risk_source,
         fees=@fees, banked_pnl=@banked_pnl, banked_fees=@banked_fees,
         exchange_order_id=@exchange_order_id, sl_order_id=@sl_order_id,
         tp_order_ids=@tp_order_ids, bracket_protected=@bracket_protected,
@@ -454,6 +457,7 @@ export const trades = {
       size: m.size,
       initial_size: m.initialSize ?? null,
       initial_risk: m.initialRisk ?? null,
+      initial_risk_source: m.initialRiskSource ?? null,
       fees: m.fees ?? null,
       banked_pnl: m.bankedPnl ?? null,
       banked_fees: m.bankedFees ?? null,

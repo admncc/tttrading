@@ -279,6 +279,13 @@ export interface Trade {
   initialSize?: number;
   /** Initial risk in USDC = |entryPrice − stopLoss| × initialSize, frozen at entry (RI-3). */
   initialRisk?: number;
+  /**
+   * Provenance of initialRisk (P1-R8): "recorded" = captured at the real entry;
+   * "backfilled_estimate" = reconstructed by migration from a legacy row's size
+   * (a proxy, not the true entry risk). Lets reports optionally trust only
+   * recorded rows.
+   */
+  initialRiskSource?: "recorded" | "backfilled_estimate";
   entryPrice: number;
   /** The entry price the signal asked for (planned) — for slippage analysis. */
   signalEntry?: number;

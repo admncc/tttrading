@@ -69,6 +69,44 @@ export function profitFactor(nets: number[]): number | undefined {
   return grossLoss > 0 ? grossWin / grossLoss : undefined;
 }
 
+/**
+ * Geometry / gambler's-ruin baseline P(TP first) with no drift = slDist /
+ * (slDist + tpDist). A 3R setup ⇒ 25% baseline win-rate. Every model must beat
+ * this in Brier to be worth anything (dev-brief 4.1 / P1-R5).
+ */
+export function geoBaselineP(entry: number, stop: number, tp: number): number | undefined {
+  const slDist = Math.abs(entry - stop);
+  const tpDist = Math.abs(tp - entry);
+  const denom = slDist + tpDist;
+  return denom > 0 ? slDist / denom : undefined;
+}
+
+/** Brier score = mean((p − outcome)²) over binary outcomes. Lower is better. */
+export function brier(preds: { p: number; win: boolean }[]): number | undefined {
+  if (!preds.length) return undefined;
+  return preds.reduce((s, x) => s + (x.p - (x.win ? 1 : 0)) ** 2, 0) / preds.length;
+}
+
+/**
+ * Honest top-vs-bottom discrimination sentence (P1-R3): derived from the actual
+ * win-rate delta, never a hard-coded direction, and suppressed when either zone
+ * is below `minN` (leitplanke 5). Returns { text, direction } where direction is
+ * +1 (top wins more), −1 (bottom wins more) or 0 (tie / too small).
+ */
+export function discriminationNote(
+  wrTop: number | undefined, nTop: number,
+  wrBottom: number | undefined, nBottom: number,
+  minN = 15,
+): { text: string; direction: -1 | 0 | 1 } {
+  if (nTop < minN || nBottom < minN || wrTop === undefined || wrBottom === undefined) {
+    return { text: `n too small for a directional read (top n=${nTop}, bottom n=${nBottom}; need ≥${minN} each)`, direction: 0 };
+  }
+  const d = wrTop - wrBottom;
+  const dir = d > 0 ? 1 : d < 0 ? -1 : 0;
+  const word = dir > 0 ? "correct direction (top zone wins more)" : dir < 0 ? "WRONG direction (bottom zone wins more)" : "no separation";
+  return { text: `top ${(wrTop * 100).toFixed(1)}% vs bottom ${(wrBottom * 100).toFixed(1)}% → ${word}`, direction: dir };
+}
+
 export interface WilsonInterval { p: number; lo: number; hi: number; n: number }
 
 /**

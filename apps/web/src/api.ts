@@ -26,6 +26,7 @@ export interface InsightTrade {
   notional: number;
   riskUsd?: number;
   r?: number;
+  initialRiskSource?: "recorded" | "backfilled_estimate";
   outcomeClass: "win" | "loss" | "scratch";
   holdHours?: number;
   slipPct?: number;
