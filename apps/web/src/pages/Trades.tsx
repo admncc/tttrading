@@ -370,9 +370,18 @@ export function Trades({
                     {t.realizedPnl !== undefined ? (
                       usd(t.realizedPnl)
                     ) : unrealized(t, prices[t.symbol.toUpperCase()]) !== undefined ? (
-                      <span title="Live unrealized PnL (incl. banked partials)">
+                      <span title="Total live PnL for this trade = unrealized on the remaining size + already-banked partials">
                         {usd(unrealized(t, prices[t.symbol.toUpperCase()])!)}
                         <span className="muted" style={{ fontSize: 11 }}> uPnL</span>
+                        {netBanked(t) !== undefined && (
+                          <div
+                            className="muted"
+                            style={{ fontSize: 11 }}
+                            title="Portion of the above already locked in from partial exits"
+                          >
+                            {usd(netBanked(t)!)} banked
+                          </div>
+                        )}
                       </span>
                     ) : netBanked(t) !== undefined ? (
                       <span title="Realized so far from partial exits (position still open)">
