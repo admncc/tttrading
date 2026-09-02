@@ -637,6 +637,20 @@ export const settings = {
   setIsolateSameCoinVenues(on: boolean): void {
     kvSet("isolateSameCoinVenues", on ? "true" : "false");
   },
+  /**
+   * DIRECTIONAL venue split: route all LONGs to the primary venue (Hyperliquid)
+   * and all SHORTs to the secondary (Aster), so opposing positions from different
+   * traders always land on separate venues and never cancel/conflict — instead of
+   * rejecting the opposing side for "no free venue". Trade-off: multiple SAME-side
+   * traders in one coin then share (net on) that direction's venue. Default OFF;
+   * when ON it takes precedence over split-opposing and same-coin isolation.
+   */
+  getDirectionalVenueSplit(): boolean {
+    return kvGet("directionalVenueSplit") === "true";
+  },
+  setDirectionalVenueSplit(on: boolean): void {
+    kvSet("directionalVenueSplit", on ? "true" : "false");
+  },
   getGlobalSettings(): import("@tttrading/shared").GlobalSettings {
     return {
       shadowMode: this.getShadowMode(),
@@ -647,6 +661,7 @@ export const settings = {
       liveMaxOrderUsd: this.getRiskLimit("liveMaxOrderUsd"),
       splitOpposingVenues: this.getSplitOpposingVenues(),
       isolateSameCoinVenues: this.getIsolateSameCoinVenues(),
+      directionalVenueSplit: this.getDirectionalVenueSplit(),
     };
   },
   /**

@@ -189,6 +189,7 @@ export const api = {
       liveMaxOrderUsd: number;
       splitOpposingVenues: boolean;
       isolateSameCoinVenues: boolean;
+      directionalVenueSplit: boolean;
       anthropicConfigured: boolean;
       anthropicKeySource: string;
       anthropicModel: string;

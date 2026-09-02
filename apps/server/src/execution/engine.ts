@@ -980,11 +980,17 @@ async function applyManagement(
         await moveStop(t, t.entryPrice, true);
       } else if (action.kind === "sl_move" && action.newStop !== undefined) {
         let newStop = action.newStop;
-        // If the SAME message also said "to breakeven", never let an explicit
-        // price on the LOSING side of OUR entry undercut it. The provider's stated
-        // price is often THEIR entry, which differs from our market fill — clamp to
-        // our own entry so "breakeven" is a true breakeven (or better) for us.
-        const beIntent = actions.some((a) => a.kind === "sl_breakeven");
+        // If the message expresses a BREAKEVEN or PROFIT-LOCK intent ("to
+        // breakeven", "risk free", "stop loss is in profit now"), never let an
+        // explicit price on the LOSING side of OUR entry undercut it. The provider's
+        // stated level is calibrated to THEIR entry, which is often lower/higher than
+        // our market fill — so "SL in profit" for them can be a LOSS for us. Clamp to
+        // our own entry so a profit-lock is a true breakeven-or-better for us, and
+        // never loosens the stop below our entry (the SYRUP case: their 0.1986 was in
+        // profit vs their ~0.19 entry, but below our 0.2018 fill).
+        const beIntent =
+          actions.some((a) => a.kind === "sl_breakeven") ||
+          /\brisk[-\s]?free\b|\bbreak\s*even\b|\bstop\s*loss\s+(?:is\s+)?(?:now\s+)?in\s+profit\b|\bsl\s+in\s+profit\b|\bstop\s+in\s+profit\b|\bin\s+profit\s+now\b/i.test(rawText);
         if (beIntent) {
           const clamped = t.side === "long" ? Math.max(newStop, t.entryPrice) : Math.min(newStop, t.entryPrice);
           if (clamped !== newStop) {
@@ -1388,10 +1394,29 @@ async function execute(
   let ex: ExchangeConnector = activeHyperliquid();
   if (resolved.kind === "found") {
     let venues = resolved.venues;
+    // Directional venue split (takes precedence when on): send LONGs to the
+    // primary venue (Hyperliquid) and SHORTs to the secondary (Aster). Opposing
+    // positions from different traders then always live on separate venues and
+    // never conflict, so nothing is rejected for "no free venue". Trade-off:
+    // multiple same-side traders in one coin share (net on) that direction's
+    // venue — so split-opposing and same-coin isolation are bypassed here.
+    const directional = settingsRepo.getDirectionalVenueSplit() && venues.length > 1;
+    if (directional) {
+      const primary = venues[0]!;
+      const secondary = venues.find((v) => v.ex.name !== primary.ex.name) ?? primary;
+      const target = parsed.side === "long" ? primary : secondary;
+      venues = [target, ...venues.filter((v) => v.ex.name !== target.ex.name)];
+      event(
+        "exec",
+        `Directional split: ${parsed.side} ${parsed.symbol} → ${target.ex.name} (longs=${primary.ex.name}, shorts=${secondary.ex.name})`,
+        { side: parsed.side, symbol: parsed.symbol, routedTo: target.ex.name },
+        { groupId: group.id, signalId: signal.id },
+      );
+    }
     // Conflict policy: if a venue already holds an OPPOSING position for this
     // symbol, prefer the next backup that lists it and has none — so a long on
     // the primary and a later short go to different venues instead of netting.
-    if (settingsRepo.getSplitOpposingVenues()) {
+    if (!directional && settingsRepo.getSplitOpposingVenues()) {
       const opposing = tradesRepo
         .activeAndWorking()
         .filter((t) => !t.shadow && t.symbol.toUpperCase() === parsed.symbol.toUpperCase() && t.side !== parsed.side);
@@ -1416,7 +1441,7 @@ async function execute(
     // trader's close flattens the other's leg and their margin/PnL commingle,
     // as happened when a Gauls "close ONDO" flattened the whole netted ONDO).
     // Same-trader adds (scale-in / DCA) are NOT isolated — they belong together.
-    if (settingsRepo.getIsolateSameCoinVenues() && venues.length > 1) {
+    if (!directional && settingsRepo.getIsolateSameCoinVenues() && venues.length > 1) {
       const otherGroup = tradesRepo
         .activeAndWorking()
         .filter((t) => !t.shadow && t.symbol.toUpperCase() === parsed.symbol.toUpperCase() && t.groupId !== group.id);

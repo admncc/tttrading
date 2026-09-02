@@ -156,6 +156,15 @@ export interface GlobalSettings {
    * commingle). Same-trader adds (scale-in / DCA) stay put. Default on.
    */
   isolateSameCoinVenues: boolean;
+  /**
+   * Directional venue split: route all LONGs to the primary venue (Hyperliquid)
+   * and all SHORTs to the secondary (Aster), so opposing positions from different
+   * traders always land on separate venues and never conflict — instead of the
+   * opposing side being rejected for "no free venue". Takes precedence over
+   * splitOpposingVenues and isolateSameCoinVenues. Trade-off: multiple same-side
+   * traders in one coin then share (net on) that direction's venue. Default off.
+   */
+  directionalVenueSplit: boolean;
 }
 
 /** Traffic-light risk classification. */

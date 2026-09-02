@@ -331,8 +331,12 @@ export function Trades({
                     ) : (
                       <span>
                         {t.bracketProtected && (
-                          <span title="SL/TP live on exchange" style={{ marginRight: 4 }}>
-                            🛡
+                          <span
+                            className="tag"
+                            title="SL/TP live on the exchange (protected)"
+                            style={{ marginRight: 4, color: "var(--pos)" }}
+                          >
+                            ✓ px
                           </span>
                         )}
                         {t.slMovedToBreakeven && (

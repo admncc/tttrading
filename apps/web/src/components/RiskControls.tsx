@@ -10,6 +10,7 @@ interface Settings {
   liveMaxOrderUsd: number;
   splitOpposingVenues: boolean;
   isolateSameCoinVenues: boolean;
+  directionalVenueSplit: boolean;
 }
 
 export function RiskControls() {
@@ -31,6 +32,7 @@ export function RiskControls() {
           liveMaxOrderUsd: d.liveMaxOrderUsd,
           splitOpposingVenues: d.splitOpposingVenues,
           isolateSameCoinVenues: d.isolateSameCoinVenues,
+          directionalVenueSplit: d.directionalVenueSplit,
         });
         setLoadErr(null);
       })
@@ -182,6 +184,16 @@ export function RiskControls() {
           onChange={(e) => void save({ isolateSameCoinVenues: e.target.checked })}
         />
         Isolate same-coin trades from different traders on separate venues (avoids shared/netted positions where one trader's close flattens another's)
+      </label>
+
+      <label className="muted" style={{ fontSize: 12, display: "inline-flex", gap: 8, marginTop: 6, alignItems: "center" }}>
+        <input
+          type="checkbox"
+          checked={s.directionalVenueSplit}
+          disabled={busy}
+          onChange={(e) => void save({ directionalVenueSplit: e.target.checked })}
+        />
+        Directional venue split: ALL longs on the primary venue (Hyperliquid), ALL shorts on the secondary (Aster) — opposing trader views coexist instead of being rejected (overrides the two options above; same-side traders then net on one venue)
       </label>
 
       {ready && (
