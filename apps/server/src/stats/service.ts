@@ -80,10 +80,22 @@ function equityCurve(list: Trade[]): EquityPoint[] {
     .filter((t) => t.status === "closed" && Number.isFinite(t.realizedPnl) && t.closedAt)
     .sort((a, b) => (a.closedAt! < b.closedAt! ? -1 : 1));
   let cum = 0;
-  return closed.map((t) => {
+  const pts = closed.map((t) => {
     cum += t.realizedPnl!;
     return { t: t.closedAt!, pnl: Number(cum.toFixed(2)) };
   });
+  // Reconcile the curve's endpoint with the headline Realized PnL (KPI): profit
+  // already banked from partials on still-OPEN trades is realized money, but the
+  // trades aren't closed yet, so it isn't in the closed-trade cumulative above.
+  // Add it as a final point at "now" so the chart ends where the KPI reads,
+  // instead of understating realized by the banked-on-open amount.
+  const bankedOpen = list
+    .filter((t) => t.status === "open")
+    .reduce((sum, t) => sum + ((t.bankedPnl ?? 0) - (t.bankedFees ?? 0)), 0);
+  if (Math.abs(bankedOpen) > 0.005) {
+    pts.push({ t: new Date().toISOString(), pnl: Number((cum + bankedOpen).toFixed(2)) });
+  }
+  return pts;
 }
 
 function riskAudit(all: Trade[]): RiskAudit {

@@ -213,6 +213,10 @@ export function Analytics() {
 
           <div className="panel">
             <h2>Cumulative PnL</h2>
+            <div className="muted" style={{ fontSize: 12, marginTop: -4, marginBottom: 6 }}>
+              Realized from closed trades over time; the final step adds profit already banked from partials on
+              still-open trades, so it ends at the Realized PnL above.
+            </div>
             {equity.length === 0 ? (
               <div className="empty">No closed trades in range.</div>
             ) : (
