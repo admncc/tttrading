@@ -1110,8 +1110,11 @@ export async function buildServer() {
       account,
       groups: groupsRepo.list(),
       trades: {
-        open: allTrades.filter((t) => t.status === "open"),
-        working: allTrades.filter((t) => t.status === "working"),
+        // open/working must come from the uncapped queries — deriving them from
+        // list(80) drops positions opened more than 80 trades ago (e.g. an old
+        // still-open swing), making the diagnostic under-report live exposure.
+        open: tradesRepo.open(),
+        working: tradesRepo.working(),
         recentClosed: allTrades.filter((t) => t.status !== "open" && t.status !== "working").slice(0, 40),
       },
       recentSignals: signalsRepo.list(60),
