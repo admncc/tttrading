@@ -67,8 +67,13 @@ export async function loadMacroCalendarFromEnv(): Promise<number> {
   if (!file) return 0;
   try {
     const { readFile } = await import("node:fs/promises");
-    const raw = JSON.parse(await readFile(file, "utf8")) as { kind: EventKind; iso: string }[];
-    setMacroEvents(raw);
+    const parsed = JSON.parse(await readFile(file, "utf8")) as
+      | { kind: EventKind; iso: string }[]
+      | { events?: { kind: EventKind; iso: string }[] };
+    // Accept either a bare array or a { events: [...] } wrapper (the template
+    // shape, which also carries _README/_comment fields we ignore).
+    const list = Array.isArray(parsed) ? parsed : (parsed.events ?? []);
+    setMacroEvents(list.filter((e) => e && typeof e.kind === "string" && typeof e.iso === "string"));
     return MACRO.length;
   } catch {
     return 0;

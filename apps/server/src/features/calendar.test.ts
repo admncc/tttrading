@@ -1,6 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { nfpUtc, optionsExpiryUtc, isUsEasternDst, eventContext, setMacroEvents } from "./calendar.js";
+import { nfpUtc, optionsExpiryUtc, isUsEasternDst, eventContext, setMacroEvents, loadMacroCalendarFromEnv } from "./calendar.js";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const iso = (ms: number) => new Date(ms).toISOString();
 
@@ -53,5 +55,14 @@ describe("eventContext (2.4)", () => {
     const c = eventContext(now, 12 * 3_600_000);
     assert.equal(c.nextKind, "fomc");
     setMacroEvents([]); // reset so other tests are unaffected
+  });
+  it("loads the { events: [...] } template file shape (ignoring _README/_comment)", async () => {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const example = path.resolve(here, "../../../../docs/macro-calendar.example.json");
+    process.env.MACRO_CALENDAR_FILE = example;
+    const n = await loadMacroCalendarFromEnv();
+    delete process.env.MACRO_CALENDAR_FILE;
+    setMacroEvents([]); // reset
+    assert.ok(n >= 1, `expected the example file to load >=1 event, got ${n}`);
   });
 });

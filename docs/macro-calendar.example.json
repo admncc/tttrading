@@ -1,0 +1,32 @@
+{
+  "_README": [
+    "Operator-maintained macro / token-unlock calendar for the Phase-2.4 event",
+    "features (eventHoursToNext, eventKindNext, eventInTpWindow).",
+    "",
+    "HOW TO USE:",
+    "  1. Copy this file to a real path OUTSIDE the repo, e.g. /data/macro-calendar.json",
+    "  2. Fill `events` with dates copied from the OFFICIAL sources below — do NOT",
+    "     guess dates; a wrong macro date is worse than none.",
+    "  3. Set MACRO_CALENDAR_FILE=/data/macro-calendar.json in the server .env and",
+    "     restart. The server logs 'Loaded N macro calendar event(s)' on boot.",
+    "",
+    "NFP (first Friday) and crypto options expiry (last Friday) are already computed",
+    "in code — do NOT add them here. This file is only for dates that are NOT",
+    "rule-derivable: FOMC, CPI, PCE, token unlocks, ETF-flow prints, etc.",
+    "",
+    "SOURCES (verify each date before adding):",
+    "  FOMC decision days : federalreserve.gov/monetarypolicy/fomccalendars.htm",
+    "  CPI release dates  : bls.gov/schedule/news_release/cpi.htm",
+    "  PCE release dates  : bea.gov/news/schedule",
+    "  Token unlocks      : your unlock tracker of choice",
+    "",
+    "SCHEMA: events[] = { kind, iso }.",
+    "  kind : 'fomc' | 'cpi' | 'pce' | 'unlock' | any string label",
+    "  iso  : full ISO-8601 UTC timestamp of the release/print, e.g.",
+    "         FOMC statement 2pm ET  = 18:00 or 19:00 UTC (EDT vs EST — check DST)",
+    "         CPI/PCE/NFP 8:30am ET  = 12:30 or 13:30 UTC (EDT vs EST)"
+  ],
+  "events": [
+    { "kind": "fomc", "iso": "2026-01-01T00:00:00Z", "_comment": "PLACEHOLDER — replace with the real FOMC decision datetime from federalreserve.gov, then add the rest of the year." }
+  ]
+}
