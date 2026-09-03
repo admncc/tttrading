@@ -266,6 +266,40 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
               { level: "info", groupId: group.id },
             );
           }
+          // Symmetric multi-symbol management: "Tp1 booked and SL breakeven on SEI
+          // & SUI", "partial 20% on VIRTUAL+SAND" — the SAME scale-independent
+          // action applies to each named coin. Expand into per-symbol
+          // explicitSymbol actions so each acts on its own held position instead of
+          // the whole message being blocked as an ambiguous recap (the SEI+SUI /
+          // VIRTUAL+SAND misses). Only partial-% and breakeven are expanded — a
+          // specific SL price (sl_move) can't span coins at different scales, so it
+          // stays single-symbol (and is rejected if implausible).
+          if (!mv.closed && mv.symbols && mv.symbols.length >= 2) {
+            const syms = [...new Set(mv.symbols.map((s) => canonicalSymbol(s)))];
+            const partialFrac =
+              mv.partialPercent !== undefined && mv.partialPercent > 0 && mv.partialPercent < 100
+                ? mv.partialPercent / 100
+                : actions.find((a) => a.kind === "partial_close")?.fraction; // else keep the rules' %
+            const wantPartial = partialFrac !== undefined || kinds.has("partial_close");
+            const wantBE = !!mv.breakeven || kinds.has("sl_breakeven");
+            if (wantPartial || wantBE) {
+              actions = actions.filter((a) => a.kind !== "partial_close" && a.kind !== "sl_breakeven");
+              for (const s of syms) {
+                if (wantPartial)
+                  actions.push({ kind: "partial_close", symbol: s, fraction: partialFrac, explicitSymbol: true, note: `book ${partialFrac ? Math.round(partialFrac * 100) + "%" : "partial"} ${s}` });
+                if (wantBE)
+                  actions.push({ kind: "sl_breakeven", symbol: s, explicitSymbol: true, note: `SL→BE ${s}` });
+              }
+              if (wantPartial) kinds.add("partial_close");
+              if (wantBE) kinds.add("sl_breakeven");
+              event(
+                "manage",
+                `LLM explicit multi-symbol management → ${syms.join(", ")} (${[wantPartial ? "partial" : "", wantBE ? "breakeven" : ""].filter(Boolean).join("+")} each)`,
+                { symbols: syms, confidence: mv.confidence },
+                { level: "info", groupId: group.id },
+              );
+            }
+          }
           // LLM PRIORITY on close-vs-partial: if the LLM confidently reads a FULL
           // close and sees NO partial, drop a partial the rules over-read from a
           // P&L % ("close OP long here down 2.5%") — otherwise only ~5% books
