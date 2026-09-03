@@ -23,7 +23,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { computeFrame, buildTA, heuristicVerdict } from "../secondopinion/index.js";
 import { computeOutcome } from "../secondopinion/outcome.js";
-import { wilson, geoBaselineP, brier, discriminationNote, mean, stdSample } from "../lib/metrics.js";
+import { wilson, geoBaselineP, brier, brierClimatology, brierSkillScore, discriminationNote, mean, stdSample } from "../lib/metrics.js";
 import type { ParsedSignal, SecondOpinionTFrame } from "@tttrading/shared";
 
 type AnyOp = {
@@ -196,10 +196,15 @@ const bSet = scored.filter((r) => r.pBase !== undefined);
 const bBase = brier(bSet.map((r) => ({ p: r.pBase!, win: isWin(r) })));
 const bOld = brier(bSet.filter((r) => r.op.verdict?.score !== undefined).map((r) => ({ p: r.op.verdict!.score! / 100, win: isWin(r) })));
 const bNew = brier(bSet.filter((r) => r.newScore !== undefined).map((r) => ({ p: r.newScore! / 100, win: isWin(r) })));
-L.push(`- Geometry baseline (pBase = slDist/(slDist+tpDist)): **${bBase?.toFixed(3) ?? "—"}**`);
-L.push(`- Old SO (score/100, uncalibrated): ${bOld?.toFixed(3) ?? "—"}`);
-L.push(`- New SO (score/100, uncalibrated): ${bNew?.toFixed(3) ?? "—"}`);
+const clim = brierClimatology(bSet.filter(isWin).length, bSet.length);
+const bClim = clim?.brier;
+const bss = (b?: number) => { const s = brierSkillScore(b, bClim); return s === undefined ? "—" : `${s >= 0 ? "+" : ""}${s.toFixed(3)}`; };
+L.push(`- Climatology baseline (always predict the ${clim ? pct(clim.baseRate) : "?"} base rate): **${bClim?.toFixed(3) ?? "—"}** — the reference for the skill score (T3).`);
+L.push(`- Geometry baseline (pBase = slDist/(slDist+tpDist)): **${bBase?.toFixed(3) ?? "—"}** · skill vs clim ${bss(bBase)}`);
+L.push(`- Old SO (score/100, uncalibrated): ${bOld?.toFixed(3) ?? "—"} · skill ${bss(bOld)}`);
+L.push(`- New SO (score/100, uncalibrated): ${bNew?.toFixed(3) ?? "—"} · skill ${bss(bNew)}`);
 L.push(``);
+L.push(`> Brier skill score = 1 − Brier/climatology; > 0 beats "always predict the base rate", ≤ 0 doesn't. On this tiny, one-regime sample it's a reference point, not a verdict.`);
 const meanBaseWr = bSet.length ? mean(bSet.map((r) => r.pBase!)) : undefined;
 L.push(`> Caveat: SO score/100 was never fit as a probability, so its Brier trails the baseline by construction — that argues for the Phase-3 isotonic calibration, not against the rules. Mean baseline P(win) on the scored set: ${meanBaseWr !== undefined ? pct(meanBaseWr) : "—"} vs realised ${ci(wrOf(scored).w, scored.length)} — the CI includes the baseline, so no trader edge is proven yet.`);
 L.push("");

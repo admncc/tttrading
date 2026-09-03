@@ -9,7 +9,7 @@ import path from "node:path";
 import { config } from "../config.js";
 import { log, event } from "../logger.js";
 import { secondOpinions as soRepo, signalFeatures as featRepo } from "../db/repositories.js";
-import { wilson, brier, geoBaselineP } from "../lib/metrics.js";
+import { wilson, brier, brierClimatology, brierSkillScore, geoBaselineP } from "../lib/metrics.js";
 import { bucketFeature, renderFeatureReport, type SignalDatum } from "../features/buckets.js";
 
 const WEEK = 7 * 86_400_000;
@@ -48,6 +48,8 @@ export function computeWeeklyReport(): { md: string; header: string } {
     .filter((r) => r.base !== undefined);
   const bBase = brier(bRows.map((r) => ({ p: r.base!, win: r.win })));
   const bSo = brier(bRows.map((r) => ({ p: r.so, win: r.win })));
+  const clim = brierClimatology(bRows.filter((r) => r.win).length, bRows.length);
+  const soSkill = brierSkillScore(bSo, clim?.brier); // >0 = beats climatology
 
   const header =
     `Weekly: scored ${scored.length}/${GATE_SIGNALS} · resolved ${resolved.length} · weeks ${weeks.size} · BTC regimes ${btcRegimes.size} (${[...btcRegimes].join("/") || "—"}) · ` +
@@ -63,7 +65,7 @@ export function computeWeeklyReport(): { md: string; header: string } {
   L.push(`- Scored (win/loss): **${scored.length}/${GATE_SIGNALS}** · win-rate ${scored.length ? `${(wr.p * 100).toFixed(1)}% (CI ${(wr.lo * 100).toFixed(0)}–${(wr.hi * 100).toFixed(0)})` : "—"}`);
   L.push(`- Weeks covered: **${weeks.size}/8** · BTC regimes: **${btcRegimes.size}/2** (${[...btcRegimes].join(", ") || "none logged yet"})`);
   L.push(`- Resolved incl. timeout: ${resolved.length} · SO coverage ${(soCoverage * 100).toFixed(0)}% · positive share (last 30): ${(posShare * 100).toFixed(0)}%${posShare < 0.15 || posShare > 0.85 ? " ⚠ degeneration" : ""}`);
-  L.push(`- Brier: geometry baseline ${bBase?.toFixed(3) ?? "—"} vs SO ${bSo?.toFixed(3) ?? "—"} (SO score uncalibrated until Phase 3).`);
+  L.push(`- Brier: climatology ${clim?.brier.toFixed(3) ?? "—"} · geometry ${bBase?.toFixed(3) ?? "—"} · SO ${bSo?.toFixed(3) ?? "—"} · SO skill vs clim ${soSkill === undefined ? "—" : (soSkill >= 0 ? "+" : "") + soSkill.toFixed(3)} (SO uncalibrated until Phase 3).`);
   L.push("");
 
   // A couple of headline feature buckets (session, btcTrendD1) if we have data.

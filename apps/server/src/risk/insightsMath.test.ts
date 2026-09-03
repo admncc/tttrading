@@ -123,3 +123,18 @@ describe("discriminationNote — sign matches wording (P1-R3)", () => {
     assert.match(r.text, /too small/);
   });
 });
+
+import { brierClimatology, brierSkillScore } from "../lib/metrics.js";
+
+describe("climatology + Brier skill score (T3)", () => {
+  it("climatology brier = p(1-p) at the base rate", () => {
+    const c = brierClimatology(20, 50)!; // base rate 0.4
+    assert.ok(Math.abs(c.brier - 0.24) < 1e-9);
+    assert.equal(c.baseRate, 0.4);
+  });
+  it("skill score is positive when the model beats the reference", () => {
+    assert.equal(brierSkillScore(0.2, 0.25), 1 - 0.2 / 0.25); // 0.2 BSS
+    assert.ok(brierSkillScore(0.3, 0.25)! < 0); // worse than climatology
+    assert.equal(brierSkillScore(0.2, 0), undefined);
+  });
+});

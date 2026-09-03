@@ -88,6 +88,26 @@ export function brier(preds: { p: number; win: boolean }[]): number | undefined 
 }
 
 /**
+ * Climatology Brier: the score of always predicting the sample base rate. Equals
+ * baseRate·(1−baseRate) — the reference every model must beat (T3). Also returns
+ * the base rate used.
+ */
+export function brierClimatology(wins: number, n: number): { brier: number; baseRate: number } | undefined {
+  if (n <= 0) return undefined;
+  const p = wins / n;
+  return { brier: p * (1 - p), baseRate: p };
+}
+
+/**
+ * Brier skill score = 1 − brier / reference. > 0 means the model beats the
+ * reference (usually climatology); 0 = no skill; < 0 = worse than the baseline.
+ */
+export function brierSkillScore(model: number | undefined, reference: number | undefined): number | undefined {
+  if (model === undefined || reference === undefined || !(reference > 0)) return undefined;
+  return 1 - model / reference;
+}
+
+/**
  * Honest top-vs-bottom discrimination sentence (P1-R3): derived from the actual
  * win-rate delta, never a hard-coded direction, and suppressed when either zone
  * is below `minN` (leitplanke 5). Returns { text, direction } where direction is
