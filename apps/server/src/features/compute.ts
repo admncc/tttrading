@@ -221,6 +221,38 @@ export function fundingHistoryFeatures(
   return out;
 }
 
+/** Crowd long/short ACCOUNT ratio context (2.2, OKX). A trade on the SAME side as
+ *  a heavily-crowded book is a contrarian/squeeze risk. `history` newest-first. */
+export function crowdRatioFeatures(
+  side: "long" | "short",
+  history: { time: number; ratio: number }[],
+  nowMs: number,
+): Feat[] {
+  const past = history.filter((h) => h.time <= nowMs);
+  if (past.length < 8) return [];
+  const current = past[0]!.ratio; // newest ≤ now
+  const out: Feat[] = [{ name: "lsAccountRatio", num: Number(current.toFixed(3)) }];
+  const ratios = past.map((h) => h.ratio).sort((a, b) => a - b);
+  const pctl = ratios.filter((r) => r <= current).length / ratios.length;
+  out.push({ name: "lsRatioPercentile", num: Number(pctl.toFixed(3)) });
+  // Crowd on our side: long into a top-decile long-heavy book, or short into a
+  // bottom-decile short-heavy book (ratio = longs/shorts, so low = short-heavy).
+  const crowdedSameSide = side === "long" ? pctl >= 0.9 : pctl <= 0.1;
+  out.push({ name: "lsCrowdedSameSide", num: crowdedSameSide ? 1 : 0 });
+  return out;
+}
+
+/** Open-interest context (2.2): current OI + 24h change (period 1H → 24 bars). */
+export function oiFeatures(history: { time: number; oi: number }[], nowMs: number): Feat[] {
+  const past = history.filter((h) => h.time <= nowMs);
+  if (past.length < 2) return [];
+  const cur = past[0]!.oi;
+  const out: Feat[] = [{ name: "okxOi", num: Number(cur.toPrecision(6)) }];
+  const dayAgo = past.find((h) => h.time <= nowMs - 24 * 3_600_000) ?? past[past.length - 1];
+  if (dayAgo && dayAgo.oi > 0) out.push({ name: "oiChange24hPct", num: Number(((cur / dayAgo.oi - 1) * 100).toFixed(2)) });
+  return out;
+}
+
 /* -------------------------- 2.6 trader stats --------------------------- */
 export interface TraderStats {
   resolved: number;       // resolved trades used for the stats

@@ -13,8 +13,10 @@ import { log } from "../logger.js";
 import {
   FEATURE_VERSION, type Feat, timeFeatures, geometryFeatures, taFeatures,
   btcRegimeFeatures, betaFeatures, derivativeFeatures, traderStatsFeatures, horizonForHold,
-  assetFeatures, coinBaseRateFeatures, ethBtcFeatures, fundingHistoryFeatures, eventFeatures, type TraderStats,
+  assetFeatures, coinBaseRateFeatures, ethBtcFeatures, fundingHistoryFeatures, eventFeatures,
+  crowdRatioFeatures, oiFeatures, type TraderStats,
 } from "./compute.js";
+import { getLongShortRatio, getOpenInterestHistory } from "../market/okx.js";
 
 type Candle = { t: number; o: number; h: number; l: number; c: number; v: number };
 const DAY = 86_400_000;
@@ -124,6 +126,18 @@ export async function logSignalFeatures(
       log.warn("features: funding history unavailable:", err instanceof Error ? err.message : err);
     }
 
+    // 2.2: OKX crowd long/short account ratio + OI (Binance/Bybit are geo-blocked).
+    try {
+      const [ls, oi] = await Promise.all([
+        getLongShortRatio(parsed.symbol),
+        getOpenInterestHistory(parsed.symbol),
+      ]);
+      if (ls.length) feats.push(...crowdRatioFeatures(parsed.side, ls, signalMs));
+      if (oi.length) feats.push(...oiFeatures(oi, signalMs));
+    } catch (err) {
+      log.warn("features: OKX stats unavailable:", err instanceof Error ? err.message : err);
+    }
+
     const rows: SignalFeature[] = feats.map((f) => ({
       signalId,
       name: f.name,
@@ -146,7 +160,7 @@ function sourceOf(name: string): string {
   if (name.startsWith("ethBtc")) return "btc-regime";
   if (name.startsWith("btc") || name.startsWith("beta") || name.startsWith("corr") || name.startsWith("coin")) return "btc-regime";
   if (name.startsWith("trader") || name === "concurrentSignalsSameDir") return "trader-stats";
-  if (name.startsWith("funding") || ["openInterest", "premiumBps"].includes(name)) return "derivatives";
+  if (name.startsWith("funding") || name.startsWith("ls") || name.startsWith("okxOi") || name.startsWith("oiChange") || ["openInterest", "premiumBps"].includes(name)) return "derivatives";
   if (["session", "weekday", "hourUtc", "weekend"].includes(name)) return "time";
   if (name.startsWith("event")) return "events";
   if (["rr", "slAtrH", "tpAtrH", "feeDragR", "horizonTf"].includes(name)) return "geometry";

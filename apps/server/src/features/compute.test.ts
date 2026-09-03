@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   timeFeatures, geometryFeatures, taFeatures, btcRegimeFeatures, betaFeatures,
   traderStatsFeatures, horizonForHold, assetFeatures, coinBaseRateFeatures, ethBtcFeatures,
-  fundingHistoryFeatures, type Feat,
+  fundingHistoryFeatures, crowdRatioFeatures, oiFeatures, type Feat,
 } from "./compute.js";
 
 const get = (fs: Feat[], name: string) => fs.find((f) => f.name === name);
@@ -135,6 +135,31 @@ describe("fundingHistoryFeatures (2.2)", () => {
   });
   it("too little history ⇒ no features", () => {
     assert.equal(fundingHistoryFeatures("long", 0.0001, [], Date.now()).length, 0);
+  });
+});
+
+describe("crowdRatioFeatures + oiFeatures (2.2 OKX)", () => {
+  const hist = (ratios: number[], nowMs: number) => ratios.map((r, i) => ({ time: nowMs - i * 3_600_000, ratio: r })); // newest first
+  it("long into a top-percentile long-heavy book flags crowded-same-side", () => {
+    const now = Date.parse("2026-02-01T00:00:00Z");
+    const ratios = [2.4, 1.2, 1.1, 1.0, 0.9, 1.05, 1.1, 1.2, 1.15, 1.0]; // current 2.4 = top
+    const f = crowdRatioFeatures("long", hist(ratios, now), now);
+    assert.equal(get(f, "lsAccountRatio")!.num, 2.4);
+    assert.ok(get(f, "lsRatioPercentile")!.num! >= 0.9);
+    assert.equal(get(f, "lsCrowdedSameSide")!.num, 1);
+  });
+  it("short into the same long-heavy book is NOT crowded-same-side", () => {
+    const now = Date.parse("2026-02-01T00:00:00Z");
+    const ratios = [2.4, 1.2, 1.1, 1.0, 0.9, 1.05, 1.1, 1.2, 1.15, 1.0];
+    assert.equal(get(crowdRatioFeatures("short", hist(ratios, now), now), "lsCrowdedSameSide")!.num, 0);
+  });
+  it("oiFeatures computes 24h change", () => {
+    const now = Date.parse("2026-02-02T00:00:00Z");
+    const h = [] as { time: number; oi: number }[];
+    for (let i = 0; i < 30; i++) h.push({ time: now - i * 3_600_000, oi: 800 + i * 10 }); // newest 800, 24h-ago 1040
+    const f = oiFeatures(h, now);
+    assert.equal(get(f, "okxOi")!.num, 800);
+    assert.ok(get(f, "oiChange24hPct")!.num! < 0); // OI fell over the last 24h (800 < 1040)
   });
 });
 
