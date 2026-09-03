@@ -1,6 +1,7 @@
 import type {
   Group, ParsedSignal, SecondOpinion, SecondOpinionSuggestion, SecondOpinionTA, SecondOpinionTFrame, SecondOpinionVerdict,
 } from "@tttrading/shared";
+import { nanoid } from "nanoid";
 import { log, event } from "../logger.js";
 import { activeHyperliquid } from "../exchanges/registry.js";
 import { secondOpinions as repo } from "../db/repositories.js";
@@ -382,12 +383,17 @@ export async function generateSecondOpinion(
     const symbol = parsed.symbol.toUpperCase();
     const hl = activeHyperliquid();
     const now = Date.now();
+    // The SO runs at parse time, before the branch-specific signal record exists,
+    // so callers often have no signalId yet. Use a stable correlation id so the
+    // SO row and its point-in-time features share a key (Phase-2 joins depend on
+    // it); it falls back to a fresh id only when none was supplied.
+    const sid = signalId ?? nanoid();
 
     event(
       "review",
       `Second Opinion: analyzing ${parsed.side.toUpperCase()} ${symbol} (${group.name})`,
       { symbol, side: parsed.side, entry: parsed.entry, stopLoss: parsed.stopLoss, takeProfits: parsed.takeProfits, hasChart: (images?.length ?? 0) > 0 },
-      { level: "info", groupId: group.id, signalId },
+      { level: "info", groupId: group.id, signalId: sid },
     );
 
     const byTf: Record<string, Candle[]> = {};
@@ -406,8 +412,8 @@ export async function generateSecondOpinion(
     const ta = buildTA(parsed, byTf["1h"] ?? [], frames, ctx);
 
     // Phase 2: log point-in-time features (observe-only, never blocks the SO).
-    if (signalId) {
-      void logSignalFeatures(group, parsed, signalId, {
+    if (sid) {
+      void logSignalFeatures(group, parsed, sid, {
         byTf,
         ctx,
         frames: frames.map((f) => ({ interval: f.interval, trend: f.trend })),
@@ -424,7 +430,7 @@ export async function generateSecondOpinion(
             (ta.funding !== undefined ? ` · funding ${(ta.funding * 100).toFixed(4)}%` : "")
         : `Data: no usable candles for ${symbol} — judging from chart/heuristic only`,
       { candleCounts: Object.fromEntries(FRAMES.map((tf) => [tf, byTf[tf]?.length ?? 0])), marketContext: ctx, ta },
-      { level: "info", groupId: group.id, signalId },
+      { level: "info", groupId: group.id, signalId: sid },
     );
 
     const frameLine = frames.map((f) => `${f.interval}:${f.trend}(rsi ${f.rsi})`).join(", ");
@@ -451,7 +457,7 @@ export async function generateSecondOpinion(
     const verdict: SecondOpinionVerdict = review ? { ...review, source: "llm" } : heuristicVerdict(parsed, ta);
 
     const op = repo.create({
-      signalId,
+      signalId: sid,
       groupId: group.id,
       groupName: group.name,
       symbol,
@@ -471,7 +477,7 @@ export async function generateSecondOpinion(
         (verdict.strengths.length ? ` · ✓ ${verdict.strengths.join("; ")}` : "") +
         (ta?.suggestion ? ` · ${ta.suggestion.note}` : ""),
       { verdict, providerLevels: { entry: parsed.entry, stopLoss: parsed.stopLoss, takeProfits: parsed.takeProfits }, ourLevels: ta?.suggestion },
-      { level: verdict.stance === "negative" ? "warn" : "info", groupId: group.id, signalId },
+      { level: verdict.stance === "negative" ? "warn" : "info", groupId: group.id, signalId: sid },
     );
   } catch (err) {
     log.warn("second-opinion generation failed:", err instanceof Error ? err.message : err);
