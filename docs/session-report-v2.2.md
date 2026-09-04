@@ -89,11 +89,52 @@ missed** (symbol-ambiguity — now fixed for the multi-symbol case).
 - **Open questions Q1–Q6** block: wiring trader median-hold into the live verdict's
   `slAtrH` (Q1), and net-fee numbers per venue (Q4).
 
-## 8. Action items for you
+## 8. Message audit (3 independent agents) + JASMY root cause
+Every stored message was re-audited by three independent agents against its
+derived signal/action. Consolidated ranked list of real defects; the highest was
+the **JASMY missed SL→breakeven** ("book Tp1 Zama … set SL breakeven on Jasmy"):
+the LLM *did* read it correctly (no `$/#` needed), but the flat schema + a
+reconsider-collapse + the recap guard downstream dropped the JASMY breakeven.
+Root-caused and fixed (§9).
+
+## 9. QA-and-fix loop — 3 rounds, all areas (message→action first)
+All committed on the branch; 110 tests green, typecheck/build/boot-smoke green.
+
+**Round 1 — parsing (message → signal):**
+- Entry mis-scaled vs its own **stop** snapped to scale (GOLD 446 / SL 4688 leg
+  was silently dropped by the would-chase guard) — `snapEntryToStop`. (`5d7c0a6`,
+  corrected to stop-only in `2d59ebb`)
+- Price-location fillers (`AT`/`ON`/`ZONE`/…) no longer read as tickers; a real
+  `#TICKER` still resolves. (`f4f0333`; `NEAR`/`TRADE`/`BREAK` un-listed as real
+  coins in `25f4567`; `#` removed from the primary branch in `2d59ebb`)
+
+**Round 2 — management (actions/signals):**
+- **P0** reconsider-collapse restore + recap-close veto (JASMY/GOLD). (`3ffe6c2`)
+- Breakeven never arms an **unfilled working leg** (instant-stopout trap). (`90f6187`,
+  residual `sl_move`==working-entry case closed in `126ab67`)
+- **Per-coin actions** (`per_symbol` LLM schema) for asymmetric multi-coin messages
+  ("Closed BTC, book 50% ETH") — the flat schema lost the second coin's action.
+  (`3fc7acb`; 100%-partial→close + restore-safety fixed in `2d59ebb`)
+- Single-close trusted below 0.85 **only with positional evidence** (verb-nearest
+  tag agrees) — never on confidence alone. (`3a27bf8`)
+
+**Round 3 — cross-review (3 independent agents) + fixes:**
+- Caught **3 regressions my own Round-1/2 fixes introduced** (NEAR swallowed,
+  `snapEntryToBand` mean-skew, `#`-hashtag noise) — all fixed before deploy.
+  (`25f4567`, `2d59ebb`)
+- **Serious pre-existing money bug:** a **rejected stop-loss at entry** was masked
+  as "protected" when a TP rested → position ran naked, no operator alert. Fixed
+  across all three venues (`stopMissing` flag, one stop-only retry, loud
+  `alertError`); size/$10/minQty/minVol guards hardened against NaN. (`91ba891`)
+- MEXC market orders now cross the book (protective closes must fill); SPX-class
+  `size→0` now an actionable error, not opaque. (`3a27bf8`, `126ab67`)
+
+## 10. Action items for you
 1. **Redeploy** (`git pull && docker compose up -d --build`) to activate feature
-   logging + the diagnostic/uPnL/PnL/management fixes.
-2. **Enable `directionalVenueSplit`** (stops the BTC-long skips); set `defaultStopPct`.
-3. **Raise the 美元 SOL stop to entry** (76.473) via Manage — it's a +$1.5k runner
+   logging + every §5/§9 fix (including the naked-position guard).
+2. **Policy decisions:** `directionalVenueSplit` (#6/#7/T7) and `defaultStopPct`
+   (#3/T6) — explained; awaiting your call (not bugs).
+3. **Raise the 美元 SOL stop to entry** (76.473) via Manage — a +$1.5k runner
    with no breakeven stop.
 4. **Disable the Diagnostic API** (unencrypted, token-in-URL).
 5. Answer Q1–Q6 when you can, so I can close the horizon + net-fee loops.
