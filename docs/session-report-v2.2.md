@@ -129,6 +129,26 @@ All committed on the branch; 110 tests green, typecheck/build/boot-smoke green.
 - MEXC market orders now cross the book (protective closes must fill); SPX-class
   `size→0` now an actionable error, not opaque. (`3a27bf8`, `126ab67`)
 
+**Round 4 — monitor / fill-tracking / PnL accounting (4th agent):**
+- **Material money bug:** `reconcileByPosition` (the position-flat PnL-reconstruction
+  fallback, mainly MEXC + netted-flat HL) double-counted a manual partial and
+  dropped the real exit → wrong realized PnL, which feeds the daily-loss gate.
+  Fixed (newest-first fill accumulation). (`4ab336f`)
+- **Orphaned-order race:** the monitor's break-even mover bypassed the `closing`
+  lock → could leave a stop resting on a flat position; also could re-place a
+  duplicate BE stop if the old-order cancel threw. Fixed (lock + record-before-
+  cancel). (`4ab336f`)
+
+**Known residual edges (documented, not yet fixed — low severity):**
+- A `partialClose` whose live position read *fails* can leave a phantom-open
+  remainder that later mis-books via the fallback path. Needs a read failure at
+  the partial moment; a clean fix needs per-partial banked-volume tracking (the
+  `initial_size` vs native-TP-scale-out semantics must be nailed down first).
+- Fee basis differs slightly across the three close paths (entry-fee handling) —
+  a small systematic inconsistency, not a race.
+- A working-limit timeout can cancel an order that actually filled during a bot
+  downtime longer than the fills window (PnL then unbooked) — narrow.
+
 ## 10. Action items for you
 1. **Redeploy** (`git pull && docker compose up -d --build`) to activate feature
    logging + every §5/§9 fix (including the naked-position guard).
