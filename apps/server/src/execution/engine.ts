@@ -226,12 +226,36 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
                 { level: "info", groupId: group.id },
               );
               mv = mv2;
+              // The reconsider pass often COLLAPSES the multi-coin list ("on
+              // SEI+SUI" → "on SEI"), which would stop the per-symbol expansion
+              // below from firing and let the recap guard block the whole message —
+              // the live JASMY / SEI+SUI class of missed breakevens. Restore the
+              // coins the FIRST read identified so every named position still gets
+              // its (safe) action; expansion then applies BE to all named and a
+              // partial only to the coin nearest its verb.
+              const firstSyms = first.symbols?.length ? first.symbols : first.symbol ? [first.symbol] : [];
+              const finalSyms = mv.symbols?.length ? mv.symbols : mv.symbol ? [mv.symbol] : [];
+              if (firstSyms.length >= 2 && finalSyms.length < firstSyms.length) {
+                mv.symbols = [...new Set([...finalSyms, ...firstSyms].map((s) => s))];
+                event(
+                  "manage",
+                  `Restored multi-symbol list dropped by reconsider → ${mv.symbols.join(", ")}`,
+                  { firstSyms, finalSyms, restored: mv.symbols },
+                  { level: "info", groupId: group.id },
+                );
+              }
             } else {
               event("manage", `Reconsider failed (LLM error) — keeping first read: ${mvDesc(first)}`, {}, { level: "warn", groupId: group.id });
             }
           }
         }
-        if (llmMode && actions.length > 0 && mv && mv.isManagement === false && mv.confidence >= 0.6) {
+        // When the LLM judges the post NON-management, veto the rule-flagged
+        // actions. Threshold lowered 0.6→0.5: a monthly RECAP ("Long … closed ✅ /
+        // Short … still delivering ✅") read as non-management at conf 0.55 must not
+        // let a regex `close` (from past-tense "closed") flatten the still-running
+        // short — biasing a destructive close toward the LLM's "not an instruction"
+        // read is the safe default. cancel_limit is still kept (pending-order only).
+        if (llmMode && actions.length > 0 && mv && mv.isManagement === false && mv.confidence >= 0.5) {
           // A cancel-limit only pulls a still-resting, unfilled ENTRY order — it can
           // never close a position, so it is safe to honor even when the LLM judges
           // the rest of the post non-actionable. (The LLM management model long had
