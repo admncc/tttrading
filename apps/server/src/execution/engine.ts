@@ -15,7 +15,7 @@ import { classifyManagementAll, isTradeUpdate, isMarketCommentary, type Manageme
 import { expandTakeProfits } from "../signals/takeprofit.js";
 import { assessRisk, tierSlippage, PROTECTIVE_SLIPPAGE } from "../risk/score.js";
 import { canonicalSymbol, symbolAliases, isScaledCoin } from "../symbols.js";
-import { alertBlocked, alertClassification, alertClosed, alertError, alertOpened, sendAlert } from "../alerts/notifier.js";
+import { alertBlocked, alertClassification, alertClosed, alertError, alertOpened, alertSkipped, sendAlert } from "../alerts/notifier.js";
 import { broadcast } from "../ws/hub.js";
 import { pushStats } from "../stats/service.js";
 import { generateSecondOpinion } from "../secondopinion/index.js";
@@ -1713,7 +1713,7 @@ async function execute(
         { reason, exchange: ex.name },
         { level: "warn", groupId: group.id, signalId: signal.id },
       );
-      alertClassification(group.name, "🚫 <b>Skipped</b> — would net opposing", `${parsed.side} ${parsed.symbol} on ${ex.name}`);
+      alertSkipped(group.name, `${parsed.side.toUpperCase()} ${parsed.symbol} on ${ex.name}`, "would net an opposing same-coin position — anti-netting");
       broadcast({ type: "signal", signal: failed });
       return failed;
     }

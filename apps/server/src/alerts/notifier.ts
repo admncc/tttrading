@@ -113,3 +113,15 @@ export function alertBlocked(groupName: string, summary: string, score: number):
   if (!settingsRepo.getAlertOnTrades(config.alerts.onBlocked)) return;
   void sendAlert(`🚫 <b>Blocked red</b> ${esc(summary)} (${score}/100)\n<i>${esc(groupName)}</i>`);
 }
+
+/**
+ * A signal we deliberately did NOT execute (e.g. the anti-netting invariant: an
+ * opposing same-coin position already sits on the only free venue). Gated by the
+ * same trade-alert toggle as a blocked red — it is the same "we didn't take this
+ * trade, here's why" category, so the operator sees a skip they might otherwise
+ * only find in the logs.
+ */
+export function alertSkipped(groupName: string, summary: string, reason: string): void {
+  if (!settingsRepo.getAlertOnTrades(config.alerts.onBlocked)) return;
+  void sendAlert(`🚫 <b>Skipped</b> ${esc(summary)}\n${esc(reason)}\n<i>${esc(groupName)}</i>`);
+}
