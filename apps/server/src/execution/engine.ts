@@ -1038,10 +1038,13 @@ async function applyManagement(
       continue;
     }
 
-    // SL move / break-even may also target a still-resting limit order (updating
-    // its planned stop). Partial/close/tp only apply to an already-open position.
-    const slKind = action.kind === "sl_move" || action.kind === "sl_breakeven";
-    const manageable = slKind ? [...openForGroup, ...groupWorking] : openForGroup;
+    // An explicit-price SL move may also target a still-resting limit order
+    // (updating its planned stop). But BREAKEVEN must NOT: setting an unfilled
+    // leg's planned stop to its entry gives it zero risk tolerance, so it would
+    // stop out on the first adverse tick the moment it fills — the provider's
+    // "moved SL to breakeven" refers to the FILLED position, not a working leg.
+    // Partial/close/tp only apply to an already-open position.
+    const manageable = action.kind === "sl_move" ? [...openForGroup, ...groupWorking] : openForGroup;
     // Only a full `close` REQUIRES an explicit/derived symbol — stray chatter must
     // never flatten a position. Others may fall back to the single managed position.
     const requireExplicitSymbol = action.kind === "close";
