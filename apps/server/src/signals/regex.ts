@@ -60,8 +60,13 @@ const STOPWORDS = new Set([
 const QUOTE_SUFFIX = /(USDT|USDC|USD|PERP)$/i;
 
 function extractSymbol(text: string, side: TradeSide): string | undefined {
-  // Prefer an explicit $TICKER or #TICKER cashtag.
-  const dollar = text.match(/[$#]([A-Za-z]{2,6})\b/);
+  // Prefer an explicit $TICKER cashtag. NOTE: only `$`, not `#` — a `#` is far
+  // more often a generic hashtag (#trade, #setup, #chart) than a cashtag, and
+  // this branch has top priority and skips STOPWORDS, so a stray hashtag would
+  // hijack the symbol ("Long BTC here #trade" → TRADE). A real #TICKER still
+  // resolves through the direction-adjacent branch below (and, for management,
+  // through extractAnySymbol, which filters stopwords).
+  const dollar = text.match(/\$([A-Za-z]{2,6})\b/);
   if (dollar) return dollar[1]!.toUpperCase();
 
   // TICKER/QUOTE or TICKERUSDT.

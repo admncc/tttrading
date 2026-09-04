@@ -368,10 +368,14 @@ function perSymbolList(v: unknown): PerSymbolAction[] | undefined {
     const r = raw as Record<string, unknown>;
     const symbol = typeof r.symbol === "string" && r.symbol.trim() ? r.symbol.trim().toUpperCase() : undefined;
     if (!symbol || seen.has(symbol)) continue;
+    const pp = num(r.partial_percent);
     const entry: PerSymbolAction = {
       symbol,
-      closed: r.closed === true || undefined,
-      partialPercent: num(r.partial_percent),
+      // A "100% partial" is a full close — normalize it so it never survives as a
+      // non-close action that expands to nothing (which would strip the coin's
+      // rule-based fallback close and leave the position open).
+      closed: r.closed === true || (pp !== undefined && pp >= 100) || undefined,
+      partialPercent: pp !== undefined && pp > 0 && pp < 100 ? pp : undefined,
       breakeven: r.move_to_breakeven === true || undefined,
       newStop: num(r.new_stop_loss),
     };

@@ -45,8 +45,14 @@ describe("expandPerSymbol — asymmetric per-coin management (audit #11)", () =>
     assert.equal(acts[0]!.symbol, "LINK");
   });
 
-  it("100% or 0% partial is not a partial (a full close is `closed`)", () => {
-    assert.deepEqual(expandPerSymbol([{ symbol: "OP", partialPercent: 100 }]), []);
+  it("a 100% partial IS a full close (not a no-op that would leave the position open)", () => {
+    const acts = expandPerSymbol([{ symbol: "OP", partialPercent: 100 }]);
+    assert.equal(acts.length, 1);
+    assert.equal(acts[0]!.kind, "close");
+    assert.equal(acts[0]!.symbol, "OP");
+    assert.ok(acts[0]!.explicitSymbol);
+  });
+  it("a 0% partial is a no-op", () => {
     assert.deepEqual(expandPerSymbol([{ symbol: "OP", partialPercent: 0 }]), []);
   });
 });

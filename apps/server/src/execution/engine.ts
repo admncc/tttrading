@@ -233,9 +233,15 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
               // coins the FIRST read identified so every named position still gets
               // its (safe) action; expansion then applies BE to all named and a
               // partial only to the coin nearest its verb.
+              //
+              // CRITICAL: only restore when the FINAL decision is NOT a full close.
+              // A restore that fed the multi-close block would re-flatten a coin the
+              // reconsider deliberately narrowed OUT ("Closed SEI. SUI still in it"
+              // → reconsider keeps SEI → restore must not re-add SUI to a close).
+              // The reconsider is the authoritative destructive decision.
               const firstSyms = first.symbols?.length ? first.symbols : first.symbol ? [first.symbol] : [];
               const finalSyms = mv.symbols?.length ? mv.symbols : mv.symbol ? [mv.symbol] : [];
-              if (firstSyms.length >= 2 && finalSyms.length < firstSyms.length) {
+              if (!mv.closed && firstSyms.length >= 2 && finalSyms.length < firstSyms.length) {
                 mv.symbols = [...new Set([...finalSyms, ...firstSyms].map((s) => s))];
                 event(
                   "manage",
@@ -244,19 +250,12 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
                   { level: "info", groupId: group.id },
                 );
               }
-              // Same collapse guard for per-coin actions: if the first read
-              // enumerated asymmetric per-coin actions and the reconsider dropped
-              // them (but still judged the post management), keep them so the
-              // second coin's action isn't lost to the flat schema.
-              if (mv.isManagement && first.perSymbol?.length && !mv.perSymbol?.length) {
-                mv.perSymbol = first.perSymbol;
-                event(
-                  "manage",
-                  `Restored per-coin actions dropped by reconsider → ${first.perSymbol.map((p) => p.symbol).join(", ")}`,
-                  { restored: first.perSymbol },
-                  { level: "info", groupId: group.id },
-                );
-              }
+              // Per-coin (perSymbol) actions are NOT restored: the reconsider is the
+              // final decision, and re-installing per-coin actions it dropped would
+              // resurrect a destructive partial/close it judged a misread ("Closed
+              // BTC. Might take some off ETH later" → reconsider drops the ETH
+              // partial). If reconsider still means the asymmetric actions, it
+              // re-emits per_symbol itself (its tool carries the same field).
             } else {
               event("manage", `Reconsider failed (LLM error) — keeping first read: ${mvDesc(first)}`, {}, { level: "warn", groupId: group.id });
             }
@@ -1023,7 +1022,10 @@ export function expandPerSymbol(perSymbol: PerSymbolAction[]): ManagementAction[
   const out: ManagementAction[] = [];
   for (const ps of perSymbol) {
     const s = ps.symbol;
-    if (ps.closed) out.push({ kind: "close", symbol: s, explicitSymbol: true, note: `close ${s}` });
+    // A "100% partial" is a full close — emit a close, not a no-op (defense in
+    // depth; perSymbolList already normalizes >=100 to closed).
+    const fullClose = ps.closed || (ps.partialPercent !== undefined && ps.partialPercent >= 100);
+    if (fullClose) out.push({ kind: "close", symbol: s, explicitSymbol: true, note: `close ${s}` });
     if (ps.partialPercent !== undefined && ps.partialPercent > 0 && ps.partialPercent < 100)
       out.push({ kind: "partial_close", symbol: s, fraction: ps.partialPercent / 100, explicitSymbol: true, note: `book ${Math.round(ps.partialPercent)}% ${s}` });
     if (ps.breakeven) out.push({ kind: "sl_breakeven", symbol: s, explicitSymbol: true, note: `SL→BE ${s}` });
@@ -1691,22 +1693,21 @@ function snapMagnitude(level: number, ref: number): number {
 }
 
 /**
- * Snap a mis-scaled ENTRY to its OWN SL/TP band (mid-independent). When an entry
- * is an order of magnitude off from the midpoint of its own stop+targets (e.g.
- * GOLD entry 446 with SL 4688 / TP 4340 — 10× below its own levels), it's a
- * source typo, not a deep limit bid (a real deep bid shares the levels'
- * magnitude). Returns the corrected entry, or the entry unchanged when there's
- * no band or no order-of-magnitude slip. Never touches a genuine far limit whose
- * SL/TP share its magnitude, so it can't corrupt an intentional deep bid.
+ * Snap a mis-scaled ENTRY to its own STOP-LOSS magnitude (mid-independent). When
+ * an entry is an order of magnitude off from its stop (e.g. GOLD entry 446 with
+ * SL 4688 — 10× below its own stop), it's a source typo, not a deep limit bid.
+ * The STOP is the only safe reference: it always shares the entry's magnitude
+ * (a stop sits a small % away), whereas take-profits can legitimately be 5–10×
+ * the entry (a moonshot long), so referencing the whole SL/TP band would snap a
+ * genuine "buy 1, TP 8" up a decade. Without a stop we cannot distinguish a
+ * mis-scale from a moonshot, so we leave the entry untouched. Returns the
+ * corrected entry, or the entry unchanged when there's no stop or no slip.
  */
-export function snapEntryToBand(entry: number, stopLoss?: number, takeProfits?: number[]): number {
-  if (!(entry > 0)) return entry;
-  const band = [stopLoss, ...(takeProfits ?? [])].filter((x): x is number => x !== undefined && x > 0);
-  if (!band.length) return entry;
-  const bandMid = band.reduce((a, b) => a + b, 0) / band.length;
-  const ratio = entry / bandMid;
+export function snapEntryToStop(entry: number, stopLoss?: number): number {
+  if (!(entry > 0) || !(stopLoss !== undefined && stopLoss > 0)) return entry;
+  const ratio = entry / stopLoss;
   if (ratio < 5 && ratio > 0.2) return entry; // within an order of magnitude — leave as written
-  return snapMagnitude(entry, bandMid);
+  return snapMagnitude(entry, stopLoss);
 }
 
 /**
@@ -1761,14 +1762,15 @@ async function placeEntry(
       /* no price feed — can't normalize or side-check; let the order path handle it */
     }
     const fixes: string[] = [];
-    // Entry mis-scaled vs its OWN SL/TP band (e.g. GOLD entry 446 with SL 4688 /
-    // TP 4340 — the entry is 10× below its own levels: a source typo, not a deep
-    // bid, which would share the levels' magnitude). Snap it so the leg trades at
-    // the right scale instead of being silently dropped by the would-chase guard.
+    // Entry mis-scaled vs its own STOP (e.g. GOLD entry 446 with SL 4688 — the
+    // entry is 10× below its own stop: a source typo, not a deep bid, which would
+    // share the stop's magnitude). Snap it so the leg trades at the right scale
+    // instead of being silently dropped by the would-chase guard. Stop-only (not
+    // the TP band): a take-profit can legitimately be 5–10× the entry.
     if (parsed.entry !== undefined) {
-      const e = snapEntryToBand(parsed.entry, parsed.stopLoss, parsed.takeProfits);
+      const e = snapEntryToStop(parsed.entry, parsed.stopLoss);
       if (e !== parsed.entry) {
-        fixes.push(`entry ${parsed.entry}→${e} (mis-scaled vs its SL/TP band)`);
+        fixes.push(`entry ${parsed.entry}→${e} (mis-scaled vs its stop)`);
         parsed = { ...parsed, entry: e };
       }
     }
@@ -2147,7 +2149,7 @@ async function recordFilledEntry(
       stopLoss = undefined;
     }
   }
-  const bracket = await ex.placeBracketOrders({
+  let bracket = await ex.placeBracketOrders({
     symbol: parsed.symbol,
     side: parsed.side,
     size: fill.filledSize,
@@ -2156,8 +2158,33 @@ async function recordFilledEntry(
     slippage: PROTECTIVE_SLIPPAGE, // SL/TP must fill; entry slippage is handled on the entry order
     marginMode: group.settings.marginMode,
   });
+  // A stop was requested but the venue didn't place it → the position is LIVE and
+  // NAKED. Retry the stop ONCE on its own (re-placing a reduce-only stop is safe;
+  // it can't add exposure), then, if it still won't attach, alert the operator
+  // LOUDLY. Never let a swallowed SL rejection pass as "protected" — that was the
+  // silent naked-position path (a TP resting made protectedOnExchange look true).
+  if (bracket.stopMissing && stopLoss !== undefined && !fill.simulated) {
+    event("exec", `SL for ${parsed.symbol} not placed at entry (${bracket.error}) — retrying stop only`, { error: bracket.error }, { level: "warn", groupId: group.id, signalId: signal.id });
+    const retry = await ex.placeBracketOrders({
+      symbol: parsed.symbol,
+      side: parsed.side,
+      size: fill.filledSize,
+      stopLoss,
+      takeProfits: [], // stop only — the TP legs from the first call already rest
+      slippage: PROTECTIVE_SLIPPAGE,
+      marginMode: group.settings.marginMode,
+    });
+    if (retry.slOrderId) {
+      // Merge the recovered stop back onto the original bracket (keep its TP ids).
+      bracket = { ...bracket, slOrderId: retry.slOrderId, stopMissing: false, protectedOnExchange: true, error: undefined };
+      event("exec", `SL for ${parsed.symbol} attached on retry`, { slOrderId: retry.slOrderId }, { level: "info", groupId: group.id, signalId: signal.id });
+    }
+  }
+  if (bracket.stopMissing && stopLoss !== undefined && !fill.simulated) {
+    alertError(`SL ${parsed.symbol} (${group.name})`, `stop NOT placed at entry — position is LIVE and UNPROTECTED: ${bracket.error ?? "unknown"}. Set a stop manually.`);
+  }
   if (bracket.error) {
-    event("exec", `Bracket (SL/TP) placement failed for ${parsed.symbol}: ${bracket.error}`, { error: bracket.error }, { level: "warn", groupId: group.id, signalId: signal.id });
+    event("exec", `Bracket (SL/TP) placement failed for ${parsed.symbol}: ${bracket.error}`, { error: bracket.error }, { level: bracket.stopMissing ? "error" : "warn", groupId: group.id, signalId: signal.id });
   }
 
   const trade = tradesRepo.create({
@@ -2353,7 +2380,7 @@ export async function promoteWorkingToOpen(
     }
     const gset = groupsRepo.get(t.groupId)?.settings;
     const slippage = PROTECTIVE_SLIPPAGE; // SL/TP on the freshly-filled position must fill
-    const bracket = await ex.placeBracketOrders({
+    let bracket = await ex.placeBracketOrders({
       symbol: t.symbol,
       side: t.side,
       size,
@@ -2363,6 +2390,18 @@ export async function promoteWorkingToOpen(
       marginMode: gset?.marginMode,
       force: !t.simulated, // real brackets only for a real position — never in test mode
     });
+    // Same naked-position guard as the market path: a requested stop that didn't
+    // attach on a LIVE fill gets one stop-only retry, then a loud operator alert.
+    if (bracket.stopMissing && t.stopLoss !== undefined && !t.simulated) {
+      const retry = await ex.placeBracketOrders({
+        symbol: t.symbol, side: t.side, size, stopLoss: t.stopLoss, takeProfits: [], slippage, marginMode: gset?.marginMode, force: true,
+      });
+      if (retry.slOrderId) bracket = { ...bracket, slOrderId: retry.slOrderId, stopMissing: false, protectedOnExchange: true, error: undefined };
+    }
+    if (bracket.stopMissing && t.stopLoss !== undefined && !t.simulated) {
+      alertError(`SL ${t.symbol} (${t.groupName})`, `stop NOT placed on limit fill — position is LIVE and UNPROTECTED: ${bracket.error ?? "unknown"}. Set a stop manually.`);
+      event("exec", `SL for ${t.symbol} not placed on limit fill: ${bracket.error}`, { error: bracket.error }, { level: "error", groupId: t.groupId });
+    }
     const updated = tradesRepo.update(tradeId, {
       status: "open",
       entryPrice,

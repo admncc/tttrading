@@ -19,7 +19,12 @@ describe("extractSymbol — price-location fillers are not tickers (audit #9)", 
     ["buy btc at 100 sl 90 tp 120", "BTC"],
     ["long ETH at 3000 sl 2900 tp 3200", "ETH"],
     ["sol long entry 100 sl 90 tp 120", "SOL"],
-    ["long #BTC entry 100 sl 90 tp 120", "BTC"], // # cashtag in primary branch
+    // A stray hashtag must not hijack the symbol; a real #TICKER still resolves
+    // via the direction-adjacent path (regression: # in the primary branch).
+    ["Long BTC here #trade", "BTC"],
+    ["long #BTC entry 100 sl 90 tp 120", "BTC"],
+    ["#BTC long entry 100 sl 90", "BTC"],
+    ["$BTC long #chart entry 100 sl 90", "BTC"],
     ["long $SOL entry 100 sl 90 tp 120", "SOL"],
     // NEAR Protocol is a real coin — must NOT be swallowed as a "near" filler.
     ["long NEAR here entry 5 sl 4.5 tp 6", "NEAR"],
