@@ -45,13 +45,19 @@ const STOPWORDS = new Set([
   // Filler words that can sit between a direction word and the ticker
   // ("buy BACK btc", "buy SPOT eth", "adding INTO sol") — never a real symbol.
   "BACK", "SPOT", "INTO", "LIMIT", "AGAIN", "DCA", "ADD",
+  // Price-location prepositions/nouns that immediately follow a direction word
+  // ("long AT 100", "buy ON dip", "short ZONE 200") — these were being returned
+  // as the ticker, so the engine tried to trade a coin named "AT"/"ON"/"ZONE".
+  // Treat them as fillers so the parser defers to the LLM instead.
+  "AT", "ON", "OFF", "FROM", "NEAR", "AROUND", "ABOVE", "BELOW", "ZONE",
+  "LEVEL", "TRADE", "RETEST", "BREAK", "BREAKOUT", "SUPPORT", "RESISTANCE",
 ]);
 
 const QUOTE_SUFFIX = /(USDT|USDC|USD|PERP)$/i;
 
 function extractSymbol(text: string, side: TradeSide): string | undefined {
-  // Prefer an explicit $TICKER.
-  const dollar = text.match(/\$([A-Za-z]{2,6})\b/);
+  // Prefer an explicit $TICKER or #TICKER cashtag.
+  const dollar = text.match(/[$#]([A-Za-z]{2,6})\b/);
   if (dollar) return dollar[1]!.toUpperCase();
 
   // TICKER/QUOTE or TICKERUSDT.
