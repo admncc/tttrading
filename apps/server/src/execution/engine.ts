@@ -10,7 +10,7 @@ import {
 import { activeHyperliquid, byName, known, resolveAllForSymbol, resolveForSymbol } from "../exchanges/registry.js";
 import type { ExchangeConnector } from "../exchanges/types.js";
 import { parseSignal } from "../signals/parser.js";
-import { readManagementLevels, reconsiderManagement, llmReady, type SignalImage } from "../signals/llm.js";
+import { readManagementLevels, reconsiderManagement, llmReady, type SignalImage, type PerSymbolAction } from "../signals/llm.js";
 import { classifyManagementAll, isTradeUpdate, isMarketCommentary, type ManagementAction } from "../signals/management.js";
 import { expandTakeProfits } from "../signals/takeprofit.js";
 import { assessRisk, tierSlippage, PROTECTIVE_SLIPPAGE } from "../risk/score.js";
@@ -244,6 +244,19 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
                   { level: "info", groupId: group.id },
                 );
               }
+              // Same collapse guard for per-coin actions: if the first read
+              // enumerated asymmetric per-coin actions and the reconsider dropped
+              // them (but still judged the post management), keep them so the
+              // second coin's action isn't lost to the flat schema.
+              if (mv.isManagement && first.perSymbol?.length && !mv.perSymbol?.length) {
+                mv.perSymbol = first.perSymbol;
+                event(
+                  "manage",
+                  `Restored per-coin actions dropped by reconsider → ${first.perSymbol.map((p) => p.symbol).join(", ")}`,
+                  { restored: first.perSymbol },
+                  { level: "info", groupId: group.id },
+                );
+              }
             } else {
               event("manage", `Reconsider failed (LLM error) — keeping first read: ${mvDesc(first)}`, {}, { level: "warn", groupId: group.id });
             }
@@ -274,12 +287,36 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
         if (mv?.isManagement && mv.confidence >= 0.5) {
           const kinds = new Set(actions.map((a) => a.kind));
 
+          // ASYMMETRIC per-coin management ("Closed BTC, booking 50% on ETH";
+          // "stopped SOL out, moved SUI to breakeven"). The flat schema can only
+          // carry ONE close/partial/BE, so both used to collapse onto mv.symbol —
+          // the second coin's action was lost and the first got a dead partial
+          // after its close. When the LLM enumerates per-coin actions, they are
+          // authoritative: emit one explicitSymbol action per coin and skip the
+          // flat expansion below, so each acts on its own held position and the
+          // recap guard lets them through.
+          const perSymbol = mv.perSymbol && mv.perSymbol.length ? mv.perSymbol : undefined;
+          if (perSymbol) {
+            actions = actions.filter(
+              (a) => a.kind !== "close" && a.kind !== "partial_close" && a.kind !== "sl_breakeven" && a.kind !== "sl_move",
+            );
+            actions.push(...expandPerSymbol(perSymbol));
+            kinds.clear();
+            for (const a of actions) kinds.add(a.kind);
+            event(
+              "manage",
+              `LLM per-coin management → ${perSymbol.map((p) => `${p.symbol}:${[p.closed ? "close" : "", (p.partialPercent ?? 0) > 0 ? `book ${Math.round(p.partialPercent!)}%` : "", p.breakeven ? "BE" : "", p.newStop !== undefined ? `SL ${p.newStop}` : ""].filter(Boolean).join("+")}`).join(" · ")}`,
+              { perSymbol, confidence: mv.confidence },
+              { level: "info", groupId: group.id },
+            );
+          }
+
           // EXPLICIT multi-coin close ("close Hype and Sui"): the LLM enumerated
           // several coins for the SAME close. Emit one close per coin, each with a
           // trustworthy per-symbol attribution so the multi-coin recap guard lets
           // them through — otherwise the guard would block the whole message and
           // NEITHER position would close.
-          if (mv.closed && mv.symbols && mv.symbols.length >= 2) {
+          if (!perSymbol && mv.closed && mv.symbols && mv.symbols.length >= 2) {
             actions = actions.filter((a) => a.kind !== "close" && a.kind !== "partial_close");
             for (const s of mv.symbols) actions.push({ kind: "close", symbol: s, explicitSymbol: true, note: `close ${s}` });
             kinds.add("close");
@@ -298,7 +335,7 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
           // VIRTUAL+SAND misses). Only partial-% and breakeven are expanded — a
           // specific SL price (sl_move) can't span coins at different scales, so it
           // stays single-symbol (and is rejected if implausible).
-          if (!mv.closed && mv.symbols && mv.symbols.length >= 2) {
+          if (!perSymbol && !mv.closed && mv.symbols && mv.symbols.length >= 2) {
             const named = [...new Set(mv.symbols.map((s) => canonicalSymbol(s)))];
             const inNamed = (s: string | undefined) => (s && named.includes(canonicalSymbol(s)) ? canonicalSymbol(s) : undefined);
             const partialFrac =
@@ -345,6 +382,7 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
           // P&L % ("close OP long here down 2.5%") — otherwise only ~5% books
           // while the position stays open. The LLM's reading wins, as intended.
           if (
+            !perSymbol &&
             mv.confidence >= 0.6 &&
             mv.closed &&
             !(mv.partialPercent && mv.partialPercent > 0) &&
@@ -360,26 +398,32 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
             );
           }
           const extra: ManagementAction[] = [];
-          if (mv.closed && !kinds.has("close")) extra.push({ kind: "close", symbol: mv.symbol, note: "chart: closed" });
           // Cancel a resting limit ENTRY the LLM read ("cancel this limit on H") that
           // the rules didn't flag — safe: it only pulls an unfilled pending order.
+          // Orthogonal to per-coin position actions, so it runs in both paths.
           if (mv.cancelEntry && !kinds.has("cancel_limit")) extra.push({ kind: "cancel_limit", symbol: mv.symbol, note: "cancel limit entry" });
-          // The stop-move / partial / break-even extras require an EXPLICIT
-          // symbol from the chart — without one they'd fall back to the sole open
-          // position and could act on the wrong coin the chart actually showed.
-          if (mv.symbol) {
-            // Stamp the LLM's coin onto any rule action that couldn't resolve one
-            // itself. Without this, a symbol-less action falls back to the sole
-            // open position and can hit the WRONG coin — e.g. a "book Tp on CRV"
-            // message (CRV not held) once booked a partial of PENGU. With the LLM
-            // symbol attached it targets CRV → finds no CRV position → no action.
-            for (const a of actions) if (!a.symbol) a.symbol = mv.symbol;
-            if (mv.newStop !== undefined && !kinds.has("sl_move"))
-              extra.push({ kind: "sl_move", symbol: mv.symbol, newStop: mv.newStop, note: `chart: SL to ${mv.newStop}` });
-            if (mv.breakeven && !kinds.has("sl_breakeven") && !kinds.has("partial_close"))
-              extra.push({ kind: "sl_breakeven", symbol: mv.symbol, note: "chart: SL to break-even" });
-            if (mv.partialPercent !== undefined && mv.partialPercent > 0 && mv.partialPercent < 100 && !kinds.has("partial_close"))
-              extra.push({ kind: "partial_close", symbol: mv.symbol, fraction: mv.partialPercent / 100, note: `chart: book ${mv.partialPercent}%` });
+          // Flat-schema extras + attribution — SKIPPED when the LLM enumerated
+          // per-coin actions above (those are authoritative; letting mv.closed /
+          // mv.partialPercent also fire here would double-act on mv.symbol).
+          if (!perSymbol) {
+            if (mv.closed && !kinds.has("close")) extra.push({ kind: "close", symbol: mv.symbol, note: "chart: closed" });
+            // The stop-move / partial / break-even extras require an EXPLICIT
+            // symbol from the chart — without one they'd fall back to the sole open
+            // position and could act on the wrong coin the chart actually showed.
+            if (mv.symbol) {
+              // Stamp the LLM's coin onto any rule action that couldn't resolve one
+              // itself. Without this, a symbol-less action falls back to the sole
+              // open position and can hit the WRONG coin — e.g. a "book Tp on CRV"
+              // message (CRV not held) once booked a partial of PENGU. With the LLM
+              // symbol attached it targets CRV → finds no CRV position → no action.
+              for (const a of actions) if (!a.symbol) a.symbol = mv.symbol;
+              if (mv.newStop !== undefined && !kinds.has("sl_move"))
+                extra.push({ kind: "sl_move", symbol: mv.symbol, newStop: mv.newStop, note: `chart: SL to ${mv.newStop}` });
+              if (mv.breakeven && !kinds.has("sl_breakeven") && !kinds.has("partial_close"))
+                extra.push({ kind: "sl_breakeven", symbol: mv.symbol, note: "chart: SL to break-even" });
+              if (mv.partialPercent !== undefined && mv.partialPercent > 0 && mv.partialPercent < 100 && !kinds.has("partial_close"))
+                extra.push({ kind: "partial_close", symbol: mv.symbol, fraction: mv.partialPercent / 100, note: `chart: book ${mv.partialPercent}%` });
+            }
           }
           if (extra.length) actions = [...actions, ...extra];
 
@@ -390,8 +434,9 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
           // Velvet …", "PEPE Closed. BTC ready to move"). A full close is only
           // trusted for a SINGLE explicit target (mv.closed, no multi-close set) —
           // an ambiguous multi-coin recap still can't flatten the wrong position.
+          // Skipped under per-coin actions (those already carry explicitSymbol).
           const singleClose = mv.closed && (!mv.symbols || mv.symbols.length < 2);
-          if (mv.symbol && mv.confidence >= 0.85) {
+          if (!perSymbol && mv.symbol && mv.confidence >= 0.85) {
             for (const a of actions) {
               const trust =
                 a.kind === "partial_close" || a.kind === "sl_move" || a.kind === "sl_breakeven" ||
@@ -959,6 +1004,25 @@ export const KIND_VERB_RE: Partial<Record<string, RegExp>> = {
   sl_move: /\b(?:sl|stop|invalidation|trail|mov)/i,
   sl_breakeven: /\b(?:break\s*even|risk[-\s]?free|mov)/i,
 };
+
+/**
+ * Expand the LLM's authoritative per-coin management (asymmetric messages like
+ * "Closed BTC, booking 50% on ETH") into one explicitSymbol ManagementAction per
+ * coin per concrete action. Each is explicitSymbol so it acts only on its own
+ * held position and passes the multi-coin recap guard. Pure — unit-tested.
+ */
+export function expandPerSymbol(perSymbol: PerSymbolAction[]): ManagementAction[] {
+  const out: ManagementAction[] = [];
+  for (const ps of perSymbol) {
+    const s = ps.symbol;
+    if (ps.closed) out.push({ kind: "close", symbol: s, explicitSymbol: true, note: `close ${s}` });
+    if (ps.partialPercent !== undefined && ps.partialPercent > 0 && ps.partialPercent < 100)
+      out.push({ kind: "partial_close", symbol: s, fraction: ps.partialPercent / 100, explicitSymbol: true, note: `book ${Math.round(ps.partialPercent)}% ${s}` });
+    if (ps.breakeven) out.push({ kind: "sl_breakeven", symbol: s, explicitSymbol: true, note: `SL→BE ${s}` });
+    if (ps.newStop !== undefined) out.push({ kind: "sl_move", symbol: s, newStop: ps.newStop, explicitSymbol: true, note: `SL→${ps.newStop} ${s}` });
+  }
+  return out;
+}
 
 /**
  * Apply one or more trade-management intents from a single message to the group's

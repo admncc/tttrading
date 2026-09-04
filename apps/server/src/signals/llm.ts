@@ -289,6 +289,22 @@ const MANAGE_TOOL: Anthropic.Tool = {
       closed: { type: "boolean", description: "True if the whole position was closed/stopped/invalidated." },
       cancel_entry: { type: "boolean", description: "True if the message says to CANCEL / PULL / REMOVE a still-resting, UNFILLED limit ENTRY order (e.g. 'cancel this limit entry on H', 'pull the pending order', 'remove the limit'). This cancels a pending order — it is NOT closing an already-open position (that is `closed`)." },
       partial_percent: { type: "number", description: "Percent booked if a partial profit was taken (e.g. 50). Omit if none or unknown." },
+      per_symbol: {
+        type: "array",
+        description:
+          "ONLY when the message applies DIFFERENT actions to DIFFERENT coins in one post — e.g. 'Closed BTC, booking 50% on ETH', 'stopped SOL out; moved SUI to breakeven'. List one entry per coin with just that coin's action(s). Leave EMPTY when a single action applies (use the top-level fields) or when the SAME action hits several coins (use `symbols`). Each entry is authoritative for its own coin.",
+        items: {
+          type: "object",
+          properties: {
+            symbol: { type: "string", description: "Base ticker this entry acts on." },
+            closed: { type: "boolean", description: "True if THIS coin's whole position was closed/stopped." },
+            partial_percent: { type: "number", description: "Percent booked on THIS coin, if a partial." },
+            move_to_breakeven: { type: "boolean", description: "True if THIS coin's stop moved to entry/break-even." },
+            new_stop_loss: { type: "number", description: "New stop PRICE for THIS coin, if moved to a level." },
+          },
+          required: ["symbol"],
+        },
+      },
       confidence: { type: "number", description: "0..1 confidence." },
     },
     required: ["is_management", "confidence"],
@@ -324,9 +340,48 @@ export interface ManagementVision {
   /** Cancel a still-resting, unfilled limit ENTRY order (not a position close). */
   cancelEntry?: boolean;
   partialPercent?: number;
+  /** Per-coin actions when one message applies DIFFERENT actions to DIFFERENT
+   * coins ("Closed BTC, booking 50% on ETH"). Authoritative per coin; empty for
+   * a single action or the same action across coins (`symbols`). */
+  perSymbol?: PerSymbolAction[];
   confidence: number;
   /** Only set by the reconsideration pass: the model's one-line rationale. */
   reasoning?: string;
+}
+
+export interface PerSymbolAction {
+  symbol: string;
+  closed?: boolean;
+  partialPercent?: number;
+  breakeven?: boolean;
+  newStop?: number;
+}
+
+/** Normalize the tool's `per_symbol` array into typed, deduped per-coin actions. */
+function perSymbolList(v: unknown): PerSymbolAction[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const num = (x: unknown): number | undefined => (typeof x === "number" && Number.isFinite(x) ? x : undefined);
+  const out: PerSymbolAction[] = [];
+  const seen = new Set<string>();
+  for (const raw of v) {
+    if (!raw || typeof raw !== "object") continue;
+    const r = raw as Record<string, unknown>;
+    const symbol = typeof r.symbol === "string" && r.symbol.trim() ? r.symbol.trim().toUpperCase() : undefined;
+    if (!symbol || seen.has(symbol)) continue;
+    const entry: PerSymbolAction = {
+      symbol,
+      closed: r.closed === true || undefined,
+      partialPercent: num(r.partial_percent),
+      breakeven: r.move_to_breakeven === true || undefined,
+      newStop: num(r.new_stop_loss),
+    };
+    // Keep only entries that carry at least one concrete action.
+    if (entry.closed || entry.breakeven || entry.newStop !== undefined || (entry.partialPercent ?? 0) > 0) {
+      seen.add(symbol);
+      out.push(entry);
+    }
+  }
+  return out.length ? out : undefined;
 }
 
 /** Normalize a tool `symbols` array to unique uppercase tickers (or undefined). */
@@ -381,7 +436,8 @@ export async function readManagementLevels(
     if (!toolUse) return null;
     const inp = toolUse.input as {
       is_management?: boolean; symbol?: unknown; symbols?: unknown; new_stop_loss?: unknown;
-      move_to_breakeven?: unknown; closed?: unknown; cancel_entry?: unknown; partial_percent?: unknown; confidence?: unknown;
+      move_to_breakeven?: unknown; closed?: unknown; cancel_entry?: unknown; partial_percent?: unknown;
+      per_symbol?: unknown; confidence?: unknown;
     };
     const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
     return {
@@ -393,6 +449,7 @@ export async function readManagementLevels(
       closed: inp.closed === true,
       cancelEntry: inp.cancel_entry === true,
       partialPercent: num(inp.partial_percent),
+      perSymbol: perSymbolList(inp.per_symbol),
       confidence: Math.max(0, Math.min(1, num(inp.confidence) ?? 0.6)),
     };
   } catch (err) {
@@ -433,6 +490,22 @@ const RECONSIDER_MANAGE_TOOL: Anthropic.Tool = {
       closed: { type: "boolean", description: "True if the WHOLE position was closed/stopped/invalidated." },
       cancel_entry: { type: "boolean", description: "True if the message cancels/pulls a still-resting, UNFILLED limit ENTRY order (not a position close)." },
       partial_percent: { type: "number", description: "Percent booked ONLY if a specific fraction is stated (e.g. 50). Omit for a full close or when unknown." },
+      per_symbol: {
+        type: "array",
+        description:
+          "ONLY when DIFFERENT actions hit DIFFERENT coins in one post ('Closed BTC, booking 50% on ETH'). One entry per coin with just that coin's action(s); authoritative for its coin. Empty for a single action or the same action across coins (`symbols`).",
+        items: {
+          type: "object",
+          properties: {
+            symbol: { type: "string", description: "Base ticker this entry acts on." },
+            closed: { type: "boolean", description: "True if THIS coin's whole position was closed/stopped." },
+            partial_percent: { type: "number", description: "Percent booked on THIS coin, if a partial." },
+            move_to_breakeven: { type: "boolean", description: "True if THIS coin's stop moved to entry/break-even." },
+            new_stop_loss: { type: "number", description: "New stop PRICE for THIS coin, if moved to a level." },
+          },
+          required: ["symbol"],
+        },
+      },
       confidence: { type: "number", description: "0..1 confidence in this FINAL decision." },
     },
     required: ["reasoning", "is_management", "confidence"],
@@ -491,7 +564,8 @@ export async function reconsiderManagement(
     if (!toolUse) return null;
     const inp = toolUse.input as {
       reasoning?: unknown; is_management?: boolean; symbol?: unknown; symbols?: unknown; new_stop_loss?: unknown;
-      move_to_breakeven?: unknown; closed?: unknown; cancel_entry?: unknown; partial_percent?: unknown; confidence?: unknown;
+      move_to_breakeven?: unknown; closed?: unknown; cancel_entry?: unknown; partial_percent?: unknown;
+      per_symbol?: unknown; confidence?: unknown;
     };
     const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
     return {
@@ -503,6 +577,7 @@ export async function reconsiderManagement(
       breakeven: inp.move_to_breakeven === true,
       closed: inp.closed === true,
       partialPercent: num(inp.partial_percent),
+      perSymbol: perSymbolList(inp.per_symbol),
       confidence: Math.max(0, Math.min(1, num(inp.confidence) ?? 0.6)),
       reasoning: typeof inp.reasoning === "string" && inp.reasoning.trim() ? inp.reasoning.trim() : undefined,
     };
