@@ -221,11 +221,17 @@ async function reconcileByPosition(
       const again = tradesRepo.get(fresh.id);
       if (!again || again.status !== "open") continue;
       const openedMs = new Date(again.openedAt).getTime();
-      // Bound the realized-PnL reconstruction to THIS trade's own close: take only
-      // the CLOSE-side fills (a long closes by selling → side "A"), oldest first,
-      // and accumulate at most `again.size` cumulative quantity. Selecting by
-      // symbol+time alone swept in the ENTRY fill's fee and any SIBLING trade that
-      // closed the same symbol in the window, over/under-stating this record's PnL.
+      // Bound the realized-PnL reconstruction to THIS trade's own FINAL exit: take
+      // the CLOSE-side fills (a long closes by selling → side "A"), NEWEST first,
+      // and accumulate at most `again.size` cumulative quantity. `again.size` is
+      // the size REMAINING after any manual partial — and that partial's own
+      // close-side fill is OLDER and already banked into bankedPnl/bankedFees, so
+      // accumulating newest-first captures the final exit and stops BEFORE the
+      // partial fill. (Oldest-first double-counted the partial and dropped the
+      // real exit — a mis-booked realized PnL that fed the daily-loss gate.)
+      // Selecting by symbol+time alone also swept in the ENTRY fill's fee and any
+      // SIBLING trade that closed the same symbol; the close-side + size cap guard
+      // those.
       const closeSide = again.side === "long" ? "A" : "B"; // closing a long sells
       const cf = fills
         .filter(
@@ -235,7 +241,7 @@ async function reconcileByPosition(
             f.side === closeSide &&
             f.price > 0,
         )
-        .sort((a, b) => a.time - b.time);
+        .sort((a, b) => b.time - a.time);
       let remain = again.size;
       let grossPnl = 0;
       let fee = 0;
@@ -520,35 +526,58 @@ async function moveSlToBreakeven(
   filledSize: number,
   slippage: number,
 ): Promise<void> {
-  const remaining = Math.max(0, trade.size - filledSize);
-  if (remaining <= 0) return;
+  // Serialize on the same `closing` lock every other lifecycle mutator holds, so
+  // this can't interleave its place-new-then-cancel-old sequence with a manual
+  // closeTrade/moveStop and leave an orphaned stop resting on a flat position.
+  if (closing.has(trade.id)) return;
+  closing.add(trade.id);
+  try {
+    // Re-read under the lock — the trade may have been closed/partialed/moved
+    // between the tick snapshot and here.
+    const fresh = tradesRepo.get(trade.id);
+    if (!fresh || fresh.status !== "open" || fresh.slMovedToBreakeven) return;
+    const remaining = Math.max(0, fresh.size - filledSize);
+    if (remaining <= 0) return;
 
-  // Place the new break-even stop FIRST, then cancel the old one — never leave
-  // the position without a resting stop if placement fails.
-  const res = await ex.placeBracketOrders({
-    symbol: trade.symbol,
-    side: trade.side,
-    size: remaining,
-    stopLoss: trade.entryPrice, // break-even
-    takeProfits: [],
-    slippage,
-    slLimit: true, // break-even → stop-limit at entry; never slip into a loss
-    marginMode: groupsRepo.get(trade.groupId)?.settings.marginMode,
-    force: true, // real position — place even when the global test switch is on
-  });
-  if (!res.protectedOnExchange || !res.slOrderId) {
-    log.warn(
-      `Break-even stop placement failed for ${trade.symbol} (${res.error ?? "no id"}); keeping existing SL.`,
-    );
-    return;
+    // Place the new break-even stop FIRST, then cancel the old one — never leave
+    // the position without a resting stop if placement fails.
+    const res = await ex.placeBracketOrders({
+      symbol: fresh.symbol,
+      side: fresh.side,
+      size: remaining,
+      stopLoss: fresh.entryPrice, // break-even
+      takeProfits: [],
+      slippage,
+      slLimit: true, // break-even → stop-limit at entry; never slip into a loss
+      marginMode: groupsRepo.get(fresh.groupId)?.settings.marginMode,
+      force: true, // real position — place even when the global test switch is on
+    });
+    if (!res.protectedOnExchange || !res.slOrderId) {
+      log.warn(
+        `Break-even stop placement failed for ${fresh.symbol} (${res.error ?? "no id"}); keeping existing SL.`,
+      );
+      return;
+    }
+    // Record the new stop + BE flag BEFORE cancelling the old one: if the cancel
+    // throws, we must NOT re-place the break-even stop next tick (which would
+    // stack duplicate resting stops). The old stop, if the cancel fails, is left
+    // orphaned but reduce-only — bounded and harmless on a flat future position.
+    const updated = tradesRepo.update(fresh.id, {
+      slOrderId: res.slOrderId,
+      slMovedToBreakeven: true,
+    });
+    if (updated) broadcast({ type: "trade", trade: updated });
+    if (fresh.slOrderId && fresh.slOrderId !== res.slOrderId) {
+      try {
+        await ex.cancelOrders(fresh.symbol, [fresh.slOrderId]);
+      } catch (err) {
+        log.warn(`Break-even: could not cancel old SL ${fresh.slOrderId} for ${fresh.symbol} (orphaned, reduce-only): ${err instanceof Error ? err.message : err}`);
+      }
+    }
+    log.info(`Moved SL to break-even (${fresh.entryPrice}) for ${fresh.symbol} — ${remaining} left`);
+  } finally {
+    closing.delete(trade.id);
   }
-  if (trade.slOrderId) await ex.cancelOrders(trade.symbol, [trade.slOrderId]);
-  const updated = tradesRepo.update(trade.id, {
-    slOrderId: res.slOrderId,
-    slMovedToBreakeven: true,
-  });
-  if (updated) broadcast({ type: "trade", trade: updated });
-  log.info(`Moved SL to break-even (${trade.entryPrice}) for ${trade.symbol} — ${remaining} left`);
 }
 
 /**
