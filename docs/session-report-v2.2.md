@@ -152,11 +152,15 @@ All committed on the branch; 110 tests green, typecheck/build/boot-smoke green.
 ## 10. Action items for you
 1. **Redeploy** (`git pull && docker compose up -d --build`) to activate feature
    logging + every §5/§9 fix (including the naked-position guard).
-2. **`directionalVenueSplit` — decided ON** (longs→Hyperliquid, shorts→Aster) so
-   opposing same-coin legs never net (#6/#7). Set via a one-time migration, so it
-   activates on the redeploy above (the diagnostic API can't write routing
-   settings by design). **Precondition: Aster must be live + funded**, else a
-   short falls back to the primary and nets anyway.
+2. **`directionalVenueSplit` — decided ON** (longs→Hyperliquid, shorts→Aster).
+   Set via a one-time migration, activates on the redeploy above (the diagnostic
+   API can't write routing settings by design). Aster is live + funded (confirmed).
+   **HARD anti-netting invariant added on top** (always on, independent of every
+   routing toggle): an opposing same-coin position may NEVER net onto one venue —
+   the engine reroutes to a venue with no opposing leg, and if none is free (coin
+   lists on one venue only, or the split's secondary venue is down) it SKIPS the
+   trade rather than net. So even if Aster fails, a short is never opened into an
+   existing long on the same venue (and vice-versa) — it's skipped instead.
 3. **`defaultStopPct` (#3/T6) — decided: stopless entries are ACCEPTED as-is.** No
    forced synthetic stop, no no-trade rejection. This is already the default
    (`defaultStopPct` unset = 0), so no code change. The naked-position alert only

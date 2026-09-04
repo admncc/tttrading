@@ -1530,6 +1530,24 @@ async function effectiveNotional(
   return Math.min(s.tradeSizeUsd, MAX_ORDER_NOTIONAL);
 }
 
+/**
+ * Anti-netting venue decision (HARD invariant, always on). An OPPOSING same-coin
+ * position must NEVER net onto one venue — a long and a short of the same coin on
+ * the same exchange collapse into one net position where one leg's stop/close
+ * mangles the other. Given the candidate venues and the venue names that already
+ * hold an opposing leg, prefer the venues free of opposing; when NONE is free
+ * (the coin lists on one venue only, or the directional split's secondary venue
+ * is down), signal `wouldNet` so the caller SKIPS the trade rather than nets.
+ * Same-DIRECTION same-coin may still share a venue (the directional decision).
+ */
+export function nonNettingVenues<T extends { ex: { name: string } }>(
+  candidates: T[],
+  opposingOn: Set<string>,
+): { venues: T[]; wouldNet: boolean } {
+  const free = candidates.filter((v) => !opposingOn.has(v.ex.name));
+  return free.length > 0 ? { venues: free, wouldNet: false } : { venues: candidates, wouldNet: true };
+}
+
 /** Place the order for a signal and record the resulting trade. */
 async function execute(
   signal: Signal,
@@ -1645,6 +1663,16 @@ async function execute(
         }
       }
     }
+    // HARD anti-netting invariant (always on, overrides every routing policy and
+    // the single-venue case): prefer a venue with no OPPOSING same-coin leg. The
+    // final reject (below, before dispatch) covers the case where none is free.
+    const opposingAll = tradesRepo
+      .activeAndWorking()
+      .filter((t) => !t.shadow && t.symbol.toUpperCase() === parsed.symbol.toUpperCase() && t.side !== parsed.side);
+    if (opposingAll.length > 0) {
+      const busy = new Set(opposingAll.map((t) => byName(t.exchange).name));
+      venues = nonNettingVenues(venues, busy).venues;
+    }
     ex = venues[0]!.ex;
   } else if (resolved.kind === "notFound") {
     const tried = resolved.tried.join(", ") || "hyperliquid";
@@ -1659,6 +1687,37 @@ async function execute(
     broadcast({ type: "signal", signal: failed });
     return failed;
   } // "unavailable" → keep the primary and let the order path surface errors.
+
+  // HARD anti-netting invariant (final gate, covers EVERY routing path incl. the
+  // metadata-unavailable fallback and coins that list on one venue only): an
+  // opposing same-coin position must NEVER net onto one venue. If the chosen
+  // venue already holds/works an opposing leg, SKIP the trade rather than net —
+  // even if that means not taking the signal at all (e.g. a short when the coin's
+  // only venue already holds the long, or the directional secondary is down).
+  {
+    const wouldNet = tradesRepo
+      .activeAndWorking()
+      .some(
+        (t) =>
+          !t.shadow &&
+          t.symbol.toUpperCase() === parsed.symbol.toUpperCase() &&
+          t.side !== parsed.side &&
+          byName(t.exchange).name === ex.name,
+      );
+    if (wouldNet) {
+      const reason = `anti-netting: an opposing ${parsed.symbol} position is already live on ${ex.name} and no other venue is free — not netting, trade skipped`;
+      const failed = signalsRepo.update(signal.id, { status: "failed", error: reason })!;
+      event(
+        "exec",
+        `SKIP ${parsed.side} ${parsed.symbol}: would net an opposing position on ${ex.name}`,
+        { reason, exchange: ex.name },
+        { level: "warn", groupId: group.id, signalId: signal.id },
+      );
+      alertClassification(group.name, "🚫 <b>Skipped</b> — would net opposing", `${parsed.side} ${parsed.symbol} on ${ex.name}`);
+      broadcast({ type: "signal", signal: failed });
+      return failed;
+    }
+  }
 
   if (ex.name !== "hyperliquid" && ex.name !== "hyperliquid-testnet") {
     event("exec", `Routing ${parsed.symbol} to ${ex.name}`, { exchange: ex.name }, { groupId: group.id, signalId: signal.id });
