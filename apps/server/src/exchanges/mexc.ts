@@ -403,9 +403,18 @@ export class MexcConnector implements ExchangeConnector {
       // Close codes (2/4) ARE reduce-only; open codes (1/3) open. We never send a
       // reduceOnly flag (it's one-way-mode only) — the side code carries intent.
       const side = mexcSide(req.side, !!req.reduceOnly);
+      // Price the "market" order aggressively THROUGH the book in the fill
+      // direction, bounded by maxSlippage, rather than exactly at mid. If MEXC
+      // treats the price field as a marketable-limit guard (its type:5 semantics
+      // aren't documented), an at-mid order can rest/reject in a fast market — a
+      // protective close/stop that MUST fill would then miss. Buy when opening a
+      // long or closing a short; sell otherwise. Harmless if MEXC ignores price.
+      const isBuy = (req.side === "long") !== !!req.reduceOnly;
+      const slip = req.maxSlippage > 0 ? req.maxSlippage : 0;
+      const aggressivePx = mid * (isBuy ? 1 + slip : 1 - slip);
       const body: Record<string, unknown> = {
         symbol: asset.mexcSymbol,
-        price: roundToUnit(mid, asset.priceUnit, asset.priceScale), // ballpark; market ignores/uses as guard
+        price: roundToUnit(aggressivePx, asset.priceUnit, asset.priceScale), // marketable-limit guard, crosses the book
         vol,
         side,
         type: 5, // market

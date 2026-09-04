@@ -1191,7 +1191,11 @@ async function applyManagement(
         // would otherwise pass the side check for a long and strip protection.
         const plausible = newStop >= price * 0.5 && newStop <= price * 1.5;
         const rightSide = t.side === "long" ? newStop < price : newStop > price;
-        if (plausible && rightSide) await moveStop(t, newStop, beIntent && newStop === t.entryPrice);
+        // Arm the breakeven flag only on a FILLED position — a working (unfilled)
+        // leg whose explicit stop happens to equal its planned entry must not be
+        // turned into a hair-trigger breakeven (the same class as 90f6187). The
+        // explicit stop price still updates the working order's planned stop.
+        if (plausible && rightSide) await moveStop(t, newStop, beIntent && newStop === t.entryPrice && t.status === "open");
         else {
           const why = !plausible ? "implausible distance" : "wrong side";
           event("manage", `Rejected SL move for ${t.symbol}: ${newStop} (${why} vs ${price})`, { newStop, price, side: t.side }, { level: "warn", groupId: group.id });
