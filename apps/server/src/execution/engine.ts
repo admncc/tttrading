@@ -275,7 +275,8 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
           // specific SL price (sl_move) can't span coins at different scales, so it
           // stays single-symbol (and is rejected if implausible).
           if (!mv.closed && mv.symbols && mv.symbols.length >= 2) {
-            const syms = [...new Set(mv.symbols.map((s) => canonicalSymbol(s)))];
+            const named = [...new Set(mv.symbols.map((s) => canonicalSymbol(s)))];
+            const inNamed = (s: string | undefined) => (s && named.includes(canonicalSymbol(s)) ? canonicalSymbol(s) : undefined);
             const partialFrac =
               mv.partialPercent !== undefined && mv.partialPercent > 0 && mv.partialPercent < 100
                 ? mv.partialPercent / 100
@@ -284,18 +285,33 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
             const wantBE = !!mv.breakeven || kinds.has("sl_breakeven");
             if (wantPartial || wantBE) {
               actions = actions.filter((a) => a.kind !== "partial_close" && a.kind !== "sl_breakeven");
-              for (const s of syms) {
-                if (wantPartial)
-                  actions.push({ kind: "partial_close", symbol: s, fraction: partialFrac, explicitSymbol: true, note: `book ${partialFrac ? Math.round(partialFrac * 100) + "%" : "partial"} ${s}` });
-                if (wantBE)
-                  actions.push({ kind: "sl_breakeven", symbol: s, explicitSymbol: true, note: `SL→BE ${s}` });
+              // Breakeven is safe to over-apply (moving a stop to entry that's
+              // already there is a no-op), so it goes to every named coin — this
+              // guarantees the intended coin is protected ("set SL breakeven on
+              // Jasmy" → JASMY gets it) without needing perfect attribution.
+              // A PARTIAL is destructive if sent to the wrong coin (books a
+              // position that was only meant to go breakeven — the JASMY miss), so
+              // when BOTH a partial and a breakeven are present (asymmetric message
+              // like "book Tp1 Zama … set SL breakeven on Jasmy") the partial is
+              // restricted to the coin nearest its "book/take" verb. When ONLY a
+              // partial is present it's a symmetric recap ("partial 20% on
+              // VIRTUAL+SAND") → apply to every named coin.
+              const beTargets: string[] = wantBE ? named : [];
+              let partialTargets: string[] = wantPartial ? named : [];
+              if (wantPartial && wantBE) {
+                const pNear = inNamed(namedNearestToVerb(rawText, KIND_VERB_RE.partial_close!, named) ?? taggedNearestToVerb(rawText, KIND_VERB_RE.partial_close!));
+                partialTargets = pNear ? [pNear] : named; // fall back to all only if unattributable
               }
-              if (wantPartial) kinds.add("partial_close");
-              if (wantBE) kinds.add("sl_breakeven");
+              for (const s of partialTargets)
+                actions.push({ kind: "partial_close", symbol: s, fraction: partialFrac, explicitSymbol: true, note: `book ${partialFrac ? Math.round(partialFrac * 100) + "%" : "partial"} ${s}` });
+              for (const s of beTargets)
+                actions.push({ kind: "sl_breakeven", symbol: s, explicitSymbol: true, note: `SL→BE ${s}` });
+              if (partialTargets.length) kinds.add("partial_close");
+              if (beTargets.length) kinds.add("sl_breakeven");
               event(
                 "manage",
-                `LLM explicit multi-symbol management → ${syms.join(", ")} (${[wantPartial ? "partial" : "", wantBE ? "breakeven" : ""].filter(Boolean).join("+")} each)`,
-                { symbols: syms, confidence: mv.confidence },
+                `Multi-symbol management → ${[partialTargets.length ? "partial " + partialTargets.join("/") : "", beTargets.length ? "BE " + beTargets.join("/") : ""].filter(Boolean).join(" · ")}`,
+                { partialTargets, beTargets, confidence: mv.confidence },
                 { level: "info", groupId: group.id },
               );
             }
@@ -866,6 +882,28 @@ function heldReferencedInText(held: string[], rawText: string): string[] {
  * Returns undefined when there is only one distinct tag (nothing to disambiguate)
  * or the verb isn't found — leaving the original attribution untouched.
  */
+/**
+ * Like taggedNearestToVerb but over a KNOWN symbol list, matching each symbol's
+ * NAME in the text (tagged or bare — many traders write "book Tp1 Zama … set SL
+ * breakeven on Jasmy" with no $). Returns the named symbol whose name appears
+ * nearest the verb, or undefined when the verb or names aren't found. Lets an
+ * asymmetric multi-coin management message attribute each action to the right coin.
+ */
+export function namedNearestToVerb(rawText: string, verb: RegExp, named: string[]): string | undefined {
+  const vm = verb.exec(rawText);
+  if (!vm) return undefined;
+  const vpos = vm.index;
+  let best: string | undefined;
+  let bestDist = Infinity;
+  for (const sym of named) {
+    const nm = new RegExp(`\\b${sym.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").exec(rawText);
+    if (!nm) continue;
+    const dist = Math.abs(nm.index - vpos);
+    if (dist < bestDist) { bestDist = dist; best = sym; }
+  }
+  return best;
+}
+
 function taggedNearestToVerb(rawText: string, verb: RegExp): string | undefined {
   const tags: { sym: string; idx: number }[] = [];
   const re = /[$#]([A-Za-z]{2,6})(?:USDT|USDC|USD|PERP)?\b/gi;
@@ -891,7 +929,7 @@ function taggedNearestToVerb(rawText: string, verb: RegExp): string | undefined 
 }
 
 /** Verb anchors per management kind, for the nearest-tag disambiguation above. */
-const KIND_VERB_RE: Partial<Record<string, RegExp>> = {
+export const KIND_VERB_RE: Partial<Record<string, RegExp>> = {
   close: /\b(?:clos|exit|flatten|dump|invalidat|stopped|cut\b|off\s+the\s+table|get\s+out)/i,
   partial_close: /\b(?:book|took|tak(?:e|ing)|trim|secur|lock|sell|off\s*load|\d+\s*%)/i,
   sl_move: /\b(?:sl|stop|invalidation|trail|mov)/i,
