@@ -1616,6 +1616,25 @@ function snapMagnitude(level: number, ref: number): number {
 }
 
 /**
+ * Snap a mis-scaled ENTRY to its OWN SL/TP band (mid-independent). When an entry
+ * is an order of magnitude off from the midpoint of its own stop+targets (e.g.
+ * GOLD entry 446 with SL 4688 / TP 4340 — 10× below its own levels), it's a
+ * source typo, not a deep limit bid (a real deep bid shares the levels'
+ * magnitude). Returns the corrected entry, or the entry unchanged when there's
+ * no band or no order-of-magnitude slip. Never touches a genuine far limit whose
+ * SL/TP share its magnitude, so it can't corrupt an intentional deep bid.
+ */
+export function snapEntryToBand(entry: number, stopLoss?: number, takeProfits?: number[]): number {
+  if (!(entry > 0)) return entry;
+  const band = [stopLoss, ...(takeProfits ?? [])].filter((x): x is number => x !== undefined && x > 0);
+  if (!band.length) return entry;
+  const bandMid = band.reduce((a, b) => a + b, 0) / band.length;
+  const ratio = entry / bandMid;
+  if (ratio < 5 && ratio > 0.2) return entry; // within an order of magnitude — leave as written
+  return snapMagnitude(entry, bandMid);
+}
+
+/**
  * DCA-hold widened stop: move the stop to a BOUNDED multiple (1–3×, hard-capped)
  * of the signal's stop distance measured from `ref` (the entry). Returns the new
  * absolute stop price, or undefined when the multiple is 1 / the result is
@@ -1667,6 +1686,17 @@ async function placeEntry(
       /* no price feed — can't normalize or side-check; let the order path handle it */
     }
     const fixes: string[] = [];
+    // Entry mis-scaled vs its OWN SL/TP band (e.g. GOLD entry 446 with SL 4688 /
+    // TP 4340 — the entry is 10× below its own levels: a source typo, not a deep
+    // bid, which would share the levels' magnitude). Snap it so the leg trades at
+    // the right scale instead of being silently dropped by the would-chase guard.
+    if (parsed.entry !== undefined) {
+      const e = snapEntryToBand(parsed.entry, parsed.stopLoss, parsed.takeProfits);
+      if (e !== parsed.entry) {
+        fixes.push(`entry ${parsed.entry}→${e} (mis-scaled vs its SL/TP band)`);
+        parsed = { ...parsed, entry: e };
+      }
+    }
     // Magnitude-correct the ENTRY only for ×1000 meme coins, where the signal's
     // raw-scale price genuinely needs converting to the venue's ×1000 scale. For
     // every other coin a far limit entry is an INTENTIONAL deep bid (e.g. limit
