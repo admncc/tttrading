@@ -436,12 +436,20 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
           // an ambiguous multi-coin recap still can't flatten the wrong position.
           // Skipped under per-coin actions (those already carry explicitSymbol).
           const singleClose = mv.closed && (!mv.symbols || mv.symbols.length < 2);
-          if (!perSymbol && mv.symbol && mv.confidence >= 0.85) {
+          // Positional evidence: the coin whose tag sits nearest the close verb.
+          // A single close is trusted at moderate confidence ONLY when this agrees
+          // with the LLM's target — so a vague multi-coin recap can never flatten
+          // the wrong coin on confidence alone (the #5 concern), while a clearly
+          // attributed "PEPE Closed. BTC ready to move" acts without needing 0.85.
+          const nearClose = singleClose ? taggedNearestToVerb(rawText, KIND_VERB_RE.close!) : undefined;
+          const closeVerbAgrees = !!nearClose && !!mv.symbol && canonicalSymbol(nearClose) === canonicalSymbol(mv.symbol);
+          if (!perSymbol && mv.symbol) {
             for (const a of actions) {
-              const trust =
-                a.kind === "partial_close" || a.kind === "sl_move" || a.kind === "sl_breakeven" ||
-                (a.kind === "close" && singleClose);
-              if (a.symbol === mv.symbol && trust) a.explicitSymbol = true;
+              if (a.symbol !== mv.symbol) continue;
+              let trust = false;
+              if (a.kind === "partial_close" || a.kind === "sl_move" || a.kind === "sl_breakeven") trust = mv.confidence >= 0.85;
+              else if (a.kind === "close" && singleClose) trust = mv.confidence >= 0.85 || (mv.confidence >= 0.7 && closeVerbAgrees);
+              if (trust) a.explicitSymbol = true;
             }
           }
         }

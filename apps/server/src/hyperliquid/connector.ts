@@ -491,7 +491,14 @@ export class HyperliquidConnector implements ExchangeConnector {
     const isBuy = req.side === "long";
     const size = roundSize(req.notionalUsd / mid, asset.szDecimals);
     if (size <= 0) {
-      return { ok: false, filledPrice: mid, size: 0, simulated: !this.live, error: "Computed size is 0" };
+      const minLot = 1 / 10 ** asset.szDecimals;
+      return {
+        ok: false,
+        filledPrice: mid,
+        size: 0,
+        simulated: !this.live,
+        error: `${req.symbol}: $${req.notionalUsd.toFixed(2)} rounds to 0 lots — min lot ${minLot} ≈ $${(minLot * mid).toFixed(2)} at ${mid}; raise trade size for this instrument`,
+      };
     }
     // Aggressive limit price so the IOC order crosses the book.
     const slip = req.maxSlippage;
@@ -601,7 +608,15 @@ export class HyperliquidConnector implements ExchangeConnector {
     if (!(req.price > 0)) return { ok: false, size: 0, simulated: sim, error: "Invalid limit price" };
 
     const size = roundSize(req.notionalUsd / req.price, asset.szDecimals);
-    if (size <= 0) return { ok: false, size: 0, simulated: sim, error: "Computed size is 0" };
+    if (size <= 0) {
+      const minLot = 1 / 10 ** asset.szDecimals;
+      return {
+        ok: false,
+        size: 0,
+        simulated: sim,
+        error: `${req.symbol}: $${req.notionalUsd.toFixed(2)} rounds to 0 lots — min lot ${minLot} ≈ $${(minLot * req.price).toFixed(2)} at ${req.price}; raise trade size for this instrument`,
+      };
+    }
     // Round conservatively so the resting price never drifts toward the market.
     const limitPx = roundLimitPx(req.price, asset.szDecimals, req.side);
     if (size * limitPx < 10) {
