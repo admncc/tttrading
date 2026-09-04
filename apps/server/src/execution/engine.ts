@@ -13,7 +13,7 @@ import { parseSignal } from "../signals/parser.js";
 import { readManagementLevels, reconsiderManagement, llmReady, type SignalImage, type PerSymbolAction } from "../signals/llm.js";
 import { classifyManagementAll, isTradeUpdate, isMarketCommentary, type ManagementAction } from "../signals/management.js";
 import { expandTakeProfits } from "../signals/takeprofit.js";
-import { assessRisk, tierSlippage, PROTECTIVE_SLIPPAGE } from "../risk/score.js";
+import { assessRisk, tierSlippage, isNoCrossError, ENTRY_RETRY_SLIPPAGE, PROTECTIVE_SLIPPAGE } from "../risk/score.js";
 import { canonicalSymbol, symbolAliases, isScaledCoin } from "../symbols.js";
 import { alertBlocked, alertClassification, alertClosed, alertError, alertOpened, alertSkipped, sendAlert } from "../alerts/notifier.js";
 import { broadcast } from "../ws/hub.js";
@@ -2046,14 +2046,37 @@ async function placeEntry(
     }
   }
 
-  const result = await ex.placeMarketOrder({
+  const entrySlip = tierSlippage(parsed.symbol);
+  let result = await ex.placeMarketOrder({
     symbol: parsed.symbol,
     side: parsed.side,
     notionalUsd: tradeSizeUsd,
     leverage,
     marginMode,
-    maxSlippage: tierSlippage(parsed.symbol),
+    maxSlippage: entrySlip,
   });
+
+  // Retry ONCE, wider, ONLY when the aggressive IOC found no resting liquidity to
+  // cross (a small cap whose spread exceeds its tight 0.1% tier bound) — and only
+  // when the retry bound is strictly wider than what already failed, so mid/large
+  // caps (already at 0.5%) don't re-fire and we never chase past a bounded fill.
+  // Every other failure (margin, size, wrong side) is real and not retried.
+  if (!result.ok && isNoCrossError(result.error) && entrySlip < ENTRY_RETRY_SLIPPAGE) {
+    event(
+      "exec",
+      `Entry IOC didn't cross for ${parsed.symbol} at ${(entrySlip * 100).toFixed(2)}% — retrying once at ${(ENTRY_RETRY_SLIPPAGE * 100).toFixed(2)}%`,
+      { symbol: parsed.symbol, from: entrySlip, to: ENTRY_RETRY_SLIPPAGE },
+      { level: "warn", groupId: group.id, signalId: signal.id },
+    );
+    result = await ex.placeMarketOrder({
+      symbol: parsed.symbol,
+      side: parsed.side,
+      notionalUsd: tradeSizeUsd,
+      leverage,
+      marginMode,
+      maxSlippage: ENTRY_RETRY_SLIPPAGE,
+    });
+  }
 
   if (!result.ok) {
     const failed = signalsRepo.update(signal.id, { status: "failed", error: result.error })!;

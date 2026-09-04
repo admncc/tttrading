@@ -33,15 +33,18 @@ export function capTier(symbol: string): CapTier {
 }
 
 /**
- * ENTRY slippage tolerance (fraction) by cap tier — how far past the signal price
- * we still enter, and the fill bound on the entry order itself. Small caps are
- * illiquid and move fast, so we don't chase them (0.1%); mid/large caps get 0.5%.
- * This applies to ENTRIES ONLY. Protective/exit orders (stop-loss, take-profit,
- * partial/full closes) must always execute, so they use PROTECTIVE_SLIPPAGE
- * instead — a stop is never allowed to go unfilled to save a few bps.
+ * ENTRY slippage tolerance (fraction) by cap tier — the fill bound on the entry
+ * IOC. Scaled to LIQUIDITY: small caps have the WIDEST spreads, so a tight bound
+ * leaves the aggressive IOC unable to cross the book (the "could not immediately
+ * match" failure) — they get the MOST room (0.5%); mid caps 0.3%; large caps are
+ * deep and tight, so 0.1% is plenty and avoids overpaying. This applies to
+ * ENTRIES ONLY. Protective/exit orders (stop-loss, take-profit, partial/full
+ * closes) must always execute, so they use PROTECTIVE_SLIPPAGE instead — a stop
+ * is never allowed to go unfilled to save a few bps.
  */
 export function tierSlippage(symbol: string): number {
-  return capTier(symbol) === "small" ? 0.001 : 0.005;
+  const t = capTier(symbol);
+  return t === "small" ? 0.005 : t === "mid" ? 0.003 : 0.001;
 }
 
 /**
@@ -51,6 +54,25 @@ export function tierSlippage(symbol: string): number {
  * leave the position naked. (Trigger price is unchanged; only the fill bound.)
  */
 export const PROTECTIVE_SLIPPAGE = 0.05;
+
+/**
+ * One-retry fill bound for an ENTRY whose tier slippage left its aggressive IOC
+ * unable to cross the book. This is the widest entry tolerance we ever concede
+ * (0.5%, = the small-cap default), used only on that specific rejection and only
+ * when strictly wider than the tier bound that already failed — so it widens a
+ * mid (0.3%) or large (0.1%) cap that hit a momentary thin book, while a small
+ * cap already at 0.5% is not retried (it's already at the ceiling).
+ */
+export const ENTRY_RETRY_SLIPPAGE = 0.005;
+
+/**
+ * True for Hyperliquid's "an IOC/market order found no resting liquidity to cross"
+ * rejection — i.e. the aggressive limit didn't reach the book, not a real error
+ * (margin, size, wrong side). The one legitimate case to retry an entry wider.
+ */
+export function isNoCrossError(error: string | undefined): boolean {
+  return /could not immediately match/i.test(error ?? "");
+}
 
 /** Win-rate + net PnL of a set of settled trades (already filtered to closed). */
 function record(trades: Trade[]): { n: number; winRate: number; net: number } {
