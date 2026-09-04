@@ -21,6 +21,10 @@ describe("extractSymbol — price-location fillers are not tickers (audit #9)", 
     ["sol long entry 100 sl 90 tp 120", "SOL"],
     ["long #BTC entry 100 sl 90 tp 120", "BTC"], // # cashtag in primary branch
     ["long $SOL entry 100 sl 90 tp 120", "SOL"],
+    // NEAR Protocol is a real coin — must NOT be swallowed as a "near" filler.
+    ["long NEAR here entry 5 sl 4.5 tp 6", "NEAR"],
+    ["NEAR long entry 5 sl 4.5 tp 6", "NEAR"],
+    ["$NEAR long entry 5 sl 4.5 tp 6", "NEAR"],
   ] as const) {
     it(`${JSON.stringify(text)} → ${sym}`, () => {
       assert.equal(parseWithRegex(text)?.symbol, sym);

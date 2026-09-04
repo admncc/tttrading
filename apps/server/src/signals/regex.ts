@@ -48,9 +48,13 @@ const STOPWORDS = new Set([
   // Price-location prepositions/nouns that immediately follow a direction word
   // ("long AT 100", "buy ON dip", "short ZONE 200") — these were being returned
   // as the ticker, so the engine tried to trade a coin named "AT"/"ON"/"ZONE".
-  // Treat them as fillers so the parser defers to the LLM instead.
-  "AT", "ON", "OFF", "FROM", "NEAR", "AROUND", "ABOVE", "BELOW", "ZONE",
-  "LEVEL", "TRADE", "RETEST", "BREAK", "BREAKOUT", "SUPPORT", "RESISTANCE",
+  // Treat them as fillers so the parser defers to the LLM instead. NOTE: NEAR,
+  // TRADE and BREAK are deliberately NOT here — NEAR is a major coin (NEAR
+  // Protocol) and the others are real low-caps; stop-wording them would drop
+  // legitimate bare-name entries ("long NEAR here"). Their price-location sense
+  // ("buy near 100") is left to the LLM, which is the primary parser.
+  "AT", "ON", "OFF", "FROM", "AROUND", "ABOVE", "BELOW", "ZONE",
+  "LEVEL", "RETEST", "BREAKOUT", "SUPPORT", "RESISTANCE",
 ]);
 
 const QUOTE_SUFFIX = /(USDT|USDC|USD|PERP)$/i;
