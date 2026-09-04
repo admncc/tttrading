@@ -236,6 +236,24 @@ function migrate(database: Database.Database): void {
     log.warn("initial-risk migration skipped:", err instanceof Error ? err.message : err);
   }
 
+  // Default directional venue split ON: route LONGs to the primary venue
+  // (Hyperliquid) and SHORTs to the secondary (Aster) so an opposing same-coin
+  // pair can never net onto one venue (#6/#7). ONE-TIME: only inserts when the
+  // key was never set, so a later desk toggle-off is respected and this never
+  // re-forces it on. Requires a live, funded secondary venue — otherwise a short
+  // falls back to the primary and nets again.
+  try {
+    const row = database.prepare("SELECT value FROM app_settings WHERE key = 'directionalVenueSplit'").get();
+    if (!row) {
+      database
+        .prepare("INSERT INTO app_settings (key, value) VALUES ('directionalVenueSplit', 'true')")
+        .run();
+      log.info("Migrated: directionalVenueSplit defaulted ON (longs→primary venue, shorts→secondary).");
+    }
+  } catch (err) {
+    log.warn("directionalVenueSplit default migration skipped:", err instanceof Error ? err.message : err);
+  }
+
   // Working-limit TTL default raised from 7d (168h) to 14d (336h). One-time bump
   // of groups still carrying the OLD default so a deliberately customized value is
   // never overwritten; gated by a flag so re-setting 168 later in the desk stays

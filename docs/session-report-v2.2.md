@@ -152,8 +152,12 @@ All committed on the branch; 110 tests green, typecheck/build/boot-smoke green.
 ## 10. Action items for you
 1. **Redeploy** (`git pull && docker compose up -d --build`) to activate feature
    logging + every §5/§9 fix (including the naked-position guard).
-2. **Policy decisions:** `directionalVenueSplit` (#6/#7/T7) and `defaultStopPct`
-   (#3/T6) — explained; awaiting your call (not bugs).
+2. **`directionalVenueSplit` — decided ON** (longs→Hyperliquid, shorts→Aster) so
+   opposing same-coin legs never net (#6/#7). Set via a one-time migration, so it
+   activates on the redeploy above (the diagnostic API can't write routing
+   settings by design). **Precondition: Aster must be live + funded**, else a
+   short falls back to the primary and nets anyway. `defaultStopPct` (#3/T6) still
+   open.
 3. **Raise the 美元 SOL stop to entry** (76.473) via Manage — a +$1.5k runner
    with no breakeven stop.
 4. **Disable the Diagnostic API** (unencrypted, token-in-URL).
