@@ -490,7 +490,7 @@ export class HyperliquidConnector implements ExchangeConnector {
 
     const isBuy = req.side === "long";
     const size = roundSize(req.notionalUsd / mid, asset.szDecimals);
-    if (size <= 0) {
+    if (!(size > 0)) {
       const minLot = 1 / 10 ** asset.szDecimals;
       return {
         ok: false,
@@ -506,7 +506,7 @@ export class HyperliquidConnector implements ExchangeConnector {
     // Hyperliquid rejects orders below ~$10 notional, evaluated at the ORDER
     // price. Guard opens only — a reduce-only close of a small remaining
     // position must always be allowed.
-    if (!req.reduceOnly && size * limitPx < 10) {
+    if (!req.reduceOnly && !(size * limitPx >= 10)) {
       return {
         ok: false,
         filledPrice: mid,
@@ -608,7 +608,7 @@ export class HyperliquidConnector implements ExchangeConnector {
     if (!(req.price > 0)) return { ok: false, size: 0, simulated: sim, error: "Invalid limit price" };
 
     const size = roundSize(req.notionalUsd / req.price, asset.szDecimals);
-    if (size <= 0) {
+    if (!(size > 0)) {
       const minLot = 1 / 10 ** asset.szDecimals;
       return {
         ok: false,
@@ -619,7 +619,7 @@ export class HyperliquidConnector implements ExchangeConnector {
     }
     // Round conservatively so the resting price never drifts toward the market.
     const limitPx = roundLimitPx(req.price, asset.szDecimals, req.side);
-    if (size * limitPx < 10) {
+    if (!(size * limitPx >= 10)) {
       return { ok: false, size: 0, simulated: sim, error: `Order value ${(size * limitPx).toFixed(2)} below Hyperliquid's $10 minimum` };
     }
 
@@ -754,17 +754,28 @@ export class HyperliquidConnector implements ExchangeConnector {
       const res = (await this.exchange.order({ orders, grouping: "na" })) as unknown as HlOrderResponse;
       const statuses = res.response?.data?.statuses ?? [];
       let slOrderId: string | undefined;
+      let slError: string | undefined;
       const tpOrderIds: string[] = [];
       statuses.forEach((s, i) => {
         let oid: string | undefined;
         if ("resting" in s) oid = String(s.resting.oid);
         else if ("filled" in s) oid = String(s.filled.oid);
-        if (!oid) return;
-        if (kinds[i] === "sl") slOrderId = oid;
-        else tpOrderIds.push(oid);
+        if (kinds[i] === "sl") {
+          if (oid) slOrderId = oid;
+          else if (s && typeof s === "object" && "error" in s) slError = String((s as { error: unknown }).error);
+        } else if (oid) tpOrderIds.push(oid);
       });
-      const protectedOnExchange = slOrderId !== undefined || tpOrderIds.length > 0;
-      return { slOrderId, tpOrderIds, protectedOnExchange };
+      // A REQUESTED stop that produced no order id is a naked position waiting to
+      // happen — surface it explicitly, never mask it behind a resting TP.
+      const stopMissing = stopLoss !== undefined && slOrderId === undefined;
+      const protectedOnExchange = !stopMissing && (slOrderId !== undefined || tpOrderIds.length > 0);
+      return {
+        slOrderId,
+        tpOrderIds,
+        protectedOnExchange,
+        stopMissing,
+        error: stopMissing ? `Stop-loss REJECTED at entry — position unprotected${slError ? `: ${slError}` : ""}` : undefined,
+      };
     } catch (err) {
       return {
         tpOrderIds: [],

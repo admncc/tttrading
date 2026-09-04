@@ -385,7 +385,7 @@ export class MexcConnector implements ExchangeConnector {
 
     const vol = coinsToVol(req.notionalUsd / mid, asset);
     const coinSize = vol * asset.contractSize;
-    if (vol <= 0 || (!req.reduceOnly && vol < asset.minVol)) {
+    if (!(vol > 0) || (!req.reduceOnly && vol < asset.minVol)) {
       return { ok: false, filledPrice: mid, size: 0, simulated: !this.live, error: "Computed size below MEXC minimum" };
     }
     if (coinSize * mid > MAX_ORDER_NOTIONAL) {
@@ -446,7 +446,7 @@ export class MexcConnector implements ExchangeConnector {
 
     const vol = coinsToVol(req.notionalUsd / req.price, asset);
     const coinSize = vol * asset.contractSize;
-    if (vol < asset.minVol || vol <= 0) return { ok: false, size: 0, simulated: sim, error: "Computed size below MEXC minimum" };
+    if (!(vol > 0) || vol < asset.minVol) return { ok: false, size: 0, simulated: sim, error: "Computed size below MEXC minimum" };
     if (coinSize * req.price > MAX_ORDER_NOTIONAL) return { ok: false, size: 0, simulated: sim, error: "Order notional exceeds safety cap" };
     const limitPx = roundToUnit(req.price, asset.priceUnit, asset.priceScale, req.side === "long" ? "floor" : "ceil");
 
@@ -540,8 +540,22 @@ export class MexcConnector implements ExchangeConnector {
       }
     }
 
-    const protectedOnExchange = slOrderId !== undefined || tpOrderIds.length > 0;
-    return { slOrderId, tpOrderIds, protectedOnExchange, error: protectedOnExchange ? undefined : error };
+    // A REQUESTED stop that produced no order id (thrown OR a silent null from
+    // the plan endpoint) leaves the position naked even if a TP rested — report
+    // it explicitly and never mask it as "protected".
+    const stopMissing = stopLoss !== undefined && slOrderId === undefined;
+    const protectedOnExchange = !stopMissing && (slOrderId !== undefined || tpOrderIds.length > 0);
+    return {
+      slOrderId,
+      tpOrderIds,
+      protectedOnExchange,
+      stopMissing,
+      error: stopMissing
+        ? `Stop-loss REJECTED at entry — position unprotected${error ? `: ${error}` : ""}`
+        : protectedOnExchange
+          ? undefined
+          : error,
+    };
   }
 
   async cancelOrders(symbol: string, orderIds: string[]): Promise<void> {

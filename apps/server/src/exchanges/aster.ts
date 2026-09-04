@@ -448,7 +448,7 @@ export class AsterConnector implements ExchangeConnector {
     // A reduce-only close of a small remainder must always be attempted — never
     // block it on minQty, or cancelling its brackets first would orphan an
     // unprotected position that can't be closed. (Opens still respect minQty.)
-    if (size <= 0 || (!req.reduceOnly && size < asset.minQty)) {
+    if (!(size > 0) || (!req.reduceOnly && size < asset.minQty)) {
       return { ok: false, filledPrice: mid, size: 0, simulated: !this.live, error: "Computed size below minimum" };
     }
     if (!req.reduceOnly && size * mid < asset.minNotional) {
@@ -505,7 +505,7 @@ export class AsterConnector implements ExchangeConnector {
     if (!(req.price > 0)) return { ok: false, size: 0, simulated: sim, error: "Invalid limit price" };
 
     const size = roundStep(req.notionalUsd / req.price, asset.stepSize, asset.szDecimals, "floor");
-    if (size <= 0 || size < asset.minQty) return { ok: false, size: 0, simulated: sim, error: "Computed size below minimum" };
+    if (!(size > 0) || size < asset.minQty) return { ok: false, size: 0, simulated: sim, error: "Computed size below minimum" };
     // Round the resting price so tick-rounding never nudges it toward the market.
     const limitPx = roundTick(req.price, asset.tickSize, asset.pricePrecision, req.side === "long" ? "floor" : "ceil");
     if (size * limitPx < asset.minNotional) {
@@ -616,8 +616,21 @@ export class AsterConnector implements ExchangeConnector {
       }
     }
 
-    const protectedOnExchange = slOrderId !== undefined || tpOrderIds.length > 0;
-    return { slOrderId, tpOrderIds, protectedOnExchange, error: protectedOnExchange ? undefined : error };
+    // A REQUESTED stop that failed to place leaves the position naked even if a
+    // TP rested — report it explicitly and never mask it as "protected".
+    const stopMissing = stopLoss !== undefined && slOrderId === undefined;
+    const protectedOnExchange = !stopMissing && (slOrderId !== undefined || tpOrderIds.length > 0);
+    return {
+      slOrderId,
+      tpOrderIds,
+      protectedOnExchange,
+      stopMissing,
+      error: stopMissing
+        ? `Stop-loss REJECTED at entry — position unprotected${error ? `: ${error}` : ""}`
+        : protectedOnExchange
+          ? undefined
+          : error,
+    };
   }
 
   async cancelOrders(symbol: string, orderIds: string[]): Promise<void> {

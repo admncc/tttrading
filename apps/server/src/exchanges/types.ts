@@ -107,6 +107,13 @@ export interface BracketResult {
   slOrderId?: string;
   tpOrderIds: string[];
   protectedOnExchange: boolean;
+  /**
+   * True when a stop-loss was REQUESTED but the venue did not place it (rejected
+   * or errored) — even if a take-profit leg succeeded. The position is running
+   * without a protective stop and needs an operator alert / retry; never treat
+   * such a fill as protected just because a TP rests.
+   */
+  stopMissing?: boolean;
   error?: string;
 }
 
