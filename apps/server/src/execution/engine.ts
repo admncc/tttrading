@@ -521,9 +521,13 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
   if (!symbolAllowed(group, parsed.symbol)) {
     return finalizeIgnored(group, rawText, parsed, `symbol ${parsed.symbol} not allowed`);
   }
-  // Spot buys have no leverage, stop-loss or take-profit structure, so we never
-  // place an order for them — record the signal, then skip it.
-  if (parsed.spot) {
+  // Spot buys are skipped ONLY when they carry no tradeable risk structure — a
+  // bare "adding spot / DCA spot" with no stop or target can't be risk-managed as
+  // a perp. But a spot SETUP that DOES state a stop AND a target ("$UNI Swing Spot
+  // Buying: Entry CMP, TP 9.213, SL 6.117") is a complete, tradeable plan, so we
+  // execute it as our normal perp long/short with those levels.
+  const spotTradeable = parsed.stopLoss !== undefined && (parsed.takeProfits?.length ?? 0) > 0;
+  if (parsed.spot && !spotTradeable) {
     return finalizeIgnored(group, rawText, parsed, `spot ${parsed.symbol} — no SL/TP, spot orders are not traded`);
   }
 
