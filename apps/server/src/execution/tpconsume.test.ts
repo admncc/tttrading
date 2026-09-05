@@ -9,11 +9,12 @@ describe("shouldConsumeTp — swallow the native TP rung only when booked VERY c
   it("booked far below the next TP (mid-position 'book some here') → keep the ladder", () => {
     assert.equal(shouldConsumeTp(53.0, 57.98), false); // ~8.6% away
   });
-  it("just inside the 1% band → swallow", () => {
+  it("well inside the band → swallow", () => {
     assert.equal(shouldConsumeTp(53.95 * 0.995, 53.95), true); // 0.5%
   });
-  it("just outside the band → keep", () => {
-    assert.equal(shouldConsumeTp(53.95 * (1 - TP_CONSUME_BAND * 2), 53.95), false); // 2%
+  it("just inside the band (1.5%) → swallow; just outside → keep", () => {
+    assert.equal(shouldConsumeTp(53.95 * (1 - TP_CONSUME_BAND * 0.9), 53.95), true);
+    assert.equal(shouldConsumeTp(53.95 * (1 - TP_CONSUME_BAND * 2), 53.95), false); // 3%
   });
   it("works above the TP too (booked slightly through it)", () => {
     assert.equal(shouldConsumeTp(54.2, 53.95), true); // 0.46% above

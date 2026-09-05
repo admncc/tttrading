@@ -1796,10 +1796,10 @@ export function snapEntryToStop(entry: number, stopLoss?: number): number {
  * CLOSE to that rung's price (within TP_CONSUME_BAND). A trader "first TP done"
  * books at ≈ our TP → don't leave that native TP resting to fire again a few bps
  * higher. A partial booked FAR from the next TP (a mid-position "book some here")
- * leaves the ladder intact. TP rungs are normally several % apart, so a 1% band
+ * leaves the ladder intact. TP rungs are normally several % apart, so a 1.5% band
  * cleanly separates "same TP" from "next TP".
  */
-export const TP_CONSUME_BAND = 0.01;
+export const TP_CONSUME_BAND = 0.015;
 export function shouldConsumeTp(exitPx: number, nextTpPrice: number): boolean {
   if (!(exitPx > 0) || !(nextTpPrice > 0)) return false;
   return Math.abs(exitPx - nextTpPrice) / nextTpPrice <= TP_CONSUME_BAND;
