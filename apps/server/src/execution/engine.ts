@@ -826,6 +826,18 @@ async function partialClose(tradeInput: Trade, rawFraction: number): Promise<voi
     const legFee = (trade.entryPrice + exitPx) * closedSize * FEE_RATE;
     const remaining = Math.max(0, base - closedSize);
 
+    // A booked partial "swallows" the next native TP rung ONLY when it executed
+    // VERY CLOSE to that rung's price (within TP_CONSUME_BAND) — i.e. a trader
+    // "first TP done" booked at ≈ our TP1, so we must not book AGAIN a few tenths
+    // of a percent higher at that same native TP. A partial booked FAR from the
+    // next TP (a mid-position "book some here") leaves the ladder fully intact.
+    // The consumed rung is dropped from the re-placed ladder and tpFilledCount is
+    // bumped atomically with that drop (live re-size, below).
+    const tpFilledNow = trade.tpFilledCount ?? 0;
+    const nextTp = trade.takeProfits?.[tpFilledNow];
+    const consumeTp = nextTp !== undefined && shouldConsumeTp(exitPx, nextTp);
+    const newTpFilledCount = consumeTp ? tpFilledNow + 1 : tpFilledNow;
+
     tradesRepo.update(trade.id, {
       size: remaining,
       bankedPnl: (trade.bankedPnl ?? 0) + legPnl,
@@ -833,8 +845,9 @@ async function partialClose(tradeInput: Trade, rawFraction: number): Promise<voi
     });
     event(
       "manage",
-      `Booked ${(frac * 100).toFixed(0)}% of ${trade.symbol} @ ${exitPx} — banked ${(legPnl - legFee).toFixed(2)} USDC`,
-      { fraction: frac, exitPx, closedSize, legPnl, legFee, remainingSize: remaining },
+      `Booked ${(frac * 100).toFixed(0)}% of ${trade.symbol} @ ${exitPx} — banked ${(legPnl - legFee).toFixed(2)} USDC` +
+        (consumeTp ? ` · swallowed native TP${newTpFilledCount} (${nextTp}) — booked at ≈ that level` : ""),
+      { fraction: frac, exitPx, closedSize, legPnl, legFee, remainingSize: remaining, consumeTp, nextTp },
       { groupId: trade.groupId },
     );
 
@@ -845,7 +858,9 @@ async function partialClose(tradeInput: Trade, rawFraction: number): Promise<voi
     // never a moment without protection.
     if (!trade.simulated && ex.live && remaining > 0) {
       const oldIds = [trade.slOrderId, ...(trade.tpOrderIds ?? [])].filter((x): x is string => !!x);
-      const unfilledTps = (trade.takeProfits ?? []).slice(trade.tpFilledCount ?? 0);
+      // Drop the rung this partial swallowed (if any), so the re-placed ladder
+      // starts at the NEXT native TP; otherwise keep every unfilled rung.
+      const unfilledTps = (trade.takeProfits ?? []).slice(newTpFilledCount);
       const hasProtection = trade.stopLoss !== undefined || unfilledTps.length > 0;
       if (oldIds.length > 0 && hasProtection) {
         try {
@@ -870,6 +885,9 @@ async function partialClose(tradeInput: Trade, rawFraction: number): Promise<voi
             const updated = tradesRepo.update(trade.id, {
               slOrderId: bracket.slOrderId,
               tpOrderIds: bracket.tpOrderIds.length ? bracket.tpOrderIds : undefined,
+              // Bump the consumed-rung count ATOMICALLY with dropping it from the
+              // ladder, so the desk/monitor never see a swallowed rung as unfilled.
+              tpFilledCount: newTpFilledCount,
             });
             if (updated) broadcast({ type: "trade", trade: updated });
           } else {
@@ -1771,6 +1789,20 @@ export function snapEntryToStop(entry: number, stopLoss?: number): number {
   const ratio = entry / stopLoss;
   if (ratio < 5 && ratio > 0.2) return entry; // within an order of magnitude — leave as written
   return snapMagnitude(entry, stopLoss);
+}
+
+/**
+ * A booked partial "swallows" the next native TP rung ONLY when it executed VERY
+ * CLOSE to that rung's price (within TP_CONSUME_BAND). A trader "first TP done"
+ * books at ≈ our TP → don't leave that native TP resting to fire again a few bps
+ * higher. A partial booked FAR from the next TP (a mid-position "book some here")
+ * leaves the ladder intact. TP rungs are normally several % apart, so a 1% band
+ * cleanly separates "same TP" from "next TP".
+ */
+export const TP_CONSUME_BAND = 0.01;
+export function shouldConsumeTp(exitPx: number, nextTpPrice: number): boolean {
+  if (!(exitPx > 0) || !(nextTpPrice > 0)) return false;
+  return Math.abs(exitPx - nextTpPrice) / nextTpPrice <= TP_CONSUME_BAND;
 }
 
 /**

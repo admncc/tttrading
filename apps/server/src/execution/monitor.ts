@@ -461,10 +461,16 @@ async function reconcileTrade(
   // expected allocation (a single partial fill must not count the whole level).
   const n = tpOids.length;
   const perTpExpected = n > 0 ? trade.size / n : 0;
-  const tpFilled = tpOids.filter((o) => {
+  const restingFilled = tpOids.filter((o) => {
     const filled = (byOid.get(o) ?? []).reduce((s, f) => s + f.size, 0);
     return perTpExpected > 0 ? filled >= perTpExpected * 0.9 : filled > 0;
   }).length;
+  // A management partial may have SWALLOWED leading rungs (dropped them from the
+  // re-placed ladder, so tpOrderIds is the tail of takeProfits). Those consumed
+  // rungs count toward the total, so tpFilledCount doesn't get reset to the
+  // resting-only count on the next tick. offset = original rungs − still-resting.
+  const consumedOffset = Math.max(0, (trade.takeProfits?.length ?? 0) - n);
+  const tpFilled = consumedOffset + restingFilled;
 
   // 1) Fully closed on the exchange? (checked first, so a closing tick never
   //    also tries to move the stop for a flat position).
