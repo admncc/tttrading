@@ -221,10 +221,17 @@ export function classifyManagementAll(text: string): ManagementAction[] {
   // A TP MILESTONE was booked/hit with no explicit % → book the DEFAULT fraction
   // by TP count (engine fills it in): "TP1 booked here" → 50% on a 1-TP setup,
   // 1/3 on a 3-TP setup. This mirrors the provider taking a TP even when they only
-  // state the milestone, not a size.
-  if (!partial && RE_TP_BOOKED.test(text)) {
-    add({ kind: "partial_close", symbol, alsoBreakeven: isBreakeven(text), note: "TP booked → default fraction" });
-    partial = true;
+  // state the milestone, not a size. Guard against a NEAR-miss ("almost reached
+  // Tp2", "approaching TP1") — the ~16 chars before the milestone must not carry a
+  // proximity/negation word, or it is not a booking.
+  if (!partial) {
+    const tb = text.match(RE_TP_BOOKED);
+    const before = tb ? text.slice(Math.max(0, tb.index! - 16), tb.index!) : "";
+    const nearMiss = /\b(?:almost|nearly|near|approaching|about\s+to|close\s+to|towards?|watching\s+for)\s*\S*\s*$/i.test(before);
+    if (tb && !nearMiss) {
+      add({ kind: "partial_close", symbol, alsoBreakeven: isBreakeven(text), note: "TP booked → default fraction" });
+      partial = true;
+    }
   }
 
   // Break-even as its own intent only when a partial didn't already fold it in.

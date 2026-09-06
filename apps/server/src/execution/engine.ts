@@ -1881,14 +1881,13 @@ export function shouldConsumeTp(exitPx: number, nextTpPrice: number): boolean {
 
 /**
  * Default partial fraction when a provider signals a TP hit / "book" with NO
- * explicit percentage: book the slice that ONE take-profit rung represents. A
- * single-TP setup books 50% (never the whole position on a "TP1 booked"); a
- * multi-TP setup books 1/N (e.g. 1/3 on three TPs). Falls back to the group's
- * configured default when the trade carries no take-profits.
+ * explicit percentage: book 1/(N+1) of the position, where N = number of TPs — so
+ * the position is split into N+1 equal slices (one per TP plus a final runner).
+ * 1 TP → 1/2, 2 TPs → 1/3, 3 TPs → 1/4. Falls back to the group's configured
+ * default when the trade carries no take-profits.
  */
 export function defaultPartialFraction(tpCount: number, fallbackPct: number): number {
-  if (tpCount === 1) return 0.5;
-  if (tpCount >= 2) return 1 / tpCount;
+  if (tpCount >= 1) return 1 / (tpCount + 1);
   return Math.min(0.95, Math.max(0.01, fallbackPct / 100));
 }
 
