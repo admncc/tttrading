@@ -85,10 +85,21 @@ async function reconcileExchange(ex: ExchangeConnector): Promise<void> {
     else byOid.set(f.oid, [f]);
   }
 
+  // Live position sizes (best-effort) so reconcileTrade can sync the DISPLAY size
+  // after a native TP scale-out. A failed read just skips the sync this tick.
+  const posMap = new Map<string, number>();
+  try {
+    for (const p of await ex.getPositions()) {
+      if (p.size !== 0) posMap.set(p.symbol.toUpperCase(), Math.abs(p.size));
+    }
+  } catch {
+    /* leave posMap empty — no display sync this tick */
+  }
+
   let changed = false;
   for (const trade of open) {
     try {
-      if (await reconcileTrade(ex, trade, byOid)) changed = true;
+      if (await reconcileTrade(ex, trade, byOid, posMap)) changed = true;
     } catch (err) {
       log.error(`reconcile ${trade.symbol} (${trade.id}):`, err instanceof Error ? err.message : err);
     }
@@ -444,6 +455,7 @@ async function reconcileTrade(
   ex: ExchangeConnector,
   trade: Trade,
   byOid: Map<string, FillLite[]>,
+  posMap?: Map<string, number>,
 ): Promise<boolean> {
   const tpOids = trade.tpOrderIds ?? [];
   const slOids = [trade.slOrderId].filter((x): x is string => !!x);
@@ -456,6 +468,10 @@ async function reconcileTrade(
   const closedSize = tradeFills.reduce((s, f) => s + f.size, 0);
   const grossPnl = tradeFills.reduce((s, f) => s + f.closedPnl, 0);
   const fees = tradeFills.reduce((s, f) => s + f.fee, 0);
+  // Realized (net) from the NATIVE TP fills only — for the desk's live "banked"
+  // after a scale-out. SL fills are the final close, not a partial book.
+  const tpFillList = tpOids.flatMap((o) => byOid.get(o) ?? []);
+  const tpRealizedNet = tpFillList.reduce((s, f) => s + f.closedPnl - f.fee, 0);
 
   // Count a TP level as filled only when its cumulative fill meets that level's
   // expected allocation (a single partial fill must not count the whole level).
@@ -517,9 +533,24 @@ async function reconcileTrade(
     changed = true;
   }
 
-  // 3) Partial progress — surface the TP count in the desk.
-  if (tpFilled !== (trade.tpFilledCount ?? 0)) {
-    const updated = tradesRepo.update(trade.id, { tpFilledCount: tpFilled });
+  // 3) Partial progress — surface the TP count + the DISPLAY-only remaining size
+  //    and native-TP realized, so a native scale-out shrinks the desk's shown
+  //    position/notional/margin and shows "banked", exactly like a manual partial.
+  //    DISPLAY ONLY: the accounting `size` and the final-close PnL (booked from
+  //    fills) are untouched — no double-count.
+  const liveSize = posMap?.get(trade.symbol.toUpperCase());
+  const patch: Partial<Trade> = {};
+  if (tpFilled !== (trade.tpFilledCount ?? 0)) patch.tpFilledCount = tpFilled;
+  // Sync the shown remaining size only when the exchange holds LESS than we show
+  // (a scale-out happened) and it's a real reduction, not a stale/zero read.
+  if (liveSize !== undefined && liveSize > 0 && liveSize < (trade.openSize ?? trade.size) - 1e-9) {
+    patch.openSize = liveSize;
+  }
+  if (Math.abs(tpRealizedNet) > 1e-9 && Math.abs((trade.tpRealizedPnl ?? 0) - tpRealizedNet) > 1e-6) {
+    patch.tpRealizedPnl = tpRealizedNet;
+  }
+  if (Object.keys(patch).length) {
+    const updated = tradesRepo.update(trade.id, patch);
     if (updated) broadcast({ type: "trade", trade: updated });
     changed = true;
   }

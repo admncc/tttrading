@@ -15,10 +15,19 @@ function closedOutcome(t: Trade): "profit" | "loss" | "be" | null {
   return "be";
 }
 
-/** Net PnL already realized from partial exits (gross banked minus banked fees). */
+/** Net PnL already realized from partial exits — MANUAL books (bankedPnl − fees)
+ *  plus NATIVE TP scale-outs (tpRealizedPnl), both while the position is open. */
 function netBanked(t: Trade): number | undefined {
-  if (t.bankedPnl === undefined && t.bankedFees === undefined) return undefined;
-  return (t.bankedPnl ?? 0) - (t.bankedFees ?? 0);
+  const manual = t.bankedPnl === undefined && t.bankedFees === undefined ? undefined : (t.bankedPnl ?? 0) - (t.bankedFees ?? 0);
+  const tp = t.tpRealizedPnl;
+  if (manual === undefined && tp === undefined) return undefined;
+  return (manual ?? 0) + (tp ?? 0);
+}
+
+/** The size still open on the exchange — openSize once a native TP scaled out,
+ *  else the accounting size (which manual partials already reduce). */
+function openSize(t: Trade): number {
+  return t.openSize ?? t.size;
 }
 
 /** Live unrealized PnL for an open trade from the current mark price — the
@@ -27,7 +36,7 @@ function netBanked(t: Trade): number | undefined {
 function unrealized(t: Trade, mark: number | undefined): number | undefined {
   if (t.status !== "open" || !mark || mark <= 0) return undefined;
   const dir = t.side === "long" ? 1 : -1;
-  return (mark - t.entryPrice) * dir * t.size;
+  return (mark - t.entryPrice) * dir * openSize(t);
 }
 
 export function Trades({
@@ -293,11 +302,11 @@ export function Trades({
                   </td>
                   <td>{t.leverage}x</td>
                   {(() => {
-                    // notionalUsd stays the ORIGINAL at entry; a partial TP reduces
-                    // t.size, so the remaining position value = size × entry. Margin
-                    // is notional / leverage. Show "orig → remaining" once a partial
-                    // has trimmed an OPEN position.
-                    const remNotional = t.size * t.entryPrice;
+                    // notionalUsd stays the ORIGINAL at entry; a partial (manual or
+                    // a native TP scale-out) reduces the open size, so the remaining
+                    // position value = openSize × entry. Margin is notional /
+                    // leverage. Show "orig → remaining" once a partial has trimmed it.
+                    const remNotional = openSize(t) * t.entryPrice;
                     const lev = t.leverage > 0 ? t.leverage : 1;
                     const marginOrig = t.notionalUsd / lev;
                     const marginRem = remNotional / lev;
@@ -325,7 +334,7 @@ export function Trades({
                       </td>
                     );
                   })()}
-                  <td>{num(t.size)}</td>
+                  <td>{num(openSize(t))}</td>
                   <td>{num(t.entryPrice)}</td>
                   <td>
                     {t.stopLoss === undefined && !t.takeProfits?.length ? (

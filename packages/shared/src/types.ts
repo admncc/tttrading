@@ -318,6 +318,14 @@ export interface Trade {
   /** How many MANUAL/management partials have been booked ("book 50%"). Counted
    * as taken legs in the desk's "X/Y hit" display alongside native TP fills. */
   manualPartials?: number;
+  /** DISPLAY-ONLY: the size still open on the exchange after native TP scale-outs
+   * (the accounting `size` stays until final close). Desk shows this as the
+   * remaining position; undefined until a native TP fill shrinks it. */
+  openSize?: number;
+  /** DISPLAY-ONLY: net profit already realized from NATIVE TP scale-outs while the
+   * position is still open (folded into realizedPnl at final close via fills, so
+   * this is not used in the close math — purely the desk's live "banked"). */
+  tpRealizedPnl?: number;
   /** Whether the stop-loss has been moved to break-even. */
   slMovedToBreakeven?: boolean;
   /** Risk rating assigned at entry. */
