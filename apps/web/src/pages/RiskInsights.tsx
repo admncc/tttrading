@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { api, type CapTier, type InsightTrade, type OpenRisk, type RiskHeat } from "../api.js";
+import { DEFAULT_RANGE, RangePicker, rangeWindow, type RangeState } from "../dateRange.js";
 
 const pct = (n: number) => `${(n * 100).toFixed(0)}%`;
 const usd = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(0)}`;
@@ -495,7 +496,7 @@ export function RiskInsights() {
   const [fCoin, setFCoin] = useState(ALL);
   const [fTier, setFTier] = useState(ALL);
   const [fSide, setFSide] = useState(ALL);
-  const [rangeDays, setRangeDays] = useState(0);
+  const [range, setRange] = useState<RangeState>(DEFAULT_RANGE);
 
   const load = () => {
     api
@@ -508,10 +509,7 @@ export function RiskInsights() {
   const channelOpts = useMemo(() => [...new Set((trades ?? []).map((t) => t.channel))].sort(), [trades]);
   const coinOpts = useMemo(() => [...new Set((trades ?? []).map((t) => t.symbol))].sort(), [trades]);
 
-  const cutoff = useMemo(
-    () => (rangeDays === 0 ? "" : new Date(Date.now() - rangeDays * 86_400_000).toISOString()),
-    [rangeDays],
-  );
+  const win = useMemo(() => rangeWindow(range), [range]);
   const filtered = useMemo(
     () =>
       (trades ?? []).filter(
@@ -520,9 +518,10 @@ export function RiskInsights() {
           (fCoin === ALL || t.symbol === fCoin) &&
           (fTier === ALL || t.tier === fTier) &&
           (fSide === ALL || t.side === fSide) &&
-          (rangeDays === 0 || (t.at && t.at >= cutoff)),
+          (!win.from || (t.at && t.at >= win.from)) &&
+          (!win.to || (t.at && t.at < win.to)),
       ),
-    [trades, fChannel, fCoin, fTier, fSide, rangeDays, cutoff],
+    [trades, fChannel, fCoin, fTier, fSide, win],
   );
 
   const overall = useMemo(() => edgeOf(filtered), [filtered]);
@@ -556,7 +555,7 @@ export function RiskInsights() {
     [byChannel, filtered],
   );
 
-  const filtersActive = fChannel !== ALL || fCoin !== ALL || fTier !== ALL || fSide !== ALL || rangeDays !== 0;
+  const filtersActive = fChannel !== ALL || fCoin !== ALL || fTier !== ALL || fSide !== ALL || range.preset !== "all";
   const sel = (label: string, value: string, set: (v: string) => void, opts: { v: string; l: string }[]) => (
     <label style={{ display: "inline-flex", flexDirection: "column", gap: 3 }}>
       <span className="muted" style={{ fontSize: 11 }}>{label}</span>
@@ -605,18 +604,14 @@ export function RiskInsights() {
                 {sel("Side", fSide, setFSide, [{ v: ALL, l: "Long + Short" }, { v: "long", l: "long" }, { v: "short", l: "short" }])}
                 <label style={{ display: "inline-flex", flexDirection: "column", gap: 3 }}>
                   <span className="muted" style={{ fontSize: 11 }}>Range</span>
-                  <div className="btn-row" style={{ gap: 4 }}>
-                    {[{ d: 7, l: "7d" }, { d: 30, l: "30d" }, { d: 90, l: "90d" }, { d: 0, l: "All" }].map((o) => (
-                      <button key={o.d} className={rangeDays === o.d ? "primary" : "ghost"} onClick={() => setRangeDays(o.d)} style={{ padding: "6px 10px" }}>{o.l}</button>
-                    ))}
-                  </div>
+                  <RangePicker value={range} onChange={setRange} />
                 </label>
                 <div style={{ flex: 1 }} />
                 <span className="muted" style={{ fontSize: 12, alignSelf: "center" }}>
                   {filtered.length} trade{filtered.length === 1 ? "" : "s"} ·{" "}
                   <span style={{ color: netColor(eq[eq.length - 1] ?? 0) }}>{usd(eq[eq.length - 1] ?? 0)} USDC net</span>
                 </span>
-                {filtersActive && <button className="ghost" onClick={() => { setFChannel(ALL); setFCoin(ALL); setFTier(ALL); setFSide(ALL); setRangeDays(0); }}>Clear</button>}
+                {filtersActive && <button className="ghost" onClick={() => { setFChannel(ALL); setFCoin(ALL); setFTier(ALL); setFSide(ALL); setRange(DEFAULT_RANGE); }}>Clear</button>}
               </div>
 
               {filtered.length === 0 ? (

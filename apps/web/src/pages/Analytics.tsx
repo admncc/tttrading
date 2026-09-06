@@ -14,14 +14,7 @@ import {
 import type { AnalyticsBucket, AnalyticsResponse } from "@tttrading/shared";
 import { api } from "../api.js";
 import { pct, pnlClass, shortTime, usd } from "../format.js";
-
-type Range = "all" | "7d" | "30d" | "90d";
-
-function fromDate(range: Range): string | undefined {
-  if (range === "all") return undefined;
-  const days = range === "7d" ? 7 : range === "30d" ? 30 : 90;
-  return new Date(Date.now() - days * 86400_000).toISOString();
-}
+import { DEFAULT_RANGE, RangePicker, rangeWindow, type RangeState } from "../dateRange.js";
 
 function Kpi({ label, value, cls }: { label: string; value: string; cls?: string }) {
   return (
@@ -127,15 +120,16 @@ function PnlBars({ title, rows }: { title: string; rows: AnalyticsBucket[] }) {
 }
 
 export function Analytics() {
-  const [range, setRange] = useState<Range>("all");
+  const [range, setRange] = useState<RangeState>(DEFAULT_RANGE);
   const [includeShadow, setIncludeShadow] = useState(false);
   const [data, setData] = useState<AnalyticsResponse | null>(null);
   const [loading, setLoading] = useState(false);
 
   const load = useCallback(() => {
     setLoading(true);
+    const { from, to } = rangeWindow(range);
     api
-      .analytics({ from: fromDate(range), includeShadow })
+      .analytics({ from, to, includeShadow })
       .then(setData)
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -153,11 +147,7 @@ export function Analytics() {
       <div className="row-between">
         <h1 style={{ margin: 0 }}>Analytics</h1>
         <div className="btn-row" style={{ alignItems: "center" }}>
-          {(["7d", "30d", "90d", "all"] as const).map((r) => (
-            <button key={r} className={range === r ? "primary" : "ghost"} onClick={() => setRange(r)}>
-              {r}
-            </button>
-          ))}
+          <RangePicker value={range} onChange={setRange} />
           <button
             className={includeShadow ? "primary" : "ghost"}
             onClick={() => setIncludeShadow((v) => !v)}
