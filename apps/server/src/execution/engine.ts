@@ -869,26 +869,32 @@ async function partialClose(tradeInput: Trade, rawFraction: number): Promise<voi
     const remaining = Math.max(0, base - closedSize);
 
     // A booked partial "swallows" the next native TP rung ONLY when it executed
-    // VERY CLOSE to that rung's price (within TP_CONSUME_BAND) — i.e. a trader
-    // "first TP done" booked at ≈ our TP1, so we must not book AGAIN a few tenths
-    // of a percent higher at that same native TP. A partial booked FAR from the
-    // next TP (a mid-position "book some here") leaves the ladder fully intact.
-    // The consumed rung is dropped from the re-placed ladder and tpFilledCount is
-    // bumped atomically with that drop (live re-size, below).
+    // VERY CLOSE to that rung (within TP_CONSUME_BAND) AND at least one other TP
+    // remains — NEVER the LAST target (that would leave the runner with no target;
+    // the TAO single-TP case). A swallowed rung is REMOVED from the ladder and does
+    // NOT count as a native TP "hit" (price didn't actually reach it); the manual
+    // book itself is the counted leg (manualPartials). A partial booked FAR from
+    // the next TP leaves the ladder fully intact.
     const tpFilledNow = trade.tpFilledCount ?? 0;
-    const nextTp = trade.takeProfits?.[tpFilledNow];
-    const consumeTp = nextTp !== undefined && shouldConsumeTp(exitPx, nextTp);
-    const newTpFilledCount = consumeTp ? tpFilledNow + 1 : tpFilledNow;
+    const tps = trade.takeProfits ?? [];
+    const nextTp = tps[tpFilledNow];
+    const unfilledCount = tps.length - tpFilledNow;
+    const consumeTp = nextTp !== undefined && unfilledCount >= 2 && shouldConsumeTp(exitPx, nextTp);
+    const newTakeProfits = consumeTp ? tps.filter((_, i) => i !== tpFilledNow) : tps;
 
     tradesRepo.update(trade.id, {
       size: remaining,
       bankedPnl: (trade.bankedPnl ?? 0) + legPnl,
       bankedFees: (trade.bankedFees ?? 0) + legFee,
+      // A manual/management partial counts as a taken leg in the "X/Y hit" display.
+      manualPartials: (trade.manualPartials ?? 0) + 1,
+      // On a swallow, drop the near rung from the ladder (never mark it as hit).
+      ...(consumeTp ? { takeProfits: newTakeProfits.length ? newTakeProfits : undefined } : {}),
     });
     event(
       "manage",
       `Booked ${(frac * 100).toFixed(0)}% of ${trade.symbol} @ ${exitPx} — banked ${(legPnl - legFee).toFixed(2)} USDC` +
-        (consumeTp ? ` · swallowed native TP${newTpFilledCount} (${nextTp}) — booked at ≈ that level` : ""),
+        (consumeTp ? ` · swallowed native TP @ ${nextTp} (booked ≈ that level; ${newTakeProfits.length} left)` : ""),
       { fraction: frac, exitPx, closedSize, legPnl, legFee, remainingSize: remaining, consumeTp, nextTp },
       { groupId: trade.groupId },
     );
@@ -900,9 +906,10 @@ async function partialClose(tradeInput: Trade, rawFraction: number): Promise<voi
     // never a moment without protection.
     if (!trade.simulated && ex.live && remaining > 0) {
       const oldIds = [trade.slOrderId, ...(trade.tpOrderIds ?? [])].filter((x): x is string => !!x);
-      // Drop the rung this partial swallowed (if any), so the re-placed ladder
-      // starts at the NEXT native TP; otherwise keep every unfilled rung.
-      const unfilledTps = (trade.takeProfits ?? []).slice(newTpFilledCount);
+      // Re-place the still-unfilled native TPs at the remaining size. newTakeProfits
+      // already excludes any swallowed rung; slice off the already-FILLED leading
+      // rungs (tpFilledNow) so the ladder starts at the next open target.
+      const unfilledTps = newTakeProfits.slice(tpFilledNow);
       const hasProtection = trade.stopLoss !== undefined || unfilledTps.length > 0;
       if (oldIds.length > 0 && hasProtection) {
         try {
@@ -927,9 +934,6 @@ async function partialClose(tradeInput: Trade, rawFraction: number): Promise<voi
             const updated = tradesRepo.update(trade.id, {
               slOrderId: bracket.slOrderId,
               tpOrderIds: bracket.tpOrderIds.length ? bracket.tpOrderIds : undefined,
-              // Bump the consumed-rung count ATOMICALLY with dropping it from the
-              // ladder, so the desk/monitor never see a swallowed rung as unfilled.
-              tpFilledCount: newTpFilledCount,
             });
             if (updated) broadcast({ type: "trade", trade: updated });
           } else {
@@ -1870,10 +1874,10 @@ export function snapEntryToStop(entry: number, stopLoss?: number): number {
  * CLOSE to that rung's price (within TP_CONSUME_BAND). A trader "first TP done"
  * books at ≈ our TP → don't leave that native TP resting to fire again a few bps
  * higher. A partial booked FAR from the next TP (a mid-position "book some here")
- * leaves the ladder intact. TP rungs are normally several % apart, so a 1.5% band
+ * leaves the ladder intact. TP rungs are normally several % apart, so a 1% band
  * cleanly separates "same TP" from "next TP".
  */
-export const TP_CONSUME_BAND = 0.015;
+export const TP_CONSUME_BAND = 0.01;
 export function shouldConsumeTp(exitPx: number, nextTpPrice: number): boolean {
   if (!(exitPx > 0) || !(nextTpPrice > 0)) return false;
   return Math.abs(exitPx - nextTpPrice) / nextTpPrice <= TP_CONSUME_BAND;

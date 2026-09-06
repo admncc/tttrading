@@ -312,8 +312,12 @@ export interface Trade {
   tpOrderIds?: string[];
   /** Whether SL/TP were actually placed on the exchange (vs. only recorded). */
   bracketProtected?: boolean;
-  /** How many take-profit levels have filled so far (from reconciliation). */
+  /** How many NATIVE take-profit levels have actually filled (price reached),
+   * from reconciliation. Manual/management partials do NOT count here. */
   tpFilledCount?: number;
+  /** How many MANUAL/management partials have been booked ("book 50%"). Counted
+   * as taken legs in the desk's "X/Y hit" display alongside native TP fills. */
+  manualPartials?: number;
   /** Whether the stop-loss has been moved to break-even. */
   slMovedToBreakeven?: boolean;
   /** Risk rating assigned at entry. */

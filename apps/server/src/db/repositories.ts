@@ -104,6 +104,7 @@ interface TradeRow {
   tp_order_ids: string | null;
   bracket_protected: number | null;
   tp_filled_count: number | null;
+  manual_partials: number | null;
   sl_moved_to_breakeven: number | null;
   risk: string | null;
   shadow: number | null;
@@ -145,6 +146,7 @@ function toTrade(r: TradeRow): Trade {
     tpOrderIds: r.tp_order_ids ? (JSON.parse(r.tp_order_ids) as string[]) : undefined,
     bracketProtected: r.bracket_protected === null ? undefined : !!r.bracket_protected,
     tpFilledCount: r.tp_filled_count ?? undefined,
+    manualPartials: r.manual_partials ?? undefined,
     slMovedToBreakeven:
       r.sl_moved_to_breakeven === null ? undefined : !!r.sl_moved_to_breakeven,
     risk: r.risk ? (JSON.parse(r.risk) as RiskRating) : undefined,
@@ -376,11 +378,11 @@ export const trades = {
       `INSERT INTO trades (id, signal_id, group_id, group_name, symbol, side, status, env, exchange,
         leverage, notional_usd, size, initial_size, initial_risk, initial_risk_source, entry_price, signal_entry, exit_price, stop_loss, take_profits,
         realized_pnl, fees, banked_pnl, banked_fees, exchange_order_id, sl_order_id, tp_order_ids, bracket_protected,
-        tp_filled_count, sl_moved_to_breakeven, risk, shadow, simulated, archived, error, opened_at, closed_at)
+        tp_filled_count, manual_partials, sl_moved_to_breakeven, risk, shadow, simulated, archived, error, opened_at, closed_at)
        VALUES (@id, @signal_id, @group_id, @group_name, @symbol, @side, @status, @env, @exchange,
         @leverage, @notional_usd, @size, @initial_size, @initial_risk, @initial_risk_source, @entry_price, @signal_entry, @exit_price, @stop_loss, @take_profits,
         @realized_pnl, @fees, @banked_pnl, @banked_fees, @exchange_order_id, @sl_order_id, @tp_order_ids, @bracket_protected,
-        @tp_filled_count, @sl_moved_to_breakeven, @risk, @shadow, @simulated, @archived, @error, @opened_at, @closed_at)`,
+        @tp_filled_count, @manual_partials, @sl_moved_to_breakeven, @risk, @shadow, @simulated, @archived, @error, @opened_at, @closed_at)`,
     ).run({
       id,
       signal_id: input.signalId ?? null,
@@ -415,6 +417,7 @@ export const trades = {
       tp_order_ids: input.tpOrderIds ? JSON.stringify(input.tpOrderIds) : null,
       bracket_protected: input.bracketProtected === undefined ? null : input.bracketProtected ? 1 : 0,
       tp_filled_count: input.tpFilledCount ?? null,
+      manual_partials: input.manualPartials ?? null,
       sl_moved_to_breakeven:
         input.slMovedToBreakeven === undefined ? null : input.slMovedToBreakeven ? 1 : 0,
       risk: input.risk ? JSON.stringify(input.risk) : null,
@@ -440,7 +443,7 @@ export const trades = {
         fees=@fees, banked_pnl=@banked_pnl, banked_fees=@banked_fees,
         exchange_order_id=@exchange_order_id, sl_order_id=@sl_order_id,
         tp_order_ids=@tp_order_ids, bracket_protected=@bracket_protected,
-        tp_filled_count=@tp_filled_count, sl_moved_to_breakeven=@sl_moved_to_breakeven,
+        tp_filled_count=@tp_filled_count, manual_partials=@manual_partials, sl_moved_to_breakeven=@sl_moved_to_breakeven,
         risk=@risk, shadow=@shadow, simulated=@simulated, archived=@archived, error=@error, closed_at=@closed_at
        WHERE id=@id`,
     ).run({
@@ -467,6 +470,7 @@ export const trades = {
       tp_order_ids: m.tpOrderIds ? JSON.stringify(m.tpOrderIds) : null,
       bracket_protected: m.bracketProtected === undefined ? null : m.bracketProtected ? 1 : 0,
       tp_filled_count: m.tpFilledCount ?? null,
+      manual_partials: m.manualPartials ?? null,
       sl_moved_to_breakeven:
         m.slMovedToBreakeven === undefined ? null : m.slMovedToBreakeven ? 1 : 0,
       risk: m.risk ? JSON.stringify(m.risk) : null,

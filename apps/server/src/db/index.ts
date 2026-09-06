@@ -171,6 +171,7 @@ function migrate(database: Database.Database): void {
       initial_size: "REAL",
       initial_risk: "REAL",
       initial_risk_source: "TEXT",
+      manual_partials: "INTEGER",
     },
     signals: {
       risk: "TEXT",

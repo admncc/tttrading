@@ -355,12 +355,19 @@ export function Trades({
                         <span className="pos">
                           {t.takeProfits?.length ? t.takeProfits.map((x) => num(x)).join(",") : "—"}
                         </span>
-                        {t.takeProfits?.length && (t.tpFilledCount ?? 0) > 0 ? (
-                          <span className="muted" style={{ fontSize: 11 }}>
-                            {" "}
-                            ({t.tpFilledCount}/{t.takeProfits.length} hit)
-                          </span>
-                        ) : null}
+                        {(() => {
+                          // "X/Y hit" counts BOTH manual partials booked and native
+                          // TPs actually filled by price. A manual book is a taken
+                          // leg; every native TP (filled or still pending) is a leg.
+                          const taken = (t.manualPartials ?? 0) + (t.tpFilledCount ?? 0);
+                          const total = (t.manualPartials ?? 0) + (t.takeProfits?.length ?? 0);
+                          return total > 0 && taken > 0 ? (
+                            <span className="muted" style={{ fontSize: 11 }}>
+                              {" "}
+                              ({taken}/{total} hit)
+                            </span>
+                          ) : null;
+                        })()}
                       </span>
                     )}
                   </td>
