@@ -120,6 +120,12 @@ function fracWord(s: string): number | undefined {
 // "TP1 hit", "target reached", "area 1 reached", "4RR", "done and dusted".
 const RE_TPHIT =
   /\b(?:tp\s*\d*\s*(?:hit|reached|done)|target\s*\d*\s*(?:reached|hit|smashed|done)|area\s*\d*\s*reached|\d+\s*rr\b|done\s+and\s+dusted)\b/i;
+// A TP MILESTONE that the provider booked/hit ("TP1 booked", "first TP done",
+// "booked TP1", "TP1 secured/filled/locked"). Books the DEFAULT fraction by TP
+// count (1 TP → 50%, N TPs → 1/N), filled in by the engine — so "TP1 booked here"
+// mirrors the provider's partial even without a stated %.
+const RE_TP_BOOKED =
+  /\b(?:tp\s*\d*|first\s+tp|1st\s+tp|second\s+tp|2nd\s+tp|third\s+tp|3rd\s+tp)\s*(?:booked|hit|done|reached|secured|filled|locked(?:\s*in)?|complete[d]?|taken)\b|\b(?:booked|secured|locked(?:\s*in)?|hit|reached|taken)\s+(?:the\s+)?(?:tp\s*\d+|first\s+tp|1st\s+tp)\b/i;
 
 // Strong markers that a message is a PROGRESS UPDATE about an already-open trade
 // (an update heading, a stop already at break-even, the trade "protected/running"
@@ -175,10 +181,15 @@ export function classifyManagementAll(text: string): ManagementAction[] {
 
   const pm = text.match(RE_PARTIAL_A) ?? text.match(RE_PARTIAL_B);
   let partial = false;
-  // Ignore a percentage that is really a P&L reference (e.g. "close … down 2.5%")
-  // — the matched phrase carrying up/down/profit/loss means the % is a result,
-  // not a booking size. A genuine "book 50%" / "closed 50%" has no such word.
-  if (pm && RE_PNL_WORD.test(pm[0])) {
+  // Ignore a percentage that is really a P&L reference (e.g. "close … down 2.5%",
+  // "securing an impressive 18.5% gain") — the % is a RESULT, not a booking size.
+  // Check the matched phrase AND a short window AFTER the % (so "18.5% unleveraged
+  // gain" is caught even though "gain" sits just past the match). "book 20% profit"
+  // is NOT caught: only a following "gain(s)" marks a result — "profit" after a
+  // tight book verb stays a booking size.
+  const pmCtx = pm ? text.slice(pm.index!, pm.index! + pm[0].length + 18) : "";
+  const pmResult = pm && (RE_PNL_WORD.test(pm[0]) || /%\s*(?:\w+\s+){0,2}gains?\b/i.test(pmCtx));
+  if (pmResult) {
     // treated as no partial → a bare close (if present) will close in full
   } else if (pm) {
     const pct = Number(pm[1]);
@@ -196,7 +207,7 @@ export function classifyManagementAll(text: string): ManagementAction[] {
   if (!partial) {
     const fm = text.match(RE_PARTIAL_FRAC);
     const frac = fm ? fracWord(fm[1]!) : undefined;
-    if (frac !== undefined && !(pm && RE_PNL_WORD.test(pm[0]))) {
+    if (frac !== undefined && !pmResult) {
       add({ kind: "partial_close", symbol, fraction: frac, alsoBreakeven: isBreakeven(text), note: `book ${Math.round(frac * 100)}%` });
       partial = true;
     }
@@ -205,6 +216,14 @@ export function classifyManagementAll(text: string): ManagementAction[] {
   // group's default fraction (fraction left undefined; the engine fills it in).
   if (!partial && (RE_PARTIAL_WORD.test(text) || RE_TRIM.test(text) || RE_PARTIAL_GAINS.test(text))) {
     add({ kind: "partial_close", symbol, alsoBreakeven: isBreakeven(text), note: "book partial (default %)" });
+    partial = true;
+  }
+  // A TP MILESTONE was booked/hit with no explicit % → book the DEFAULT fraction
+  // by TP count (engine fills it in): "TP1 booked here" → 50% on a 1-TP setup,
+  // 1/3 on a 3-TP setup. This mirrors the provider taking a TP even when they only
+  // state the milestone, not a size.
+  if (!partial && RE_TP_BOOKED.test(text)) {
+    add({ kind: "partial_close", symbol, alsoBreakeven: isBreakeven(text), note: "TP booked → default fraction" });
     partial = true;
   }
 
@@ -217,7 +236,9 @@ export function classifyManagementAll(text: string): ManagementAction[] {
     if (newStop !== undefined) add({ kind: "sl_move", symbol, newStop, note: `move SL to ${newStop}` });
   }
 
-  if (RE_TPHIT.test(text)) add({ kind: "tp_hit", symbol, note: "TP reached" });
+  // Generic milestone ("4RR", "done and dusted", "target smashed") with no
+  // booked-partial already emitted → informational tp_hit (no size to book).
+  if (!partial && RE_TPHIT.test(text)) add({ kind: "tp_hit", symbol, note: "TP reached" });
 
   return out;
 }

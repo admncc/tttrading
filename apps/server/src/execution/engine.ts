@@ -26,6 +26,17 @@ const ACT_THRESHOLD = 0.6;
 /** Trade ids currently being closed/reduced, to prevent concurrent double-closes. */
 export const closing = new Set<string>();
 
+/**
+ * The last coin a group's message acted on (entry or management), for cross-
+ * message symbol inheritance: a symbol-less SAFE follow-up ("Also setting SL
+ * breakeven Gang", right after "booking 30% Tp1 [on FARTCOIN]") inherits that
+ * coin instead of being dropped as ambiguous. Uppercase canonical venue symbol.
+ */
+const lastManaged = new Map<string, { symbol: string; at: number }>();
+const INHERIT_WINDOW_MS = 15 * 60_000; // a follow-up must be close in time
+/** Management kinds safe to inherit a symbol for — never a destructive close. */
+const INHERIT_KINDS = new Set<ManagementAction["kind"]>(["sl_breakeven", "sl_move", "partial_close"]);
+
 /** The venue a trade lives on (defaults to Hyperliquid for legacy rows). */
 function connectorFor(trade: Trade): ExchangeConnector {
   return byName(trade.exchange);
@@ -286,6 +297,24 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
         if (mv?.isManagement && mv.confidence >= 0.5) {
           const kinds = new Set(actions.map((a) => a.kind));
 
+          // RECAP-CLOSE GUARD: a full-close is destructive. A celebratory "trade
+          // update / summary" ("$TAO delivered a clean move, securing an impressive
+          // 18.5% gain ✅") carries NO close/exit verb and must never flatten a
+          // runner. Require an explicit close verb in the text OR high confidence
+          // for a full close; else drop it (and any rule close it triggered) and
+          // treat the post as the recap it is.
+          if (mv.closed && !KIND_VERB_RE.close!.test(rawText) && mv.confidence < 0.8) {
+            event(
+              "manage",
+              `Ignoring full-close for ${mv.symbol ?? "?"} — trade-update/summary with no close verb (conf ${mv.confidence.toFixed(2)})`,
+              { symbol: mv.symbol, confidence: mv.confidence },
+              { level: "warn", groupId: group.id },
+            );
+            mv = { ...mv, closed: false };
+            actions = actions.filter((a) => a.kind !== "close");
+            kinds.delete("close");
+          }
+
           // ASYMMETRIC per-coin management ("Closed BTC, booking 50% on ETH";
           // "stopped SOL out, moved SUI to breakeven"). The flat schema can only
           // carry ONE close/partial/BE, so both used to collapse onto mv.symbol —
@@ -359,8 +388,17 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
               const beTargets: string[] = wantBE ? named : [];
               let partialTargets: string[] = wantPartial ? named : [];
               if (wantPartial && wantBE) {
+                // Restrict the partial to ONE coin ONLY when it is genuinely
+                // ASYMMETRIC — the partial verb and the breakeven verb point at
+                // DIFFERENT coins ("book Tp1 Zama … set SL breakeven on Jasmy").
+                // When both verbs point at the same coin, or can't be separated
+                // ("Book 20% profit AND move Stop-loss to entry" on SOL and FET),
+                // it is SYMMETRIC → book EVERY named coin. (Truly per-coin messages
+                // are carried by per_symbol above; the LLM's "on SOL+FET" reading
+                // must not be silently narrowed to one coin here — the SOL miss.)
                 const pNear = inNamed(namedNearestToVerb(rawText, KIND_VERB_RE.partial_close!, named) ?? taggedNearestToVerb(rawText, KIND_VERB_RE.partial_close!));
-                partialTargets = pNear ? [pNear] : named; // fall back to all only if unattributable
+                const bNear = inNamed(namedNearestToVerb(rawText, KIND_VERB_RE.sl_breakeven!, named) ?? taggedNearestToVerb(rawText, KIND_VERB_RE.sl_breakeven!));
+                if (pNear && bNear && pNear !== bNear) partialTargets = [pNear];
               }
               for (const s of partialTargets)
                 actions.push({ kind: "partial_close", symbol: s, fraction: partialFrac, explicitSymbol: true, note: `book ${partialFrac ? Math.round(partialFrac * 100) + "%" : "partial"} ${s}` });
@@ -1071,6 +1109,7 @@ async function applyManagement(
 
   const results: string[] = [];
   let acted = false;
+  const actedSymbols = new Set<string>();
 
   for (const action of actions) {
     // Re-read state per action — an earlier action (e.g. cancel_limit) may have
@@ -1102,7 +1141,27 @@ async function applyManagement(
       const near = verb ? taggedNearestToVerb(rawText, verb) : undefined;
       if (near && near !== canonicalSymbol(action.symbol ?? "")) action.symbol = near;
     }
-    const { sym, named } = deriveSymbol(action, held, rawText);
+    let { sym } = deriveSymbol(action, held, rawText);
+    const { named } = deriveSymbol(action, held, rawText);
+    // Cross-message inheritance: a symbol-less SAFE follow-up ("Also setting SL
+    // breakeven Gang") right after we acted on ONE coin for this group inherits
+    // that coin, instead of being dropped as ambiguous among several open
+    // positions. Only for non-destructive kinds, only when that coin is still
+    // held, only within a short window, and only when the text names no coin of
+    // its own (so a genuine multi-coin recap still can't be hijacked).
+    if (!sym && !action.symbol && !action.explicitSymbol && INHERIT_KINDS.has(action.kind) && named.length === 0) {
+      const inh = lastManaged.get(group.id);
+      if (inh && Date.now() - inh.at <= INHERIT_WINDOW_MS && held.includes(inh.symbol)) {
+        sym = inh.symbol;
+        action.symbol = inh.symbol;
+        event(
+          "manage",
+          `Inherited ${inh.symbol} for a symbol-less ${action.kind} from the group's preceding message`,
+          { inherited: inh.symbol, kind: action.kind },
+          { groupId: group.id },
+        );
+      }
+    }
     const referencedHeld = heldReferencedInText(held, rawText);
     // `explicitSymbol` actions were enumerated one-per-coin by the LLM ("close A
     // and B"), so each has a trustworthy target — the recap guard must not block
@@ -1225,8 +1284,10 @@ async function applyManagement(
           continue;
         }
       } else if (action.kind === "partial_close") {
-        // Explicit % from the message, else the group's default partial fraction.
-        const frac = action.fraction ?? Math.min(0.95, Math.max(0.01, (group.settings.defaultPartialPct ?? 50) / 100));
+        // Explicit % from the message, else the default slice ONE TP rung
+        // represents for THIS trade (1 TP → 50%, N TPs → 1/N), falling back to the
+        // group default when the trade has no TPs.
+        const frac = action.fraction ?? defaultPartialFraction(t.takeProfits?.length ?? 0, group.settings.defaultPartialPct ?? 50);
         await partialClose(t, frac);
         if (action.alsoBreakeven) {
           const fresh = tradesRepo.get(t.id);
@@ -1240,11 +1301,16 @@ async function applyManagement(
         }
       }
       acted = true;
+      actedSymbols.add(t.symbol.toUpperCase());
       const u = tradesRepo.get(t.id);
       if (u) broadcast({ type: "trade", trade: u });
     }
     results.push(`${action.note} → ${targets.map((t) => t.symbol).join(", ")}`);
   }
+
+  // Remember the coin this message managed, for a symbol-less follow-up to inherit
+  // (only when we acted on exactly ONE — an unambiguous "current" coin).
+  if (actedSymbols.size === 1) lastManaged.set(group.id, { symbol: [...actedSymbols][0]!, at: Date.now() });
 
   const signal = signalsRepo.create({
     groupId: group.id,
@@ -1745,6 +1811,10 @@ async function execute(
     event("exec", `Routing ${parsed.symbol} to ${ex.name}`, { exchange: ex.name }, { groupId: group.id, signalId: signal.id });
   }
 
+  // Remember the entered coin so a symbol-less management follow-up ("SL to
+  // breakeven") right after this entry can inherit it (cross-message context).
+  lastManaged.set(group.id, { symbol: parsed.symbol.toUpperCase(), at: Date.now() });
+
   // Scale-in: a signal with several entry zones becomes one FULL-size order per
   // leg, all sharing this signal, stop-loss and take-profits. A single entry
   // takes the normal path.
@@ -1807,6 +1877,19 @@ export const TP_CONSUME_BAND = 0.015;
 export function shouldConsumeTp(exitPx: number, nextTpPrice: number): boolean {
   if (!(exitPx > 0) || !(nextTpPrice > 0)) return false;
   return Math.abs(exitPx - nextTpPrice) / nextTpPrice <= TP_CONSUME_BAND;
+}
+
+/**
+ * Default partial fraction when a provider signals a TP hit / "book" with NO
+ * explicit percentage: book the slice that ONE take-profit rung represents. A
+ * single-TP setup books 50% (never the whole position on a "TP1 booked"); a
+ * multi-TP setup books 1/N (e.g. 1/3 on three TPs). Falls back to the group's
+ * configured default when the trade carries no take-profits.
+ */
+export function defaultPartialFraction(tpCount: number, fallbackPct: number): number {
+  if (tpCount === 1) return 0.5;
+  if (tpCount >= 2) return 1 / tpCount;
+  return Math.min(0.95, Math.max(0.01, fallbackPct / 100));
 }
 
 /**
