@@ -48,7 +48,7 @@ export function Trades({
   prices: Record<string, number>;
   onChange: () => void;
 }) {
-  const [statuses, setStatuses] = useState<Set<StatusChip>>(new Set(["open", "working"]));
+  const [statuses, setStatuses] = useState<Set<StatusChip>>(new Set(["open"]));
   const [group, setGroup] = useState("all");
   const [outcome, setOutcome] = useState<"all" | "profit" | "loss">("all");
   const [view, setView] = useState<"active" | "archive">("active");
@@ -261,7 +261,7 @@ export function Trades({
         <div style={{ flex: 1 }} />
         <span className="muted" style={{ fontSize: 12, alignSelf: "center" }}>{shown.length} shown</span>
         {(statuses.size !== 2 || !statuses.has("open") || !statuses.has("working") || group !== "all" || outcome !== "all") && (
-          <button className="ghost" onClick={() => { setStatuses(new Set(["open", "working"])); setGroup("all"); setOutcome("all"); }}>Reset</button>
+          <button className="ghost" onClick={() => { setStatuses(new Set(["open"])); setGroup("all"); setOutcome("all"); }}>Reset</button>
         )}
       </div>
 
