@@ -199,6 +199,12 @@ export function Analytics() {
             />
             <Kpi label="Best / Worst" value={`${usd(o!.bestTrade)} / ${usd(o!.worstTrade)}`} />
             <Kpi label="Total Fees" value={usd(o!.totalFees)} cls="neg" />
+            <Kpi label="Margin — open (now)" value={usd(data.boundMargin.open)} />
+            <Kpi label="Margin — working (now)" value={usd(data.boundMargin.working)} />
+            <Kpi
+              label="Max margin (range)"
+              value={usd(data.boundMargin.maxInRange)}
+            />
           </div>
 
           <div className="panel">

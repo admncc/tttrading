@@ -270,5 +270,56 @@ export function analytics(opts: {
     equityCurve: equityCurve(list),
     closedTrades,
     includesSimulated,
+    boundMargin: boundMargin(opts.from, opts.to, opts.includeShadow),
   };
+}
+
+/** Initial margin a trade binds = its notional / effective leverage. */
+function marginOf(notional: number, leverage: number): number {
+  return notional / Math.max(1, leverage);
+}
+
+/**
+ * Bound capital (margin). `open`/`working` are the CURRENT live snapshot; `maxInRange`
+ * is the peak CONCURRENT position margin over [from,to] — a sweep of every filled
+ * position's lifetime (open→close, or →window-end while still open), each valued at
+ * its INITIAL notional (the most it ever bound). Working orders are a now-only figure
+ * (their reserve is released on fill/cancel and isn't reliably timelined).
+ */
+function boundMargin(from?: string, to?: string, includeShadow?: boolean): {
+  open: number;
+  working: number;
+  maxInRange: number;
+} {
+  const all = tradesRepo.list(10000).filter((t) => (includeShadow || !t.shadow) && !t.archived);
+  const open = all
+    .filter((t) => t.status === "open")
+    .reduce((s, t) => s + marginOf((t.openSize ?? t.size) * t.entryPrice, t.leverage), 0);
+  const working = all
+    .filter((t) => t.status === "working")
+    .reduce((s, t) => s + marginOf(t.notionalUsd, t.leverage), 0);
+
+  // Peak concurrent position margin over the window.
+  const winFrom = from ?? "0000";
+  const winTo = to ?? "9999";
+  const events: { t: string; d: number }[] = [];
+  for (const t of all) {
+    if (t.status === "working") continue; // positions only
+    const start = t.openedAt;
+    const end = t.status === "closed" ? t.closedAt ?? t.openedAt : winTo; // still open → window end
+    const s = start > winFrom ? start : winFrom;
+    const e = end < winTo ? end : winTo;
+    if (s >= e) continue; // lifetime doesn't intersect the window
+    const m = marginOf((t.initialSize ?? t.size) * t.entryPrice, t.leverage);
+    events.push({ t: s, d: m }, { t: e, d: -m });
+  }
+  // At an equal instant, release (-) before bind (+) so a hand-off isn't double-counted.
+  events.sort((a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : a.d - b.d));
+  let run = 0;
+  let peak = 0;
+  for (const ev of events) {
+    run += ev.d;
+    if (run > peak) peak = run;
+  }
+  return { open, working, maxInRange: peak };
 }

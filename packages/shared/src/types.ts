@@ -577,6 +577,12 @@ export interface AnalyticsResponse {
   closedTrades: number;
   /** Whether simulated (test-mode) trades are included. */
   includesSimulated: boolean;
+  /**
+   * Bound capital (initial margin = notional / leverage). `open` and `working` are
+   * the CURRENT live figures (a now-snapshot, independent of the range);
+   * `maxInRange` is the peak CONCURRENT position margin over the selected window.
+   */
+  boundMargin: { open: number; working: number; maxInRange: number };
 }
 
 /** Result of replaying a channel's historical signals against real prices. */

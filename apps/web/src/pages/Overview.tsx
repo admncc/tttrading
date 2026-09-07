@@ -93,7 +93,16 @@ export function Overview({
   const o = stats.overall;
 
   // Resting limit orders waiting for a fill (not yet positions).
-  const workingCount = trades.filter((t) => t.status === "working" && !t.shadow).length;
+  const workingList = trades.filter((t) => t.status === "working" && !t.shadow);
+  const workingCount = workingList.length;
+
+  // Bound capital (initial margin = notional / leverage): what's locked right now
+  // in open positions (current remaining size) vs reserved by resting orders.
+  const marginOf = (notional: number, lev: number) => notional / Math.max(1, lev);
+  const openMargin = trades
+    .filter((t) => t.status === "open" && !t.shadow)
+    .reduce((s, t) => s + marginOf((t.openSize ?? t.size) * t.entryPrice, t.leverage), 0);
+  const workingMargin = workingList.reduce((s, t) => s + marginOf(t.notionalUsd, t.leverage), 0);
 
   // Live unrealized PnL across open (non-shadow) trades from current marks.
   const openTrades = trades.filter((t) => t.status === "open" && !t.shadow);
@@ -146,6 +155,8 @@ export function Overview({
         <Kpi label="Trades" value={String(o.trades)} />
         <Kpi label="Open" value={String(o.openTrades)} />
         <Kpi label="Working orders" value={String(workingCount)} />
+        <Kpi label="Margin — open" value={usd(openMargin)} />
+        <Kpi label="Margin — working" value={usd(workingMargin)} />
         <Kpi
           label="Open uPnL"
           value={marked > 0 ? usd(openUpnl) : "—"}
