@@ -50,7 +50,7 @@ function emit(
   category: string,
   message: string,
   meta?: Record<string, unknown>,
-  ids?: { groupId?: string; signalId?: string },
+  ids?: { groupId?: string; signalId?: string; tradeId?: string },
 ): void {
   const entry: LogEntry = {
     id: nanoid(),
@@ -61,6 +61,7 @@ function emit(
     meta,
     groupId: ids?.groupId,
     signalId: ids?.signalId,
+    tradeId: ids?.tradeId,
   };
   ring.push(entry);
   if (ring.length > RING_MAX) ring.shift();
@@ -92,7 +93,7 @@ export function event(
   category: string,
   message: string,
   meta?: Record<string, unknown>,
-  opts?: { level?: LogLevel; groupId?: string; signalId?: string },
+  opts?: { level?: LogLevel; groupId?: string; signalId?: string; tradeId?: string },
 ): void {
   emit(opts?.level ?? "info", category, message, meta, opts);
 }

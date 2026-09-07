@@ -178,6 +178,9 @@ function migrate(database: Database.Database): void {
     signals: {
       risk: "TEXT",
     },
+    logs: {
+      trade_id: "TEXT",
+    },
   };
   for (const [table, cols] of Object.entries(additions)) {
     const existing = (

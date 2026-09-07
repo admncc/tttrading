@@ -1,6 +1,6 @@
 import type { Trade } from "@tttrading/shared";
 import { config } from "../config.js";
-import { log } from "../logger.js";
+import { log, event } from "../logger.js";
 import { groups as groupsRepo, trades as tradesRepo } from "../db/repositories.js";
 import type { FillLite } from "../hyperliquid/connector.js";
 import { known as knownExchanges, byName } from "../exchanges/registry.js";
@@ -515,9 +515,12 @@ async function reconcileTrade(
     if (updated) {
       broadcast({ type: "trade", trade: updated });
       alertClosed(updated);
-      log.info(
+      event(
+        "exec",
         `Reconciled close ${trade.symbol} ${trade.side} — PnL ${(bankedPnl - bankedFees + grossPnl - fees).toFixed(2)} USDC ` +
           `(${tpFilled}/${tpOids.length} TP)`,
+        { tradeId: trade.id, exitPrice, realizedPnl: bankedPnl - bankedFees + grossPnl - fees, tpFilled },
+        { groupId: trade.groupId, tradeId: trade.id },
       );
     }
     return true;
@@ -540,7 +543,18 @@ async function reconcileTrade(
   //    fills) are untouched — no double-count.
   const liveSize = posMap?.get(trade.symbol.toUpperCase());
   const patch: Partial<Trade> = {};
-  if (tpFilled !== (trade.tpFilledCount ?? 0)) patch.tpFilledCount = tpFilled;
+  if (tpFilled !== (trade.tpFilledCount ?? 0)) {
+    patch.tpFilledCount = tpFilled;
+    // Timeline event: a native take-profit rung filled on the exchange.
+    if (tpFilled > (trade.tpFilledCount ?? 0)) {
+      event(
+        "exec",
+        `Native TP ${tpFilled}/${tpOids.length} filled for ${trade.symbol} ${trade.side}`,
+        { tradeId: trade.id, tpFilled, tpRealizedPnl: tpRealizedNet },
+        { groupId: trade.groupId, tradeId: trade.id },
+      );
+    }
+  }
   // Sync the shown remaining size only when the exchange holds LESS than we show
   // (a scale-out happened) and it's a real reduction, not a stale/zero read.
   if (liveSize !== undefined && liveSize > 0 && liveSize < (trade.openSize ?? trade.size) - 1e-9) {
@@ -611,7 +625,12 @@ async function moveSlToBreakeven(
         log.warn(`Break-even: could not cancel old SL ${fresh.slOrderId} for ${fresh.symbol} (orphaned, reduce-only): ${err instanceof Error ? err.message : err}`);
       }
     }
-    log.info(`Moved SL to break-even (${fresh.entryPrice}) for ${fresh.symbol} — ${remaining} left`);
+    event(
+      "manage",
+      `Moved SL to break-even (${fresh.entryPrice}) for ${fresh.symbol} — ${remaining} left`,
+      { tradeId: fresh.id, breakeven: fresh.entryPrice, remaining },
+      { groupId: fresh.groupId, tradeId: fresh.id },
+    );
   } finally {
     closing.delete(trade.id);
   }

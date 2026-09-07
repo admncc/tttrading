@@ -521,6 +521,7 @@ interface LogRow {
   meta: string | null;
   group_id: string | null;
   signal_id: string | null;
+  trade_id: string | null;
 }
 
 function toLog(r: LogRow): LogEntry {
@@ -533,6 +534,7 @@ function toLog(r: LogRow): LogEntry {
     meta: r.meta ? (JSON.parse(r.meta) as Record<string, unknown>) : undefined,
     groupId: r.group_id ?? undefined,
     signalId: r.signal_id ?? undefined,
+    tradeId: r.trade_id ?? undefined,
   };
 }
 
@@ -581,8 +583,8 @@ export const messageImages = {
 export const logs = {
   create(entry: LogEntry): void {
     db.prepare(
-      `INSERT INTO logs (id, ts, level, category, message, meta, group_id, signal_id)
-       VALUES (@id, @ts, @level, @category, @message, @meta, @group_id, @signal_id)`,
+      `INSERT INTO logs (id, ts, level, category, message, meta, group_id, signal_id, trade_id)
+       VALUES (@id, @ts, @level, @category, @message, @meta, @group_id, @signal_id, @trade_id)`,
     ).run({
       id: entry.id,
       ts: entry.ts,
@@ -592,6 +594,7 @@ export const logs = {
       meta: entry.meta ? JSON.stringify(entry.meta) : null,
       group_id: entry.groupId ?? null,
       signal_id: entry.signalId ?? null,
+      trade_id: entry.tradeId ?? null,
     });
     // Periodically trim to the most recent LOG_CAP rows — unless retention is
     // unlimited (LOG_CAP === 0), in which case the full history is kept.
@@ -643,6 +646,24 @@ export const logs = {
   },
   clear(): void {
     db.prepare("DELETE FROM logs").run();
+  },
+  /**
+   * Timeline for one trade (oldest first). Matches events tagged with this
+   * `tradeId` (management: partials, TP fills, SL/breakeven moves, close) OR
+   * carrying the trade's ENTRY `signalId` (open/fill/verdict events, which share
+   * the trade's own signal and are captured even for trades that predate tagging).
+   */
+  forTrade(tradeId: string, signalId?: string): LogEntry[] {
+    const rows = signalId
+      ? (db
+          .prepare(
+            "SELECT * FROM logs WHERE trade_id = ? OR signal_id = ? ORDER BY ts ASC, rowid ASC",
+          )
+          .all(tradeId, signalId) as LogRow[])
+      : (db
+          .prepare("SELECT * FROM logs WHERE trade_id = ? ORDER BY ts ASC, rowid ASC")
+          .all(tradeId) as LogRow[]);
+    return rows.map(toLog);
   },
 };
 

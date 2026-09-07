@@ -903,7 +903,7 @@ async function partialClose(tradeInput: Trade, rawFraction: number): Promise<boo
       `Booked ${(frac * 100).toFixed(0)}% of ${trade.symbol} @ ${exitPx} — banked ${(legPnl - legFee).toFixed(2)} USDC` +
         (consumeTp ? ` · swallowed native TP @ ${nextTp} (booked ≈ that level; ${newTakeProfits.length} left)` : ""),
       { fraction: frac, exitPx, closedSize, legPnl, legFee, remainingSize: remaining, consumeTp, nextTp },
-      { groupId: trade.groupId },
+      { groupId: trade.groupId, tradeId: trade.id },
     );
 
     // Re-size the resting protective orders to the REMAINING position. A partial
@@ -2515,7 +2515,7 @@ async function recordFilledEntry(
     "exec",
     `Trade opened ${parsed.side} ${parsed.symbol} (${fill.simulated ? "sim" : "live"})`,
     { tradeId: trade.id, entry: trade.entryPrice, size: trade.size, protected: bracket.protectedOnExchange },
-    { groupId: group.id, signalId: signal.id },
+    { groupId: group.id, signalId: signal.id, tradeId: trade.id },
   );
   alertOpened(trade);
   broadcast({ type: "signal", signal: executed });
@@ -2734,7 +2734,7 @@ export async function cancelWorkingTrade(tradeId: string, reason: string): Promi
     }
     const updated = tradesRepo.update(tradeId, { status: "canceled", error: reason });
     if (updated) {
-      event("exec", `Working order canceled (${reason}) ${t.side} ${t.symbol}`, { tradeId }, { level: "warn", groupId: t.groupId });
+      event("exec", `Working order canceled (${reason}) ${t.side} ${t.symbol}`, { tradeId }, { level: "warn", groupId: t.groupId, tradeId });
       broadcast({ type: "trade", trade: updated });
       pushStats();
     }
@@ -2768,7 +2768,7 @@ export async function setTradeStop(
   if (!ok) return { ok: false, error: `stop ${price} is on the wrong side of ${ref} for a ${trade.side}` };
   const moved = await moveStop(trade, price, false);
   if (!moved) return { ok: false, error: "another operation is in progress on this trade — try again in a moment" };
-  event("manage", `Desk set SL ${price} for ${trade.symbol}`, { price }, { groupId: trade.groupId });
+  event("manage", `Desk set SL ${price} for ${trade.symbol}`, { price }, { groupId: trade.groupId, tradeId: trade.id });
   return { ok: true, trade: tradesRepo.get(tradeId) };
 }
 
@@ -2782,9 +2782,16 @@ export async function bookTradePartial(
   if (trade.shadow) return { ok: false, error: "shadow trade" };
   if (trade.status !== "open") return { ok: false, error: "trade not open" };
   if (!(fraction > 0 && fraction < 1)) return { ok: false, error: "fraction must be between 0 and 1" };
+  // Distinguish a concurrent-op (lock) from a real rejection: reporting a lock as
+  // "exchange rejected" would invite a retry that double-books once the lock frees.
+  if (closing.has(tradeId)) {
+    return { ok: false, error: "trade busy — another operation is in progress, try again in a moment" };
+  }
   const booked = await partialClose(trade, fraction);
-  if (!booked) return { ok: false, error: "partial not booked — the exchange rejected the reduce order (e.g. below its minimum size)" };
-  event("manage", `Desk booked ${(fraction * 100).toFixed(0)}% of ${trade.symbol}`, { fraction }, { groupId: trade.groupId });
+  if (!booked) {
+    return { ok: false, error: "partial not booked — the exchange rejected the reduce order (e.g. below its minimum size) or there was no live position to reduce" };
+  }
+  event("manage", `Desk booked ${(fraction * 100).toFixed(0)}% of ${trade.symbol}`, { fraction }, { groupId: trade.groupId, tradeId: trade.id });
   return { ok: true, trade: tradesRepo.get(tradeId) };
 }
 

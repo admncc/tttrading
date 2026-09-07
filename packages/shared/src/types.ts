@@ -609,6 +609,12 @@ export interface LogEntry {
   meta?: Record<string, unknown>;
   groupId?: string;
   signalId?: string;
+  /**
+   * The trade this event belongs to, when it's a trade-lifecycle event (open,
+   * TP fill, manual/booked partial, SL/breakeven move, close, cancel). Lets the
+   * desk assemble a per-trade history timeline. Absent on non-trade events.
+   */
+  tradeId?: string;
 }
 
 /** Messages broadcast over the WebSocket to the desk. */
