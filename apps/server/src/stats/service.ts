@@ -292,9 +292,19 @@ function boundMargin(from?: string, to?: string, includeShadow?: boolean): {
   maxInRange: number;
 } {
   const all = tradesRepo.list(10000).filter((t) => (includeShadow || !t.shadow) && !t.archived);
+  // Live remaining size: openSize when synced, else subtract native TP fills (a
+  // native TP bumps tpFilledCount but doesn't decrement `size`), so a TP-hit
+  // position's margin drops instead of showing the full entry size.
+  const remainingSize = (t: Trade): number => {
+    if (t.openSize !== undefined) return t.openSize;
+    const n = t.takeProfits?.length ?? 0;
+    const filled = t.tpFilledCount ?? 0;
+    if (n > 0 && filled > 0) return t.size * Math.max(0, Math.min(1, (n - filled) / n));
+    return t.size;
+  };
   const open = all
     .filter((t) => t.status === "open")
-    .reduce((s, t) => s + marginOf((t.openSize ?? t.size) * t.entryPrice, t.leverage), 0);
+    .reduce((s, t) => s + marginOf(remainingSize(t) * t.entryPrice, t.leverage), 0);
   const working = all
     .filter((t) => t.status === "working")
     .reduce((s, t) => s + marginOf(t.notionalUsd, t.leverage), 0);

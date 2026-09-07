@@ -99,9 +99,19 @@ export function Overview({
   // Bound capital (initial margin = notional / leverage): what's locked right now
   // in open positions (current remaining size) vs reserved by resting orders.
   const marginOf = (notional: number, lev: number) => notional / Math.max(1, lev);
+  // Live remaining size: openSize when the monitor has synced it, else subtract the
+  // NATIVE TP fills — a native TP bumps tpFilledCount but does NOT decrement `size`,
+  // so without this a TP-hit position would still show its full margin.
+  const remainingSize = (t: Trade): number => {
+    if (t.openSize !== undefined) return t.openSize;
+    const n = t.takeProfits?.length ?? 0;
+    const filled = t.tpFilledCount ?? 0;
+    if (n > 0 && filled > 0) return t.size * Math.max(0, Math.min(1, (n - filled) / n));
+    return t.size;
+  };
   const openMargin = trades
     .filter((t) => t.status === "open" && !t.shadow)
-    .reduce((s, t) => s + marginOf((t.openSize ?? t.size) * t.entryPrice, t.leverage), 0);
+    .reduce((s, t) => s + marginOf(remainingSize(t) * t.entryPrice, t.leverage), 0);
   const workingMargin = workingList.reduce((s, t) => s + marginOf(t.notionalUsd, t.leverage), 0);
 
   // Live unrealized PnL across open (non-shadow) trades from current marks.
