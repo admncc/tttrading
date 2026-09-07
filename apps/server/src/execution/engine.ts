@@ -99,7 +99,32 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
       );
     }
   }
-  const tradeUpdate = (isTradeUpdate(rawText) || manageIntent) && !parsed?.dca;
+  let tradeUpdate = (isTradeUpdate(rawText) || manageIntent) && !parsed?.dca;
+  // A message tagged as a trade UPDATE that actually carries a FRESH SETUP (an
+  // "entry"/"cmp" cue plus a level) for a symbol the group holds NOTHING in is a
+  // mislabeled NEW entry — Trader Gauls posts new setups under "$X TRADE UPDATE".
+  // Left as a trade-update it would fall into the management path, find no position
+  // to manage, and no-op (the FIL miss). Reclassify it as an entry. A genuine recap
+  // of an EXISTING position still has an open/working leg (→ stays management), and
+  // a pure commentary/recap has no entry cue (→ stays management).
+  if (tradeUpdate && parsed && parsed.confidence >= ACT_THRESHOLD) {
+    const psym = canonicalSymbol(parsed.symbol);
+    const looksLikeSetup =
+      /\b(entry|cmp)\b/i.test(rawText) &&
+      (parsed.stopLoss !== undefined || parsed.entry !== undefined || (parsed.takeProfits?.length ?? 0) > 0);
+    const held = [...tradesRepo.open(), ...tradesRepo.working()].some(
+      (t) => t.groupId === group.id && !t.shadow && canonicalSymbol(t.symbol) === psym,
+    );
+    if (looksLikeSetup && !held && !isMarketCommentary(rawText)) {
+      event(
+        "message",
+        `Parsed ${parsed.side.toUpperCase()} ${parsed.symbol}: tagged a trade UPDATE but carries a fresh setup and the group holds no ${parsed.symbol} — treating as a NEW entry`,
+        { source: parsed.source, confidence: parsed.confidence, symbol: parsed.symbol },
+        { level: "warn", groupId: group.id },
+      );
+      tradeUpdate = false;
+    }
+  }
   if (parsed && parsed.confidence >= ACT_THRESHOLD && tradeUpdate) {
     event(
       "message",
