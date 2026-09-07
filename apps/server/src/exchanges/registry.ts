@@ -1,4 +1,4 @@
-import type { ExchangeName } from "@tttrading/shared";
+import type { ExchangeName, TradingEnv } from "@tttrading/shared";
 import { log } from "../logger.js";
 import { hyperliquid, hyperliquidTestnet, HyperliquidConnector } from "../hyperliquid/connector.js";
 import { aster } from "./aster.js";
@@ -37,6 +37,43 @@ function enabledExchanges(): ExchangeConnector[] {
     if (enabled[name] && !out.includes(ex)) out.push(ex);
   }
   return out;
+}
+
+/**
+ * The env label to stamp on a trade: the venue's ACTUAL network — NOT
+ * `config.tradingEnv`. Those diverge when `TRADING_ENV` says one thing but the
+ * configured keys route real orders to another network (the desk once stamped
+ * every live-mainnet trade "testnet" because TRADING_ENV defaulted to testnet).
+ * A simulated fill is "paper" (no real order was sent); a real fill takes the
+ * connector's network — only the dedicated testnet HL venue is "testnet", every
+ * other venue (mainnet HL, Aster, MEXC) is "mainnet".
+ */
+export function connectorEnv(ex: ExchangeConnector, simulated: boolean): TradingEnv {
+  if (simulated) return "paper";
+  return ex.name === "hyperliquid-testnet" ? "testnet" : "mainnet";
+}
+
+/**
+ * Warn when TRADING_ENV disagrees with the network real orders will actually
+ * route to. The desk routes by which venues/keys are ENABLED, independent of
+ * TRADING_ENV — so `TRADING_ENV=testnet` (or the unset default) with a live
+ * mainnet venue silently sends REAL mainnet orders under a "testnet" label (the
+ * exact state that made every live trade read as testnet). Returns a warning to
+ * surface loudly at boot, or undefined when config and routing agree.
+ */
+export function envRoutingWarning(): string | undefined {
+  const live = enabledExchanges().filter((ex) => ex.live && !ex.simulating());
+  if (live.length === 0) return undefined; // paper / no keys — nothing real routes
+  const names = live.map((e) => e.name).join(", ");
+  const routesMainnet = live.some((ex) => connectorEnv(ex, false) === "mainnet");
+  const routesTestnet = live.some((ex) => connectorEnv(ex, false) === "testnet");
+  if (routesMainnet && config.tradingEnv !== "mainnet") {
+    return `TRADING_ENV=${config.tradingEnv} but a LIVE MAINNET venue is enabled (${names}) — REAL mainnet orders WILL execute, and were being labeled "${config.tradingEnv}". Set TRADING_ENV=mainnet so trades are labeled correctly, or disable the mainnet venue.`;
+  }
+  if (routesTestnet && config.tradingEnv === "mainnet") {
+    return `TRADING_ENV=mainnet but the only live venue is TESTNET (${names}) — no real mainnet orders will route.`;
+  }
+  return undefined;
 }
 
 /** Look up a connector by its stored name; falls back to mainnet Hyperliquid. */

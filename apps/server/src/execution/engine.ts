@@ -7,7 +7,7 @@ import {
   trades as tradesRepo,
   settings as settingsRepo,
 } from "../db/repositories.js";
-import { activeHyperliquid, byName, known, resolveAllForSymbol, resolveForSymbol } from "../exchanges/registry.js";
+import { activeHyperliquid, byName, connectorEnv, known, resolveAllForSymbol, resolveForSymbol } from "../exchanges/registry.js";
 import type { ExchangeConnector } from "../exchanges/types.js";
 import { NOTIONAL_MAX_OFF, notionalOffFraction } from "../exchanges/pricing.js";
 import { parseSignal } from "../signals/parser.js";
@@ -1476,7 +1476,7 @@ async function createShadowTrade(
     symbol: parsed.symbol,
     side: parsed.side,
     status: "open",
-    env: config.tradingEnv,
+    env: connectorEnv(ex, ex.simulating()),
     exchange: ex.name,
     leverage,
     notionalUsd: tradeSizeUsd,
@@ -2447,7 +2447,7 @@ async function recordFilledEntry(
     symbol: parsed.symbol,
     side: parsed.side,
     status: "open",
-    env: config.tradingEnv,
+    env: connectorEnv(ex, fill.simulated),
     exchange: ex.name,
     // Store the leverage the venue ACTUALLY applied (clamped to the pair's max),
     // not the desk default — so margin figures match the exchange.
@@ -2572,7 +2572,7 @@ async function executeLimit(
     symbol: parsed.symbol,
     side: parsed.side,
     status: "working",
-    env: config.tradingEnv,
+    env: connectorEnv(ex, res.simulated),
     exchange: ex.name,
     // Leverage the venue will apply once this rests/fills (clamped to pair max).
     leverage: res.effectiveLeverage ?? group.settings.leverage,
@@ -2988,7 +2988,7 @@ export async function placeTestOrder(params: {
     symbol,
     side,
     status: "open",
-    env: config.tradingEnv,
+    env: connectorEnv(ex, result.simulated),
     exchange: ex.name,
     leverage,
     notionalUsd: sizeUsd,

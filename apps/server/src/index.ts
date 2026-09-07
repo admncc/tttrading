@@ -16,6 +16,7 @@ import { startSecondOpinionTracker, stopSecondOpinionTracker } from "./secondopi
 import { startWeeklyReport, stopWeeklyReport } from "./reports/weekly.js";
 import { loadMacroCalendarFromEnv } from "./features/calendar.js";
 import { broadcast } from "./ws/hub.js";
+import { envRoutingWarning } from "./exchanges/registry.js";
 
 async function main(): Promise<void> {
   // Persist every log entry and mirror it live to connected desk clients.
@@ -52,6 +53,14 @@ async function main(): Promise<void> {
   startSecondOpinionTracker();
   startWeeklyReport();
   void loadMacroCalendarFromEnv().then((n) => n && log.info(`Loaded ${n} macro calendar event(s) from MACRO_CALENDAR_FILE.`));
+
+  // Loudly flag a TRADING_ENV vs actual-routing mismatch — real mainnet orders
+  // must never run under a testnet/paper label unnoticed.
+  const envWarn = envRoutingWarning();
+  if (envWarn) {
+    log.error(`⚠️  ENV MISMATCH: ${envWarn}`);
+    if (alertsEnabled) void sendAlert(`⚠️ TT Desk ENV MISMATCH: ${envWarn}`);
+  }
 
   log.info(`Alerts ${alertsEnabled ? "enabled (Telegram bot)" : "disabled"}.`);
   log.info(`LLM signal fallback ${llmReady() ? "enabled" : "disabled (regex only)"}.`);
