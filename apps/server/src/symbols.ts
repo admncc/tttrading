@@ -9,6 +9,11 @@
 const GROUPS: string[][] = [
   ["GOLD", "XAU"], // canonical first
   ["SILVER", "XAG"],
+  // Project NAME vs exchange TICKER: a trader may write the project name while the
+  // venue lists the ticker. Canonical is the venue ticker so BOTH the entry parse
+  // and later management ("set SL breakeven on Pumpfun") resolve to the same held
+  // position — otherwise a name-only management message misses the ticker trade.
+  ["PUMP", "PUMPFUN", "PUMP.FUN"],
   // "k"/"1000" meme coins: the raw price is so small that venues list a
   // 1000-unit contract — Hyperliquid as kSHIB, Binance-style venues (Aster) as
   // 1000SHIB. Same asset; the price is ×1000. Canonical is the raw ticker, and
