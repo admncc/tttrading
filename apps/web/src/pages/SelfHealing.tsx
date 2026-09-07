@@ -3,20 +3,6 @@ import type { SelfHealingEntry, SelfHealingLearning } from "@tttrading/shared";
 import { api } from "../api.js";
 import { shortTime } from "../format.js";
 
-const VERDICT_COLOR: Record<string, string> = {
-  ok: "var(--pos)",
-  warn: "var(--warn)",
-  error: "var(--neg)",
-  skipped: "var(--muted)",
-};
-
-const VERDICT_LABEL: Record<string, string> = {
-  ok: "OK",
-  warn: "WARN",
-  error: "ERROR",
-  skipped: "SKIPPED",
-};
-
 /** A common option list; the desk can also type any model id by hand. */
 const MODEL_OPTIONS = [
   { id: "claude-fable-5-1", label: "Fable 5.1 (default)" },
@@ -24,6 +10,14 @@ const MODEL_OPTIONS = [
   { id: "claude-sonnet-5", label: "Sonnet 5" },
   { id: "claude-opus-5", label: "Opus 5" },
 ];
+
+type Filter = "all" | "ok" | "warn" | "error" | "veto";
+
+/** The colored feed-row modifier for a single review row. */
+function rowClass(h: SelfHealingEntry): string {
+  if (h.phase === "veto") return h.decision === "reject" ? "veto" : "veto-ok";
+  return h.verdict; // ok | warn | error | skipped
+}
 
 export function SelfHealing({
   live,
@@ -42,14 +36,25 @@ export function SelfHealing({
   const [history, setHistory] = useState<SelfHealingEntry[]>([]);
   const [cursor, setCursor] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
-  const [filter, setFilter] = useState<"all" | "error" | "warn" | "ok">("all");
+  const [filter, setFilter] = useState<Filter>("all");
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [learnings, setLearnings] = useState<SelfHealingLearning[]>([]);
-  const [showLearnings, setShowLearnings] = useState(false);
 
   const reloadLearnings = useCallback(() => {
     api.selfHealingLearnings().then(setLearnings).catch(() => {});
+  }, []);
+
+  const reload = useCallback(() => {
+    setLoading(true);
+    api
+      .selfHealing({ limit: 200 })
+      .then((r) => {
+        setHistory(r.entries);
+        setCursor(r.nextCursor);
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
   }, []);
 
   // Load settings + history once on mount.
@@ -66,20 +71,7 @@ export function SelfHealing({
       .catch(() => {});
     reload();
     reloadLearnings();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const reload = useCallback(() => {
-    setLoading(true);
-    api
-      .selfHealing({ limit: 200 })
-      .then((r) => {
-        setHistory(r.entries);
-        setCursor(r.nextCursor);
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
+  }, [reload, reloadLearnings]);
 
   const loadMore = () => {
     if (!cursor) return;
@@ -130,16 +122,30 @@ export function SelfHealing({
     }
   };
 
-  const shown = merged.filter((h) => (filter === "all" ? true : h.verdict === filter));
-  const counts = useMemo(() => {
-    const c = { error: 0, warn: 0, ok: 0 };
+  const stats = useMemo(() => {
+    const s = { total: 0, ok: 0, warn: 0, error: 0, skipped: 0, vetoBlocked: 0, vetoOk: 0, errUncommented: 0 };
     for (const h of merged) {
-      if (h.verdict === "error") c.error++;
-      else if (h.verdict === "warn") c.warn++;
-      else if (h.verdict === "ok") c.ok++;
+      s.total++;
+      if (h.phase === "veto") {
+        if (h.decision === "reject") s.vetoBlocked++;
+        else s.vetoOk++;
+      }
+      if (h.verdict === "error") {
+        s.error++;
+        if (!h.comment) s.errUncommented++;
+      } else if (h.verdict === "warn") s.warn++;
+      else if (h.verdict === "ok") s.ok++;
+      else if (h.verdict === "skipped") s.skipped++;
     }
-    return c;
+    return s;
   }, [merged]);
+
+  const vetoCount = stats.vetoBlocked + stats.vetoOk;
+  const pct = (n: number) => (stats.total > 0 ? Math.round((n / stats.total) * 100) : 0);
+
+  const shown = merged.filter((h) =>
+    filter === "all" ? true : filter === "veto" ? h.phase === "veto" : h.verdict === filter,
+  );
 
   const save = async (patch: {
     selfHealingEnabled?: boolean;
@@ -197,300 +203,438 @@ export function SelfHealing({
   };
 
   return (
-    <div>
-      <div className="row-between">
-        <h1 style={{ margin: 0 }}>Self Healing</h1>
-        <div className="btn-row">
-          {(["all", "error", "warn", "ok"] as const).map((f) => (
-            <button key={f} className={filter === f ? "primary" : "ghost"} onClick={() => setFilter(f)}>
-              {f === "all"
-                ? "all"
-                : `${f} (${f === "error" ? counts.error : f === "warn" ? counts.warn : counts.ok})`}
-            </button>
-          ))}
-          <button
-            className={showLearnings ? "primary" : "ghost"}
-            onClick={() => setShowLearnings((v) => !v)}
-            title="The reviewer's accumulated memory, distilled from your comments"
-          >
-            🧠 Learnings ({mergedLearnings.length})
-          </button>
-          <button className="ghost" onClick={reload}>
-            ↻
-          </button>
-          <button className="danger" onClick={clear}>
-            Clear
-          </button>
-        </div>
-      </div>
-
-      <div className="muted" style={{ fontSize: 12, margin: "6px 2px 12px" }}>
-        An independent LLM re-reads every incoming message and the action the system derived from it, and
-        flags anything it got wrong. It's briefed with the same desk memory + channel instructions the parser
-        uses, plus its own <strong>learnings</strong> (distilled from your comments below). Comment on any
-        review to teach it — that note becomes a learning it's briefed with next time. Analysis only — it never
-        changes anything on its own.
-      </div>
-
-      {showLearnings && (
-        <div className="panel" style={{ marginBottom: 14 }}>
-          <div className="row-between" style={{ marginBottom: 8 }}>
-            <h2 style={{ margin: 0, fontSize: 15 }}>🧠 Learnings (reviewer memory)</h2>
-            <span className="muted" style={{ fontSize: 11 }}>
-              Folded into every future review's briefing (most recent {Math.min(mergedLearnings.length, 60)} used).
-            </span>
-          </div>
-          {mergedLearnings.length === 0 ? (
-            <div className="empty" style={{ padding: "8px 0" }}>
-              No learnings yet. Comment on a review below and it's added here.
+    <>
+      {/* ---------------- Independent reviewer ---------------- */}
+      <section className="panel">
+        <div className="panel-head">
+          <h2>
+            Independent reviewer
+            <span className="sub">briefed with global memory + channel instructions + its own learnings</span>
+          </h2>
+          {vetoFlow && (
+            <div className="actions">
+              <span className="tag error">veto active</span>
+              <span className="tag warn plain">fail-open</span>
             </div>
-          ) : (
-            mergedLearnings.map((l) => (
-              <div
-                key={l.id}
-                style={{
-                  display: "flex",
-                  gap: 8,
-                  alignItems: "baseline",
-                  padding: "6px 0",
-                  borderBottom: "1px solid var(--border)",
-                }}
-              >
-                <span className="muted" style={{ fontSize: 11, whiteSpace: "nowrap" }}>
-                  {shortTime(l.ts)}
-                </span>
-                <span style={{ flex: 1, fontSize: 13 }}>{l.text}</span>
-                <button className="ghost" style={{ fontSize: 11 }} onClick={() => deleteLearning(l.id)}>
-                  ✕
-                </button>
-              </div>
-            ))
           )}
         </div>
-      )}
-
-      <div className="panel" style={{ marginBottom: 14 }}>
-        <div className="row-between" style={{ flexWrap: "wrap", gap: 12 }}>
-          <label style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-            <input type="checkbox" checked={enabled} onChange={toggleEnabled} disabled={saving} />
-            <span>
-              <strong>Enable Self-Healing review</strong>
-              <span className="muted" style={{ fontSize: 12 }}>
-                {" "}
-                — review every incoming message
-              </span>
-            </span>
-          </label>
-
-          <label style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-            <span className="muted" style={{ fontSize: 12 }}>
-              Model
-            </span>
-            <input
-              list="heal-models"
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              onBlur={() => model.trim() && model !== savedModel && save({ selfHealingModel: model.trim() })}
-              style={{ width: 240 }}
-              placeholder="claude-fable-5-1"
-            />
-            <datalist id="heal-models">
-              {MODEL_OPTIONS.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.label}
-                </option>
-              ))}
-            </datalist>
-            {model !== savedModel && (
-              <button
-                className="primary"
-                disabled={saving || !model.trim()}
-                onClick={() => save({ selfHealingModel: model.trim() })}
+        <div className="panel-body">
+          <div
+            className="form-grid"
+            style={{ gridTemplateColumns: "1.2fr 1fr 1.2fr 1fr", gap: "16px 24px" }}
+          >
+            <div>
+              <span
+                className={`switch${enabled ? " on" : ""}${saving ? " disabled" : ""}`}
+                role="switch"
+                aria-checked={enabled}
+                onClick={() => {
+                  if (!saving) void toggleEnabled();
+                }}
               >
-                Save
-              </button>
-            )}
-          </label>
-        </div>
-
-        <div style={{ marginTop: 12, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
-          <label style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-            <input
-              type="checkbox"
-              checked={vetoFlow}
-              onChange={toggleVetoFlow}
-              disabled={saving || !enabled}
-            />
-            <span>
-              <strong>Veto flow</strong>
-              <span className="muted" style={{ fontSize: 12 }}>
-                {" "}
-                — reviewer approves/blocks every action <em>before</em> it executes
-              </span>
-            </span>
-          </label>
-          <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
-            The system still reads messages and derives actions as usual, but each derived action (new entries
-            and management) is submitted to the reviewer as the final, independent decision instance — it
-            approves the action or blocks it. <strong>This changes live behaviour.</strong> If the reviewer is
-            unavailable, the action proceeds (fail-open), so an LLM outage never halts trading.
-          </div>
-        </div>
-
-        <div style={{ marginTop: 12, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
-          <label style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-            <input type="checkbox" checked={autoRepair} onChange={toggleAutoRepair} disabled={saving} />
-            <span>
-              <strong>Auto-repair</strong>
-              <span className="muted" style={{ fontSize: 12 }}>
-                {" "}
-                — automatically apply low-risk fixes from the review
-              </span>
-            </span>
-          </label>
-          <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
-            ⚠ Not active yet — this preference is stored but the reviewer never changes anything. Leave it off
-            until the analyze-only reviews have proven reliable, then turn it on to let the system self-repair.
-          </div>
-        </div>
-      </div>
-
-      <div className="panel">
-        {shown.length === 0 ? (
-          <div className="empty">
-            {loading
-              ? "Loading…"
-              : enabled
-                ? "No analyses yet. Each incoming message is reviewed here as it arrives."
-                : "Self-Healing is off. Enable it above to start reviewing incoming messages."}
-          </div>
-        ) : (
-          shown.map((h) => (
-            <div
-              key={h.id}
-              style={{ padding: "8px 0", borderBottom: "1px solid var(--border)", cursor: "pointer" }}
-              onClick={() => setExpanded((e) => ({ ...e, [h.id]: !e[h.id] }))}
-            >
-              <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
-                <span className="muted" style={{ fontSize: 12 }}>
-                  {shortTime(h.ts)}
+                <span className="track" />
+                <span className="sw-text">
+                  <span>Enable Self-Healing review</span>
+                  <span className="hint">review every incoming message and the action derived from it</span>
                 </span>
-                {h.phase === "veto" ? (
-                  <span
-                    style={{
-                      fontWeight: 700,
-                      fontSize: 12,
-                      color: h.decision === "reject" ? "var(--neg)" : "var(--pos)",
-                    }}
-                    title="Pre-execution veto decision"
-                  >
-                    {h.decision === "reject" ? "⛔ VETO · BLOCKED" : "✓ VETO · OK"}
-                  </span>
-                ) : (
-                  <span
-                    style={{ color: VERDICT_COLOR[h.verdict] ?? "var(--text)", fontWeight: 700, fontSize: 12 }}
-                  >
-                    {VERDICT_LABEL[h.verdict] ?? h.verdict.toUpperCase()}
-                  </span>
-                )}
-                {h.groupName && (
-                  <span className="tag" style={{ fontSize: 11 }}>
-                    {h.groupName}
-                  </span>
-                )}
-                <span style={{ flex: 1, minWidth: 200 }}>{h.summary}</span>
-                {h.comment && <span title="you commented" style={{ fontSize: 12 }}>💬</span>}
-                <span className="muted" style={{ fontSize: 11 }}>
-                  {Math.round((h.confidence ?? 0) * 100)}% · {h.model}
-                </span>
-              </div>
-              {h.suggestion && (
-                <div
-                  style={{
-                    fontSize: 12.5,
-                    marginTop: 4,
-                    color: h.verdict === "error" ? "var(--neg)" : "var(--warn)",
-                  }}
+              </span>
+            </div>
+
+            <div className="field">
+              <label htmlFor="heal-model">Model</label>
+              <input
+                id="heal-model"
+                className="input mono"
+                list="heal-models"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                onBlur={() => model.trim() && model !== savedModel && save({ selfHealingModel: model.trim() })}
+                placeholder="claude-fable-5-1"
+              />
+              <datalist id="heal-models">
+                {MODEL_OPTIONS.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label}
+                  </option>
+                ))}
+              </datalist>
+              {model !== savedModel ? (
+                <button
+                  className="btn primary sm mt8"
+                  disabled={saving || !model.trim()}
+                  onClick={() => save({ selfHealingModel: model.trim() })}
                 >
-                  → {h.suggestion}
-                </div>
-              )}
-              {expanded[h.id] && (
-                <div style={{ marginTop: 8, display: "grid", gap: 8 }} onClick={(e) => e.stopPropagation()}>
-                  {h.messageExcerpt && (
-                    <div>
-                      <div className="muted" style={{ fontSize: 11, marginBottom: 2 }}>
-                        Incoming message
-                      </div>
-                      <pre style={preStyle}>{h.messageExcerpt}</pre>
-                    </div>
-                  )}
-                  {h.systemAction && (
-                    <div>
-                      <div className="muted" style={{ fontSize: 11, marginBottom: 2 }}>
-                        What the system did
-                      </div>
-                      <pre style={preStyle}>{h.systemAction}</pre>
-                    </div>
-                  )}
-                  <div>
-                    <div className="muted" style={{ fontSize: 11, marginBottom: 2 }}>
-                      Your comment {h.comment ? "" : "(becomes a learning the reviewer is briefed with)"}
-                    </div>
-                    {h.comment && (
-                      <div style={{ fontSize: 12.5, marginBottom: 6 }}>
-                        💬 {h.comment}
-                        {h.commentedAt && (
-                          <span className="muted" style={{ fontSize: 11 }}> · {shortTime(h.commentedAt)}</span>
-                        )}
-                      </div>
-                    )}
-                    <div style={{ display: "flex", gap: 8 }}>
-                      <textarea
-                        value={drafts[h.id] ?? ""}
-                        onChange={(ev) => setDrafts((d) => ({ ...d, [h.id]: ev.target.value }))}
-                        placeholder={
-                          h.comment
-                            ? "Add another note (it's added as a new learning)…"
-                            : "e.g. correct — never close on a 'stopped breakeven' recap"
-                        }
-                        rows={2}
-                        style={{ flex: 1, resize: "vertical", fontSize: 12.5 }}
-                      />
-                      <button
-                        className="primary"
-                        disabled={!(drafts[h.id] ?? "").trim()}
-                        onClick={() => submitComment(h.id)}
-                        style={{ alignSelf: "flex-start" }}
-                      >
-                        Teach
-                      </button>
-                    </div>
-                  </div>
-                </div>
+                  Save
+                </button>
+              ) : (
+                <span className="hint">any model id can be entered</span>
               )}
             </div>
-          ))
-        )}
-        {cursor && (
-          <div style={{ textAlign: "center", marginTop: 12 }}>
-            <button className="ghost" onClick={loadMore} disabled={loading}>
-              {loading ? "Loading…" : "Load older"}
-            </button>
+
+            <div>
+              <span
+                className={`switch danger${vetoFlow ? " on" : ""}${saving || !enabled ? " disabled" : ""}`}
+                role="switch"
+                aria-checked={vetoFlow}
+                onClick={() => {
+                  if (!saving && enabled) void toggleVetoFlow();
+                }}
+              >
+                <span className="track" />
+                <span className="sw-text">
+                  <span>Veto flow — pre-execution gate</span>
+                  <span className="hint">
+                    reviewer approves or blocks every action before it executes · fail-open if unavailable
+                  </span>
+                </span>
+              </span>
+            </div>
+
+            <div>
+              <span
+                className={`switch${autoRepair ? " on" : ""}${saving ? " disabled" : ""}`}
+                role="switch"
+                aria-checked={autoRepair}
+                onClick={() => {
+                  if (!saving) void toggleAutoRepair();
+                }}
+              >
+                <span className="track" />
+                <span className="sw-text">
+                  <span>Auto-repair</span>
+                  <span className="hint">inert for now — stored, but the reviewer never acts on it</span>
+                </span>
+              </span>
+            </div>
           </div>
-        )}
+        </div>
+      </section>
+
+      {/* ---------------- Verdict KPIs ---------------- */}
+      <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(6, 1fr)" }}>
+        <div className="kpi">
+          <div className="label">Reviews</div>
+          <div className="value">{stats.total}</div>
+          <div className="delta">every message reviewed</div>
+        </div>
+        <div className="kpi">
+          <div className="label">OK</div>
+          <div className="value">
+            <span className="gain">{stats.ok}</span>
+          </div>
+          <div className="delta">{pct(stats.ok)}%</div>
+        </div>
+        <div className="kpi">
+          <div className="label">Warn</div>
+          <div className="value">
+            <span className="warn">{stats.warn}</span>
+          </div>
+          <div className="delta">{pct(stats.warn)}%</div>
+        </div>
+        <div className="kpi">
+          <div className="label">Error</div>
+          <div className="value">
+            <span className="loss">{stats.error}</span>
+          </div>
+          <div className="delta">
+            {pct(stats.error)}%
+            {stats.errUncommented > 0 && ` · ${stats.errUncommented} uncommented`}
+          </div>
+        </div>
+        <div className="kpi">
+          <div className="label">Vetoes</div>
+          <div className="value">
+            <span className="loss">{stats.vetoBlocked}</span> <small>blocked</small> ·{" "}
+            <span className="gain">{stats.vetoOk}</span> <small>ok</small>
+          </div>
+          <div className="delta">pre-execution gate</div>
+        </div>
+        <div className="kpi">
+          <div className="label">Learnings</div>
+          <div className="value">{mergedLearnings.length}</div>
+          <div className="delta">briefed on every review</div>
+        </div>
       </div>
-    </div>
+
+      {/* ---------------- Feed + side panels ---------------- */}
+      <div className="grid-2" style={{ gridTemplateColumns: "minmax(0, 2fr) minmax(0, 1fr)" }}>
+        {/* Review feed */}
+        <section className="panel">
+          <div className="panel-head">
+            <h2>
+              Review feed<span className="sub">verdict-colored · veto rows render distinctly</span>
+            </h2>
+          </div>
+          <div className="panel-body flush">
+            <div className="between" style={{ padding: "10px 16px", borderBottom: "1px solid var(--line)" }}>
+              <div className="seg">
+                {(
+                  [
+                    ["all", "All", stats.total],
+                    ["ok", "OK", stats.ok],
+                    ["warn", "Warn", stats.warn],
+                    ["error", "Error", stats.error],
+                    ["veto", "Veto", vetoCount],
+                  ] as const
+                ).map(([id, label, n]) => (
+                  <span
+                    key={id}
+                    className={`seg-item${filter === id ? " active" : ""}`}
+                    onClick={() => setFilter(id)}
+                  >
+                    {label}
+                    <span className="n">{n}</span>
+                  </span>
+                ))}
+              </div>
+              <div className="flex">
+                <span className="small muted">
+                  <span className="dot live" /> live · newest first
+                </span>
+                <button className="btn ghost sm" onClick={reload} disabled={loading} title="Refresh">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M3 12a9 9 0 1 0 3-6.7" />
+                    <path d="M3 4v5h5" />
+                  </svg>
+                </button>
+                <button className="btn danger sm" onClick={clear}>
+                  Clear…
+                </button>
+              </div>
+            </div>
+
+            {shown.length === 0 ? (
+              <div className="empty">
+                <span className="e-icon">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M3 12h4l2-5 4 10 2-5h6" />
+                  </svg>
+                </span>
+                <div className="e-title">{loading ? "Loading…" : "No reviews yet"}</div>
+                <div className="e-why">
+                  {loading
+                    ? "Fetching the review feed…"
+                    : enabled
+                      ? "Each incoming message is reviewed here as it arrives."
+                      : "Self-Healing is off. Enable review above to start judging incoming messages."}
+                </div>
+              </div>
+            ) : (
+              <div className="feed">
+                {shown.map((h) => {
+                  const isVeto = h.phase === "veto";
+                  const open = !!expanded[h.id];
+                  return (
+                    <div key={h.id}>
+                      <div
+                        className={`feed-row ${rowClass(h)}`}
+                        role="button"
+                        aria-expanded={open}
+                        onClick={() => setExpanded((e) => ({ ...e, [h.id]: !e[h.id] }))}
+                      >
+                        <span className="vbar" />
+                        <span>
+                          {isVeto ? (
+                            h.decision === "reject" ? (
+                              <span className="tag error plain">⛔ veto · blocked</span>
+                            ) : (
+                              <span className="tag ok plain">✓ veto · ok</span>
+                            )
+                          ) : (
+                            <span className={`tag ${h.verdict}`}>{h.verdict}</span>
+                          )}
+                        </span>
+                        <span className="gist">
+                          {h.summary}
+                          {h.comment && " 💬"}
+                          {h.systemAction && <span className="sys">→ {h.systemAction}</span>}
+                        </span>
+                        <span className="small ink2">{h.groupName ?? "—"}</span>
+                        <span className="conf">
+                          {h.confidence > 0 ? `conf ${h.confidence.toFixed(2)}` : "conf —"}
+                        </span>
+                        <span className="when">{shortTime(h.ts)}</span>
+                        <span
+                          className="chev"
+                          style={{ transform: open ? "rotate(180deg)" : undefined }}
+                        >
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <path d="M6 9l6 6 6-6" />
+                          </svg>
+                        </span>
+                      </div>
+
+                      {open && (
+                        <div className="feed-detail">
+                          <div>
+                            {h.messageExcerpt && (
+                              <>
+                                <span className="caps">
+                                  Original message{h.groupName ? ` · ${h.groupName}` : ""} · {shortTime(h.ts)}
+                                </span>
+                                <div className="quote mt8">{h.messageExcerpt}</div>
+                              </>
+                            )}
+                            {h.systemAction && (
+                              <>
+                                <span className="caps mt12" style={{ display: "block" }}>
+                                  What the system did
+                                </span>
+                                <div className="quote mono mt8">{h.systemAction}</div>
+                              </>
+                            )}
+                          </div>
+
+                          <div>
+                            {h.suggestion && (
+                              <div className="callout suggest">
+                                <span className="k">Suggestion</span>
+                                {h.suggestion}
+                              </div>
+                            )}
+                            {h.comment && (
+                              <div className={`callout learn${h.suggestion ? " mt12" : ""}`}>
+                                <span className="k">Your comment → learning</span>
+                                {h.comment}
+                                {h.commentedAt && (
+                                  <div className="small muted mt8">saved {shortTime(h.commentedAt)}</div>
+                                )}
+                              </div>
+                            )}
+                            <div className="field mt12">
+                              <label htmlFor={`teach-${h.id}`}>
+                                Teach the reviewer{" "}
+                                <span className="hint">
+                                  {h.comment ? "adds another learning" : "your note becomes a learning it's briefed with"}
+                                </span>
+                              </label>
+                              <textarea
+                                id={`teach-${h.id}`}
+                                className="input"
+                                value={drafts[h.id] ?? ""}
+                                onChange={(ev) => setDrafts((d) => ({ ...d, [h.id]: ev.target.value }))}
+                                placeholder={
+                                  h.comment
+                                    ? "Add another correction or context…"
+                                    : "e.g. correct — never close on a 'stopped breakeven' recap"
+                                }
+                                style={{ minHeight: 56 }}
+                              />
+                            </div>
+                            <div className="between mt8">
+                              <span className="small muted">
+                                model {h.model}
+                                {isVeto && ` · ${h.decision === "reject" ? "blocked" : "approved"}`}
+                              </span>
+                              <button
+                                className="btn primary sm"
+                                disabled={!(drafts[h.id] ?? "").trim()}
+                                onClick={() => submitComment(h.id)}
+                              >
+                                Save comment
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          <div className="panel-foot">
+            <span>{merged.length} reviews loaded</span>
+            {cursor && (
+              <button className="btn ghost sm" onClick={loadMore} disabled={loading}>
+                {loading ? "Loading…" : "Load older"}
+              </button>
+            )}
+          </div>
+        </section>
+
+        {/* Side column */}
+        <div className="col">
+          {/* Learnings */}
+          <section className="panel">
+            <div className="panel-head">
+              <h2>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M9 4a3 3 0 0 0-3 3v1a3 3 0 0 0-2 3 3 3 0 0 0 2 3v1a3 3 0 0 0 3 3h1V4z" />
+                  <path d="M15 4a3 3 0 0 1 3 3v1a3 3 0 0 1 2 3 3 3 0 0 1-2 3v1a3 3 0 0 1-3 3h-1V4z" />
+                </svg>
+                Learnings
+                <span className="sub">the reviewer's accumulated memory · {mergedLearnings.length}</span>
+              </h2>
+            </div>
+            <div className="panel-body">
+              {mergedLearnings.length === 0 ? (
+                <div className="empty">
+                  <div className="e-why">No learnings yet. Comment on a review and it's distilled into one here.</div>
+                </div>
+              ) : (
+                mergedLearnings.map((l) => (
+                  <div key={l.id} className="learning">
+                    <div>
+                      <div>{l.text}</div>
+                      <div className="src">
+                        {l.groupName ? `${l.groupName} · ` : ""}
+                        {shortTime(l.ts)}
+                      </div>
+                    </div>
+                    <button
+                      className="btn ghost icon sm"
+                      title="Delete learning"
+                      onClick={() => deleteLearning(l.id)}
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6" />
+                      </svg>
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+            <div className="panel-foot">
+              <span>Every comment you save is distilled into one durable learning and briefed on all future reviews.</span>
+            </div>
+          </section>
+
+          {/* How the loop works */}
+          <section className="panel">
+            <div className="panel-head">
+              <h2>How the loop works</h2>
+            </div>
+            <div className="panel-body">
+              <div className="stack" style={{ gap: 8 }}>
+                <div className="flex">
+                  <span className="tag review">1 · review</span>
+                  <span className="small">independent LLM re-reads the message and judges the action</span>
+                </div>
+                <div className="flex">
+                  <span className="tag brand">2 · teach</span>
+                  <span className="small">you comment on a review → it becomes a learning</span>
+                </div>
+                <div className="flex">
+                  <span className="tag error">3 · veto</span>
+                  <span className="small">
+                    with veto flow on, it approves or blocks every action <b>before</b> execution
+                  </span>
+                </div>
+                <div
+                  className="callout mt8"
+                  style={{ borderColor: "var(--warn-line)", background: "var(--warn-soft)" }}
+                >
+                  <span className="k" style={{ color: "var(--warn)" }}>
+                    Fail-open
+                  </span>
+                  If the reviewer is unavailable the action proceeds — an LLM outage never halts trading.
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </>
   );
 }
-
-const preStyle: React.CSSProperties = {
-  margin: 0,
-  padding: 8,
-  background: "var(--bg)",
-  borderRadius: 6,
-  overflowX: "auto",
-  whiteSpace: "pre-wrap",
-  fontSize: 12,
-  fontFamily: "ui-monospace, monospace",
-};
