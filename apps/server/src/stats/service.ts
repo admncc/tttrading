@@ -290,6 +290,8 @@ function boundMargin(from?: string, to?: string, includeShadow?: boolean): {
   open: number;
   working: number;
   maxInRange: number;
+  runMargin: number;
+  runCount: number;
 } {
   const all = tradesRepo.list(10000).filter((t) => (includeShadow || !t.shadow) && !t.archived);
   // Live remaining size: openSize when synced, else subtract native TP fills (a
@@ -313,6 +315,8 @@ function boundMargin(from?: string, to?: string, includeShadow?: boolean): {
   const winFrom = from ?? "0000";
   const winTo = to ?? "9999";
   const events: { t: string; d: number }[] = [];
+  let runMargin = 0; // total margin summed over every position that ran in the window
+  let runCount = 0; // how many positions ran in the window
   for (const t of all) {
     if (t.status === "working") continue; // positions only
     const start = t.openedAt;
@@ -322,6 +326,8 @@ function boundMargin(from?: string, to?: string, includeShadow?: boolean): {
     if (s >= e) continue; // lifetime doesn't intersect the window
     const m = marginOf((t.initialSize ?? t.size) * t.entryPrice, t.leverage);
     events.push({ t: s, d: m }, { t: e, d: -m });
+    runMargin += m;
+    runCount++;
   }
   // At an equal instant, release (-) before bind (+) so a hand-off isn't double-counted.
   events.sort((a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : a.d - b.d));
@@ -331,5 +337,5 @@ function boundMargin(from?: string, to?: string, includeShadow?: boolean): {
     run += ev.d;
     if (run > peak) peak = run;
   }
-  return { open, working, maxInRange: peak };
+  return { open, working, maxInRange: peak, runMargin, runCount };
 }

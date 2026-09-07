@@ -580,9 +580,17 @@ export interface AnalyticsResponse {
   /**
    * Bound capital (initial margin = notional / leverage). `open` and `working` are
    * the CURRENT live figures (a now-snapshot, independent of the range);
-   * `maxInRange` is the peak CONCURRENT position margin over the selected window.
+   * `maxInRange` is the peak CONCURRENT position margin over the selected window;
+   * `runMargin` is the TOTAL margin summed across every position that ran in the
+   * window (throughput, not concurrent), and `runCount` how many those were.
    */
-  boundMargin: { open: number; working: number; maxInRange: number };
+  boundMargin: {
+    open: number;
+    working: number;
+    maxInRange: number;
+    runMargin: number;
+    runCount: number;
+  };
 }
 
 /** Result of replaying a channel's historical signals against real prices. */
