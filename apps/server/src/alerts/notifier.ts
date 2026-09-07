@@ -76,7 +76,7 @@ export function alertOpened(trade: Trade, filledFromLimit = false): void {
   const head = filledFromLimit ? "🎯 <b>Limit filled</b>" : "🟢 <b>Opened</b>";
   void sendAlert(
     `${head} ${trade.side.toUpperCase()} ${esc(trade.symbol)} ` +
-      `${trade.leverage}x · ${trade.notionalUsd} USDC @ ${trade.entryPrice}\n` +
+      `${trade.leverage}x · ${trade.notionalUsd.toFixed(2)} USDC @ ${trade.entryPrice}\n` +
       `<i>${esc(trade.groupName)}${venueTag(trade)}</i>`,
   );
 }

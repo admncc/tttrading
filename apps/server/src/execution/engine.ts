@@ -1239,6 +1239,7 @@ async function applyManagement(
       continue;
     }
 
+    let anyActed = false;
     for (const t of targets) {
       if (action.kind === "close") {
         await closeTrade(t.id);
@@ -1304,17 +1305,17 @@ async function applyManagement(
         let beMoved = false;
         if (action.alsoBreakeven) {
           const fresh = tradesRepo.get(t.id);
-          if (fresh) {
-            await moveStop(fresh, fresh.entryPrice, true);
-            beMoved = true;
-          }
+          // moveStop returns false when a concurrent op holds the trade lock — only
+          // count the break-even as done when it actually moved.
+          if (fresh) beMoved = await moveStop(fresh, fresh.entryPrice, true);
         }
-        // A partial the venue rejected (e.g. below its $10 minimum) did NOT book —
-        // report it truthfully instead of logging a booking that never happened. A
-        // paired break-even that DID move still counts as acting on the message.
+        // A partial the venue rejected (e.g. below its $10 minimum), or that didn't
+        // book for any reason, did NOT act — report it truthfully instead of logging
+        // a booking that never happened. A paired break-even that DID move still
+        // counts as acting on the message.
         if (!booked && !beMoved) {
-          results.push(`partial ${(frac * 100).toFixed(0)}% of ${t.symbol} NOT booked (order rejected)`);
-          event("manage", `Partial NOT booked for ${t.symbol}: ${(frac * 100).toFixed(0)}% order rejected (e.g. below venue minimum)`, { fraction: frac, symbol: t.symbol }, { level: "warn", groupId: group.id });
+          results.push(`partial ${(frac * 100).toFixed(0)}% of ${t.symbol} not booked`);
+          event("manage", `Partial not booked for ${t.symbol}: ${(frac * 100).toFixed(0)}% not executed (order rejected — e.g. below venue minimum — or no live position)`, { fraction: frac, symbol: t.symbol }, { level: "warn", groupId: group.id });
           continue;
         }
       } else if (action.kind === "tp_hit") {
@@ -1325,11 +1326,15 @@ async function applyManagement(
         }
       }
       acted = true;
+      anyActed = true;
       actedSymbols.add(t.symbol.toUpperCase());
       const u = tradesRepo.get(t.id);
       if (u) broadcast({ type: "trade", trade: u });
     }
-    results.push(`${action.note} → ${targets.map((t) => t.symbol).join(", ")}`);
+    // Only append the action's success note when at least one target actually
+    // acted — otherwise the "not booked" line above would sit next to a
+    // contradictory "done → SYMBOL" note in the same managed-signal summary.
+    if (anyActed) results.push(`${action.note} → ${targets.map((t) => t.symbol).join(", ")}`);
   }
 
   // Remember the coin this message managed, for a symbol-less follow-up to inherit
@@ -1476,7 +1481,9 @@ async function createShadowTrade(
     symbol: parsed.symbol,
     side: parsed.side,
     status: "open",
-    env: connectorEnv(ex, ex.simulating()),
+    // A shadow trade is hypothetical — no order is ever sent — so it is always
+    // "paper", regardless of the venue's live state.
+    env: connectorEnv(ex, true),
     exchange: ex.name,
     leverage,
     notionalUsd: tradeSizeUsd,
@@ -1853,6 +1860,13 @@ interface LegCtx {
   index: number;
   total: number;
   mode: "market" | "limit";
+  /**
+   * Sizing reference for a scale-in MARKET leg. Such a leg deliberately carries no
+   * `entry` (so the missed-entry guard doesn't fire and it enters at cmp), which
+   * would also skip the connector's sizing-price sanity gate. When the leg had a
+   * stated price, thread it here so the gate still runs against a trusted reference.
+   */
+  refPrice?: number;
 }
 
 /**
@@ -2156,6 +2170,10 @@ async function placeEntry(
     return executeLimit(signal, group, parsed, risk, tradeSizeUsd, ex, leg);
   }
 
+  // Sizing-price reference for the market order: the stated entry, or (for a
+  // scale-in market leg that nulls out `entry`) the leg's stated price.
+  const sizingRef = parsed.entry ?? leg?.refPrice;
+
   // Market mode: don't chase an entry the market already ran past.
   // If the trader set an entry and the current price is already worse than it
   // (beyond maxSlippage) in the fill direction, record FAILED with the reason
@@ -2196,7 +2214,7 @@ async function placeEntry(
     leverage,
     marginMode,
     maxSlippage: entrySlip,
-    refPrice: parsed.entry,
+    refPrice: sizingRef,
   });
 
   // Retry ONCE, wider, ONLY when the aggressive IOC found no resting liquidity to
@@ -2218,7 +2236,7 @@ async function placeEntry(
       leverage,
       marginMode,
       maxSlippage: ENTRY_RETRY_SLIPPAGE,
-      refPrice: parsed.entry,
+      refPrice: sizingRef,
     });
   }
 
@@ -2252,7 +2270,7 @@ async function placeEntry(
     const off = notionalOffFraction(result.size, result.filledPrice, tradeSizeUsd);
     if (off !== undefined && off > NOTIONAL_MAX_OFF) {
       const actual = result.size * result.filledPrice;
-      const msg = `opened ${actual.toFixed(2)} USDC vs configured ${tradeSizeUsd.toFixed(2)} (off ${(off * 100).toFixed(0)}%) — likely a mis-sized order from a bad price`;
+      const msg = `opened ${actual.toFixed(2)} USDC vs configured ${tradeSizeUsd.toFixed(2)} (off ${(off * 100).toFixed(0)}%) — partial fill or a bad sizing price; verify the position size`;
       event("exec", `Notional MISMATCH ${parsed.symbol}: ${msg}`, { actual, configured: tradeSizeUsd, off, size: result.size, price: result.filledPrice }, { level: "error", groupId: group.id, signalId: signal.id });
       alertError(`notional ${parsed.symbol} (${group.name})`, msg);
     }
@@ -2334,7 +2352,13 @@ async function executeScaleIn(
       continue;
     }
     try {
-      await placeEntry(signal, group, legParsed, risk, ex, { index: i, total: legs.length, mode });
+      await placeEntry(signal, group, legParsed, risk, ex, {
+        index: i,
+        total: legs.length,
+        mode,
+        // Market legs null out `entry`; keep the stated price as a sizing reference.
+        refPrice: mode === "market" ? leg.price : undefined,
+      });
     } catch (err) {
       legErrors.push(`leg ${i + 1}: ${err instanceof Error ? err.message : String(err)}`);
       log.error(`scale-in leg ${i + 1} for ${parsed.symbol} failed:`, err instanceof Error ? err.message : err);

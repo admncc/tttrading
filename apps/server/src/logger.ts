@@ -23,7 +23,9 @@ export function recentLogs(opts?: {
   if (opts?.category) out = out.filter((e) => e.category === opts.category);
   if (opts?.minLevel) out = out.filter((e) => LEVEL_RANK[e.level] >= LEVEL_RANK[opts.minLevel!]);
   if (opts?.since) out = out.filter((e) => e.ts > opts.since!);
-  const n = opts?.limit && opts.limit > 0 ? Math.min(opts.limit, RING_MAX) : 300;
+  // limit <= 0 → the whole ring (bounded by RING_MAX anyway); undefined → 300.
+  const n =
+    opts?.limit === undefined ? 300 : opts.limit > 0 ? Math.min(opts.limit, RING_MAX) : RING_MAX;
   return out.slice(-n);
 }
 

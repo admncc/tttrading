@@ -11,9 +11,12 @@ const noSleep = async () => {};
 
 test("midDeviatesFromRef: within band is fine, gross gap flagged", () => {
   assert.equal(midDeviatesFromRef(0.55, 0.55105), false); // ~0.2% off
-  assert.equal(midDeviatesFromRef(0.6, 0.55, 0.2), false); // ~9% off, under 20%
+  assert.equal(midDeviatesFromRef(0.6, 0.55, 0.2), false); // ~9% off, under an explicit 20%
   assert.equal(midDeviatesFromRef(32.6, 0.55105), true); // the MNT bad tick (~5800%)
-  assert.equal(midDeviatesFromRef(0.4, 0.55), true); // ~27% off, over default 20%
+  // Default band is 0.5 (50%): a legitimate large drift from a stale entry passes,
+  // only order-of-magnitude corruption is flagged.
+  assert.equal(midDeviatesFromRef(0.4, 0.55), false); // ~27% off, under default 50%
+  assert.equal(midDeviatesFromRef(0.25, 0.55), true); // ~55% off, over default 50%
 });
 
 test("midDeviatesFromRef: non-positive inputs never flag (nothing to compare)", () => {

@@ -5,6 +5,7 @@ import { settings } from "../db/repositories.js";
 import { mexcApiKey, mexcApiSecret, mexcBaseUrl, mexcEnabled, mexcReady } from "./credentials.js";
 import { log } from "../logger.js";
 import { canonicalSymbol, symbolAliases } from "../symbols.js";
+import { resolveSizingMid } from "./pricing.js";
 import type {
   AccountSummary,
   AssetInfo,
@@ -382,6 +383,18 @@ export class MexcConnector implements ExchangeConnector {
     }
     if (!asset) return { ok: false, filledPrice: 0, size: 0, simulated: !this.live, error: `Unknown symbol ${req.symbol}` };
     if (!mid || mid <= 0) return { ok: false, filledPrice: 0, size: 0, simulated: !this.live, error: `No price for ${req.symbol}` };
+
+    // Sizing-price sanity gate (opens only): a corrupt/stale mid mis-sizes the order
+    // (size = notionalUsd / mid). Re-read a couple of ticks against the signal's
+    // stated entry; a transient bad tick self-heals, a persistent gross deviation
+    // fails the order closed. See exchanges/pricing.ts.
+    if (!req.reduceOnly && req.refPrice && req.refPrice > 0) {
+      const resolved = await resolveSizingMid(req.refPrice, mid, () => this.getMidPrice(req.symbol));
+      if ("error" in resolved) {
+        return { ok: false, filledPrice: mid, size: 0, simulated: !this.live, error: resolved.error };
+      }
+      mid = resolved.mid;
+    }
 
     const vol = coinsToVol(req.notionalUsd / mid, asset);
     const coinSize = vol * asset.contractSize;

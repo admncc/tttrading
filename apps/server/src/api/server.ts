@@ -1159,7 +1159,12 @@ export async function buildServer() {
     "/diagnostic/logs",
     async (req, reply) => {
       if (!diagGuard(req, reply)) return reply;
-      const limit = clampLimit(req.query.limit, 300, 2000);
+      // Diagnostic log reads are intentionally UNCAPPED: pass any limit to page
+      // deep into history, or omit it to return everything persisted. (source=db
+      // history depends on LOG_RETENTION_MAX — unlimited by default.) The ring
+      // buffer is naturally bounded by its in-memory size regardless.
+      const rawLimit = Math.floor(Number(req.query.limit));
+      const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : -1; // -1 = all
       // source=db reads the PERSISTED log (survives restarts, full history incl.
       // message/exec/manage); default "ring" is the in-memory buffer since boot.
       if (req.query.source === "db") {

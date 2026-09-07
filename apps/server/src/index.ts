@@ -55,11 +55,16 @@ async function main(): Promise<void> {
   void loadMacroCalendarFromEnv().then((n) => n && log.info(`Loaded ${n} macro calendar event(s) from MACRO_CALENDAR_FILE.`));
 
   // Loudly flag a TRADING_ENV vs actual-routing mismatch — real mainnet orders
-  // must never run under a testnet/paper label unnoticed.
-  const envWarn = envRoutingWarning();
-  if (envWarn) {
-    log.error(`⚠️  ENV MISMATCH: ${envWarn}`);
-    if (alertsEnabled) void sendAlert(`⚠️ TT Desk ENV MISMATCH: ${envWarn}`);
+  // must never run under a testnet/paper label unnoticed. Best-effort: a diagnostic
+  // must never take down an already-listening server.
+  try {
+    const envWarn = envRoutingWarning();
+    if (envWarn) {
+      log.error(`⚠️  ENV MISMATCH: ${envWarn}`);
+      if (alertsEnabled) void sendAlert(`⚠️ TT Desk ENV MISMATCH: ${envWarn}`);
+    }
+  } catch (err) {
+    log.warn("env-routing check failed (non-fatal):", err instanceof Error ? err.message : err);
   }
 
   log.info(`Alerts ${alertsEnabled ? "enabled (Telegram bot)" : "disabled"}.`);

@@ -536,7 +536,14 @@ function toLog(r: LogRow): LogEntry {
   };
 }
 
-const LOG_CAP = 5000;
+// Persisted-log retention. 0 (the default) = UNLIMITED — never trim, so the full
+// history stays queryable (e.g. to audit a weeks-old trade). Set LOG_RETENTION_MAX
+// to a positive row count to cap growth; note an unlimited log grows the SQLite
+// file without bound, so set a cap if disk is constrained.
+const LOG_CAP = (() => {
+  const n = Math.floor(Number(process.env.LOG_RETENTION_MAX));
+  return Number.isFinite(n) && n > 0 ? n : 0; // 0 = unlimited
+})();
 let logInserts = 0;
 
 /** Chart images attached to incoming messages (keyed by the signal record). */
@@ -582,19 +589,22 @@ export const logs = {
       group_id: entry.groupId ?? null,
       signal_id: entry.signalId ?? null,
     });
-    // Periodically trim to the most recent LOG_CAP rows.
-    if (++logInserts % 200 === 0) {
+    // Periodically trim to the most recent LOG_CAP rows — unless retention is
+    // unlimited (LOG_CAP === 0), in which case the full history is kept.
+    if (LOG_CAP > 0 && ++logInserts % 200 === 0) {
       db.prepare(
         `DELETE FROM logs WHERE id NOT IN (SELECT id FROM logs ORDER BY ts DESC LIMIT ?)`,
       ).run(LOG_CAP);
     }
   },
+  // limit <= 0 → return the ENTIRE history (SQLite treats LIMIT -1 as no limit).
   list(limit = 300, category?: string): LogEntry[] {
+    const lim = limit > 0 ? limit : -1;
     const rows = category
       ? (db
           .prepare("SELECT * FROM logs WHERE category = ? ORDER BY ts DESC LIMIT ?")
-          .all(category, limit) as LogRow[])
-      : (db.prepare("SELECT * FROM logs ORDER BY ts DESC LIMIT ?").all(limit) as LogRow[]);
+          .all(category, lim) as LogRow[])
+      : (db.prepare("SELECT * FROM logs ORDER BY ts DESC LIMIT ?").all(lim) as LogRow[]);
     return rows.map(toLog);
   },
   clear(): void {

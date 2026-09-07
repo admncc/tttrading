@@ -5,7 +5,7 @@ import { settings } from "../db/repositories.js";
 import { asterUser, asterSigner, asterPrivateKey, asterBaseUrl, asterEnabled, asterReady } from "./credentials.js";
 import { log } from "../logger.js";
 import { canonicalSymbol, symbolAliases } from "../symbols.js";
-import { NOTIONAL_MAX_OFF, notionalOffFraction, resolveSizingMid } from "./pricing.js";
+import { resolveSizingMid } from "./pricing.js";
 import type {
   AccountSummary,
   AssetInfo,
@@ -457,21 +457,9 @@ export class AsterConnector implements ExchangeConnector {
       mid = resolved.mid;
     }
 
+    // Notional-vs-configured is verified post-fill in the engine (against the
+    // actual fill); resolveSizingMid above already vetted the sizing mid.
     const size = roundStep(req.notionalUsd / mid, asset.stepSize, asset.szDecimals, "floor");
-    // Notional gate (opens only): confirm the order matches the configured size,
-    // valuing the computed size at the trusted entry (not the mid it came from).
-    if (!req.reduceOnly && req.refPrice && req.refPrice > 0) {
-      const off = notionalOffFraction(size, req.refPrice, req.notionalUsd);
-      if (off !== undefined && off > NOTIONAL_MAX_OFF) {
-        return {
-          ok: false,
-          filledPrice: mid,
-          size: 0,
-          simulated: !this.live,
-          error: `notional sanity: order would open ${(size * req.refPrice).toFixed(2)} USDC vs configured ${req.notionalUsd.toFixed(2)} (off ${(off * 100).toFixed(0)}%, max ${(NOTIONAL_MAX_OFF * 100).toFixed(0)}%) — refusing to size`,
-        };
-      }
-    }
     // A reduce-only close of a small remainder must always be attempted — never
     // block it on minQty, or cancelling its brackets first would orphan an
     // unprotected position that can't be closed. (Opens still respect minQty.)

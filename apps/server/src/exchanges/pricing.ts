@@ -14,8 +14,14 @@
  * price the feed itself won't confirm.
  */
 
-/** Max fractional deviation between the live sizing mid and the stated entry. */
-export const MID_REF_MAX_DEVIATION = 0.2;
+// Max fractional deviation between the live sizing mid and the stated entry before
+// the mid is treated as corrupt. Deliberately WIDE: the adverse-direction "entry
+// missed" check (engine) already rejects a market entry the price ran past at a
+// tight per-tier band, so this gate exists only to catch order-of-magnitude feed
+// corruption (the incident mid was ~5800% off). A narrower band would also reject
+// LEGITIMATE, correctly-sized entries when the real price simply drifted far from a
+// stale signal entry in the favorable direction. 50% cleanly separates the two.
+export const MID_REF_MAX_DEVIATION = 0.5;
 /** How many times to re-read the mid when the first read looks corrupt. */
 export const MID_REF_RECHECK_TRIES = 2;
 /** Wait between re-reads, so the upstream feed has a tick to correct itself. */
