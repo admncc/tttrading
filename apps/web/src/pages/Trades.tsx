@@ -188,6 +188,10 @@ export function Trades({
     if (!confirm(`Set ${t.symbol} stop-loss to ${p}?\n\n${t.side.toUpperCase()} · ${t.groupName}`)) return;
     void run(t.id, () => api.setTradeStop(t.id, p), "Set SL");
   };
+  const setBreakeven = (t: Trade) => {
+    if (!confirm(`Move ${t.symbol} stop-loss to break-even (entry ${t.entryPrice})?\n\n${t.side.toUpperCase()} · ${t.groupName}`)) return;
+    void run(t.id, () => api.setTradeBreakeven(t.id), "SL to BE");
+  };
   const setTps = (t: Trade) => {
     const prices = tpInput
       .split(/[,\s]+/)
@@ -530,7 +534,17 @@ export function Trades({
                             placeholder="price"
                             style={{ width: 110 }}
                           />{" "}
-                          <button disabled={busyId === t.id} onClick={() => setStop(t)}>Set SL</button>
+                          <button disabled={busyId === t.id} onClick={() => setStop(t)}>Set SL</button>{" "}
+                          {t.status === "open" && (
+                            <button
+                              className="ghost"
+                              disabled={busyId === t.id}
+                              title="Move the stop-loss to break-even (entry). Only works when the trade is in profit."
+                              onClick={() => setBreakeven(t)}
+                            >
+                              SL to BE
+                            </button>
+                          )}
                         </label>
                         <label style={{ fontSize: 12 }}>
                           <div className="muted" style={{ marginBottom: 2 }}>Take-profits (comma-separated)</div>

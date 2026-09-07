@@ -86,6 +86,7 @@ import {
 } from "../exchanges/credentials.js";
 import {
   bookTradePartial,
+  breakevenTrade,
   cancelWorkingTrade,
   closeAllTrades,
   closeTrade,
@@ -850,6 +851,14 @@ export async function buildServer() {
     const res = await setTradeStop(req.params.id, parsed.data.price);
     if (!res.ok) return reply.code(400).send({ error: res.error });
     audit(req, `set SL ${parsed.data.price} on ${res.trade?.symbol ?? req.params.id} (${res.trade?.groupName ?? "?"})`, { id: req.params.id, group: res.trade?.groupName });
+    return res.trade;
+  });
+
+  // One-click move the stop to break-even (entry). Rejected if not in profit.
+  app.post<{ Params: { id: string } }>("/api/trades/:id/breakeven", async (req, reply) => {
+    const res = await breakevenTrade(req.params.id);
+    if (!res.ok) return reply.code(400).send({ error: res.error });
+    audit(req, `set SL to break-even on ${res.trade?.symbol ?? req.params.id} (${res.trade?.groupName ?? "?"})`, { id: req.params.id, group: res.trade?.groupName });
     return res.trade;
   });
 

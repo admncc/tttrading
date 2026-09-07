@@ -374,6 +374,8 @@ export const api = {
     req<Trade>(`/api/trades/${id}/close`, { method: "POST", body: JSON.stringify({ exitPrice }) }),
   setTradeStop: (id: string, price: number) =>
     req<Trade>(`/api/trades/${id}/stop`, { method: "POST", body: JSON.stringify({ price }) }),
+  setTradeBreakeven: (id: string) =>
+    req<Trade>(`/api/trades/${id}/breakeven`, { method: "POST" }),
   setTradeTakeProfits: (id: string, prices: number[]) =>
     req<Trade>(`/api/trades/${id}/take-profits`, { method: "POST", body: JSON.stringify({ prices }) }),
   bookPartial: (id: string, fraction: number) =>

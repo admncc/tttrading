@@ -2788,6 +2788,40 @@ export async function setTradeStop(
   return { ok: true, trade: tradesRepo.get(tradeId) };
 }
 
+/**
+ * Move a trade's stop to BREAK-EVEN (its entry) from the desk — a stop-limit at
+ * entry (never slips into a loss) with the breakeven flag set. Only valid on a
+ * FILLED position that is IN PROFIT: a stop at entry while the price is still at/
+ * below entry (long) sits on the wrong side of the market and would trigger
+ * immediately, so it's rejected with a clear reason instead.
+ */
+export async function breakevenTrade(
+  tradeId: string,
+): Promise<{ ok: boolean; error?: string; trade?: Trade }> {
+  const trade = tradesRepo.get(tradeId);
+  if (!trade) return { ok: false, error: "not found" };
+  if (trade.shadow) return { ok: false, error: "shadow trade" };
+  if (trade.status !== "open") return { ok: false, error: "trade not open (break-even needs a filled position)" };
+  let ref = trade.entryPrice;
+  try {
+    const mid = await connectorFor(trade).getMidPrice(trade.symbol);
+    if (mid && mid > 0) ref = mid;
+  } catch {
+    /* use entry */
+  }
+  const inProfit = trade.side === "long" ? ref > trade.entryPrice : ref < trade.entryPrice;
+  if (!inProfit) {
+    return {
+      ok: false,
+      error: `can't set break-even — price ${ref} is not in profit vs entry ${trade.entryPrice}; a stop at entry would trigger immediately`,
+    };
+  }
+  const moved = await moveStop(trade, trade.entryPrice, true);
+  if (!moved) return { ok: false, error: "another operation is in progress on this trade — try again in a moment" };
+  event("manage", `Desk set SL to break-even (${trade.entryPrice}) for ${trade.symbol}`, { breakeven: trade.entryPrice }, { groupId: trade.groupId, tradeId: trade.id });
+  return { ok: true, trade: tradesRepo.get(tradeId) };
+}
+
 /** Manually book a fraction (0..0.95) of an open trade from the desk. */
 export async function bookTradePartial(
   tradeId: string,
