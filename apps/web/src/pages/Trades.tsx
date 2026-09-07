@@ -739,12 +739,16 @@ export function Trades({
                             <span className={`num ${pnlCls(uPnl)}`} title="Open unrealized PnL on the remaining size only">
                               {usdSigned(uPnl)}
                             </span>
+                            <span className="sub">uPnL</span>
                             {banked !== undefined ? (
-                              <span className="sub" title="Realized separately from partial exits">
-                                banked {usdSigned(banked)}
+                              <span className="sub" title="Realized separately from partial exits so far">
+                                banked{" "}
+                                <span style={{ color: banked >= 0 ? "var(--gain)" : "var(--loss)" }}>
+                                  {usdSigned(banked)}
+                                </span>
                               </span>
                             ) : (
-                              <span className="sub">unrealized</span>
+                              <span className="sub muted">no partials booked</span>
                             )}
                           </>
                         ) : banked !== undefined ? (
