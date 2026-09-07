@@ -293,6 +293,38 @@ function migrate(database: Database.Database): void {
     log.warn("limit-TTL migration skipped:", err instanceof Error ? err.message : err);
   }
 
+  // Working-limit TTL default reduced 14d (336h) → 10d (240h). One-time bump of
+  // groups still carrying the previous default (336) so a deliberately customized
+  // value is preserved; gated by its own flag so a later manual 336 stays put.
+  try {
+    const done = database
+      .prepare("SELECT value FROM app_settings WHERE key='migration:limitTtl10d'")
+      .get() as { value: string } | undefined;
+    if (!done) {
+      const rows = database.prepare("SELECT id, settings FROM groups").all() as { id: string; settings: string }[];
+      const upd = database.prepare("UPDATE groups SET settings=? WHERE id=?");
+      let changed = 0;
+      for (const r of rows) {
+        try {
+          const s = JSON.parse(r.settings) as { limitTimeoutHours?: number };
+          if (s && s.limitTimeoutHours === 336) {
+            s.limitTimeoutHours = 240;
+            upd.run(JSON.stringify(s), r.id);
+            changed++;
+          }
+        } catch {
+          /* skip a group with unparseable settings */
+        }
+      }
+      database
+        .prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('migration:limitTtl10d','1')")
+        .run();
+      if (changed) log.info(`Migrated: reduced working-limit TTL 336h→240h on ${changed} group(s).`);
+    }
+  } catch (err) {
+    log.warn("limit-TTL 10d migration skipped:", err instanceof Error ? err.message : err);
+  }
+
   // Correct realizedPnl mis-booked by the netted-position close bug: a close that
   // used the FULL netted exchange size (several traders' legs on one venue)
   // instead of the leg's own size booked another leg's loss against one record
