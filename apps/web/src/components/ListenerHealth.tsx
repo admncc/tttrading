@@ -30,9 +30,16 @@ export function ListenerHealth() {
   if (!h.configured) {
     return (
       <div className="panel">
-        <h2>Listener health</h2>
-        <div className="muted">
-          <span className="dot sim" /> Telegram not configured — running on manual input only.
+        <div className="panel-head">
+          <h2>
+            Listener health<span className="sub">Telegram</span>
+          </h2>
+        </div>
+        <div className="panel-body">
+          <div className="flex">
+            <span className="dot sim" />
+            <span className="muted small">Telegram not configured — running on manual input only.</span>
+          </div>
         </div>
       </div>
     );
@@ -49,65 +56,76 @@ export function ListenerHealth() {
 
   return (
     <div className="panel">
-      <div className="row-between">
-        <h2 style={{ margin: 0 }}>Listener health</h2>
-        <span style={{ fontSize: 12 }}>
-          <span className={`dot ${ok ? "live" : "sim"}`} />
-          {statusText}
-          <span className="muted">
-            {" · "}poll every {h.pollIntervalSec}s
-            {h.lastPollCycleAt
-              ? ` · last sweep ${dateTimeSec(h.lastPollCycleAt)} (${timeAgo(h.lastPollCycleAt)})`
-              : ""}
-          </span>
-        </span>
+      <div className="panel-head">
+        <h2>
+          Listener health<span className="sub">Telegram</span>
+        </h2>
+        <div className="actions">
+          <span className={`tag ${ok ? "ok" : "pending"}`}>{statusText}</span>
+        </div>
       </div>
-      <div className="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>Channel</th>
-              <th>Last message</th>
-              <th>Last poll</th>
-              <th>Recovered</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {h.groups.map((g) => (
-              <tr key={g.groupId}>
-                <td>
-                  {g.name} <span className="muted">{g.channel}</span>
-                </td>
-                <td className="muted" title={g.lastMessageAt ? dateTimeSec(g.lastMessageAt) : ""}>
-                  {g.lastMessageAt ? timeAgo(g.lastMessageAt) : "—"}
-                </td>
-                <td className="muted" title={g.lastPolledAt ? timeAgo(g.lastPolledAt) : ""}>
-                  {g.lastPolledAt ? dateTimeSec(g.lastPolledAt) : "—"}
-                </td>
-                <td>{g.recoveredCount > 0 ? g.recoveredCount : <span className="muted">0</span>}</td>
-                <td>
-                  {g.lastError ? (
-                    <span className="neg" title={g.lastError}>
-                      error
-                    </span>
-                  ) : g.lastPolledAt ? (
-                    <span className="pos">ok</span>
-                  ) : (
-                    <span className="muted">—</span>
-                  )}
-                </td>
-              </tr>
-            ))}
-            {h.groups.length === 0 && (
+      <div className="panel-body flush">
+        <div className="between" style={{ padding: "12px 16px 10px" }}>
+          <div className="flex">
+            <span className={`dot ${ok ? "live" : "sim"}`} />
+            <span className="small muted">
+              poll every {h.pollIntervalSec}s
+              {h.lastPollCycleAt
+                ? ` · last sweep ${dateTimeSec(h.lastPollCycleAt)} (${timeAgo(h.lastPollCycleAt)})`
+                : ""}
+            </span>
+          </div>
+        </div>
+        <div className="table-scroll">
+          <table className="table compact">
+            <thead>
               <tr>
-                <td colSpan={5} className="empty">
-                  No channels configured.
-                </td>
+                <th>Channel</th>
+                <th>Last message</th>
+                <th>Last poll</th>
+                <th className="num">Recovered</th>
+                <th>State</th>
               </tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {h.groups.map((g) => (
+                <tr key={g.groupId}>
+                  <td>
+                    <span className="w600">{g.name}</span>
+                    <span className="sub">{g.channel}</span>
+                  </td>
+                  <td className="muted" title={g.lastMessageAt ? dateTimeSec(g.lastMessageAt) : ""}>
+                    {g.lastMessageAt ? timeAgo(g.lastMessageAt) : "—"}
+                  </td>
+                  <td className="muted" title={g.lastPolledAt ? timeAgo(g.lastPolledAt) : ""}>
+                    {g.lastPolledAt ? dateTimeSec(g.lastPolledAt) : "—"}
+                  </td>
+                  <td className="num">
+                    {g.recoveredCount > 0 ? g.recoveredCount : <span className="muted">0</span>}
+                  </td>
+                  <td>
+                    {g.lastError ? (
+                      <span className="tag error" title={g.lastError}>
+                        error
+                      </span>
+                    ) : g.lastPolledAt ? (
+                      <span className="tag ok">ok</span>
+                    ) : (
+                      <span className="muted">—</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {h.groups.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="empty">
+                    No channels configured.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );
