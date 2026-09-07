@@ -1015,8 +1015,10 @@ export async function buildServer() {
     "                                account, positions, groups, open/recent trades, recent signals,",
     "                                messagesByGroup (full per-channel message history, capped 500/group),",
     "                                telegram health, prices, recent logs).",
-    "- GET  /diagnostic/logs?limit=&category=&level=&since=&source=  → detailed logs (with meta).",
+    "- GET  /diagnostic/logs?limit=&category=&level=&since=&source=&before=  → detailed logs (with meta).",
     "                                source=ring (default, in-memory since boot) or source=db (persisted history).",
+    "                                source=db is keyset-paginated: response has nextCursor; pass ?before=<nextCursor>",
+    "                                to page further back through the full (untrimmed) history.",
     "- GET  /diagnostic/rules      → the deterministic entry + management regex rules (what fires, and why).",
     "- GET  /diagnostic/second-opinions?group=&limit=  → independent per-signal assessments (observe-only):",
     "                                objective TA, our positive/negative stance vs the trader, and the tracked outcome.",
@@ -1155,21 +1157,26 @@ export async function buildServer() {
     return diagnosticSnapshot();
   });
 
-  app.get<{ Querystring: { limit?: string; category?: string; level?: string; since?: string; source?: string } }>(
+  app.get<{ Querystring: { limit?: string; category?: string; level?: string; since?: string; source?: string; before?: string } }>(
     "/diagnostic/logs",
     async (req, reply) => {
       if (!diagGuard(req, reply)) return reply;
-      // Diagnostic log reads are intentionally UNCAPPED: pass any limit to page
-      // deep into history, or omit it to return everything persisted. (source=db
-      // history depends on LOG_RETENTION_MAX — unlimited by default.) The ring
-      // buffer is naturally bounded by its in-memory size regardless.
       const rawLimit = Math.floor(Number(req.query.limit));
-      const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : -1; // -1 = all
+      const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : undefined;
       // source=db reads the PERSISTED log (survives restarts, full history incl.
-      // message/exec/manage); default "ring" is the in-memory buffer since boot.
+      // message/exec/manage). Retention is unlimited, so reads are KEYSET-PAGINATED
+      // to keep each response bounded: pass ?before=<nextCursor> to walk further
+      // back through the full history without ever loading the whole table at once.
       if (req.query.source === "db") {
-        return { source: "db", logs: logsRepo.list(limit, req.query.category) };
+        const before = Math.floor(Number(req.query.before));
+        const page = logsRepo.page({
+          limit,
+          before: Number.isFinite(before) && before > 0 ? before : undefined,
+          category: req.query.category,
+        });
+        return { source: "db", logs: page.logs, nextCursor: page.nextCursor };
       }
+      // The in-memory ring is naturally bounded by RING_MAX; default 300.
       const level = req.query.level;
       const minLevel = level === "warn" || level === "error" || level === "info" ? level : undefined;
       return {

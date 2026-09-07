@@ -545,6 +545,10 @@ const LOG_CAP = (() => {
   return Number.isFinite(n) && n > 0 ? n : 0; // 0 = unlimited
 })();
 let logInserts = 0;
+// Per-page bounds for keyset log pagination (see logs.page). A hard max caps the
+// memory/JSON size of any single diagnostic read regardless of the requested limit.
+const LOG_PAGE_DEFAULT = 1000;
+const LOG_PAGE_MAX = 20000;
 
 /** Chart images attached to incoming messages (keyed by the signal record). */
 export const messageImages = {
@@ -597,15 +601,45 @@ export const logs = {
       ).run(LOG_CAP);
     }
   },
-  // limit <= 0 → return the ENTIRE history (SQLite treats LIMIT -1 as no limit).
   list(limit = 300, category?: string): LogEntry[] {
-    const lim = limit > 0 ? limit : -1;
     const rows = category
       ? (db
           .prepare("SELECT * FROM logs WHERE category = ? ORDER BY ts DESC LIMIT ?")
-          .all(category, lim) as LogRow[])
-      : (db.prepare("SELECT * FROM logs ORDER BY ts DESC LIMIT ?").all(lim) as LogRow[]);
+          .all(category, limit) as LogRow[])
+      : (db.prepare("SELECT * FROM logs ORDER BY ts DESC LIMIT ?").all(limit) as LogRow[]);
     return rows.map(toLog);
+  },
+  /**
+   * Keyset-paginated history (newest first). Retention is unlimited, so a single
+   * unbounded read could load the whole table into memory / one JSON response;
+   * paging keeps each call bounded while letting a caller walk arbitrarily far
+   * back. Cursor is the append-only `rowid` (monotonic with insertion ≈ ts order),
+   * which is stable across pages even when many rows share a millisecond `ts`.
+   * Pass `before` = the previous page's `nextCursor` to get the next older page.
+   */
+  page(opts: { limit?: number; before?: number; category?: string }): {
+    logs: LogEntry[];
+    nextCursor: number | null;
+  } {
+    const limit = opts.limit && opts.limit > 0 ? Math.min(opts.limit, LOG_PAGE_MAX) : LOG_PAGE_DEFAULT;
+    const where: string[] = [];
+    const params: (string | number)[] = [];
+    if (opts.before && opts.before > 0) {
+      where.push("rowid < ?");
+      params.push(opts.before);
+    }
+    if (opts.category) {
+      where.push("category = ?");
+      params.push(opts.category);
+    }
+    const sql =
+      `SELECT rowid AS _rid, * FROM logs` +
+      (where.length ? ` WHERE ${where.join(" AND ")}` : "") +
+      ` ORDER BY rowid DESC LIMIT ?`;
+    params.push(limit);
+    const rows = db.prepare(sql).all(...params) as (LogRow & { _rid: number })[];
+    const nextCursor = rows.length === limit ? (rows[rows.length - 1]!._rid ?? null) : null;
+    return { logs: rows.map(toLog), nextCursor };
   },
   clear(): void {
     db.prepare("DELETE FROM logs").run();

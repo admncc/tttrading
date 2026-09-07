@@ -1222,19 +1222,25 @@ async function applyManagement(
         : [];
 
     // A `close` should also cancel a still-resting limit for that symbol.
+    let cancelledWorking = 0;
     if (action.kind === "close" && sym) {
       for (const w of groupWorking.filter((t) => t.symbol.toUpperCase() === sym)) {
         await cancelWorkingTrade(w.id, `management: ${action.note}`);
         acted = true;
+        cancelledWorking++;
       }
     }
 
     if (targets.length === 0) {
       const ambiguous = !sym && manageable.length > 1;
       results.push(
-        ambiguous
-          ? `${action.note} — ${manageable.length} open (${manageable.map((t) => t.symbol).join(", ")}); name the symbol`
-          : `${action.note} — no open ${sym ?? ""} position`.replace(/\s+/g, " ").trim(),
+        // A close with no open position but a cancelled resting order DID act —
+        // report the cancel instead of a misleading "no open position".
+        cancelledWorking > 0
+          ? `${action.note} — cancelled ${cancelledWorking} resting ${sym} order(s), no open position`
+          : ambiguous
+            ? `${action.note} — ${manageable.length} open (${manageable.map((t) => t.symbol).join(", ")}); name the symbol`
+            : `${action.note} — no open ${sym ?? ""} position`.replace(/\s+/g, " ").trim(),
       );
       continue;
     }
@@ -1244,7 +1250,14 @@ async function applyManagement(
       if (action.kind === "close") {
         await closeTrade(t.id);
       } else if (action.kind === "sl_breakeven") {
-        await moveStop(t, t.entryPrice, true);
+        // Honor moveStop's return: it drops the move (returns false) when a
+        // concurrent lifecycle op holds the trade lock — don't report a stop move
+        // that didn't happen as "acted".
+        const moved = await moveStop(t, t.entryPrice, true);
+        if (!moved) {
+          results.push(`SL→breakeven for ${t.symbol} not applied (trade busy — monitor re-checks next tick)`);
+          continue;
+        }
       } else if (action.kind === "sl_move" && action.newStop !== undefined) {
         let newStop = action.newStop;
         // If the message expresses a BREAKEVEN or PROFIT-LOCK intent ("to
@@ -1289,8 +1302,13 @@ async function applyManagement(
         // leg whose explicit stop happens to equal its planned entry must not be
         // turned into a hair-trigger breakeven (the same class as 90f6187). The
         // explicit stop price still updates the working order's planned stop.
-        if (plausible && rightSide) await moveStop(t, newStop, beIntent && newStop === t.entryPrice && t.status === "open");
-        else {
+        if (plausible && rightSide) {
+          const moved = await moveStop(t, newStop, beIntent && newStop === t.entryPrice && t.status === "open");
+          if (!moved) {
+            results.push(`SL move to ${newStop} for ${t.symbol} not applied (trade busy — monitor re-checks next tick)`);
+            continue;
+          }
+        } else {
           const why = !plausible ? "implausible distance" : "wrong side";
           event("manage", `Rejected SL move for ${t.symbol}: ${newStop} (${why} vs ${price})`, { newStop, price, side: t.side }, { level: "warn", groupId: group.id });
           results.push(`SL ${newStop} rejected (${why}) for ${t.symbol}`);
