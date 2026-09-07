@@ -149,8 +149,12 @@ more chart images are present, take the symbol, side, entry, SL and TP NUMBERS
 from the text whenever it states them; treat the image(s) as SUPPLEMENTAL — use
 them to FILL IN levels the text omits (e.g. take-profit targets only drawn on the
 chart, or a stop marked as a line), to confirm the side/context, and to resolve
-ambiguity. Do NOT override an explicit text number with a value you read off a
-chart axis (chart labels are easily misread). An entry drawn at or near the
+ambiguity. When a level is ONLY on the chart (the text omits it), read its exact
+price by CALIBRATING against the labeled price-axis gridlines and INTERPOLATING
+the drawn line's position between the two nearest labels — do not just snap to the
+nearest label (e.g. a line between the 54.00 and 56.00 gridlines might be ~54.3).
+Do NOT override an explicit text number with a value you read off a chart axis
+(chart labels are easily misread). An entry drawn at or near the
 current price means a market entry (omit "entry"). Report each number as WRITTEN
 in the text — do not "correct" a suspected decimal slip yourself; a separate
 deterministic step reconciles magnitudes against the live price before ordering.
