@@ -380,6 +380,12 @@ export const api = {
     req<Trade>(`/api/trades/${id}/partial`, { method: "POST", body: JSON.stringify({ fraction }) }),
   archiveTrade: (id: string, archived: boolean) =>
     req<Trade>(`/api/trades/${id}/archive`, { method: "POST", body: JSON.stringify({ archived }) }),
+  tradeHistory: (id: string) =>
+    req<{
+      tradeId: string;
+      symbol: string;
+      events: { ts: string; category: string; level: string; message: string; meta?: Record<string, unknown> }[];
+    }>(`/api/trades/${id}/history`),
   syncTrade: (id: string) =>
     req<{ ok: boolean; changed?: boolean; live?: boolean; venue?: string; note?: string; trade?: Trade }>(
       `/api/trades/${id}/sync`,

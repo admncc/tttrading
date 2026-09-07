@@ -57,6 +57,32 @@ export function Trades({
   const [slInput, setSlInput] = useState("");
   const [tpInput, setTpInput] = useState("");
   const [bookInput, setBookInput] = useState("");
+  const [historyId, setHistoryId] = useState<string | null>(null);
+  const [historyRows, setHistoryRows] = useState<
+    { ts: string; category: string; level: string; message: string }[] | null
+  >(null);
+  const [historyBusy, setHistoryBusy] = useState(false);
+
+  const toggleHistory = async (t: Trade): Promise<void> => {
+    if (historyId === t.id) {
+      setHistoryId(null);
+      setHistoryRows(null);
+      return;
+    }
+    setHistoryId(t.id);
+    setHistoryRows(null);
+    setHistoryBusy(true);
+    try {
+      const res = await api.tradeHistory(t.id);
+      setHistoryRows(res.events);
+    } catch (e) {
+      setHistoryRows([
+        { ts: new Date().toISOString(), category: "system", level: "error", message: `History failed: ${e instanceof Error ? e.message : e}` },
+      ]);
+    } finally {
+      setHistoryBusy(false);
+    }
+  };
 
   const toggleStatus = (s: StatusChip) =>
     setStatuses((prev) => {
@@ -433,6 +459,13 @@ export function Trades({
                         >
                           {busyId === t.id ? "…" : "Restore"}
                         </button>
+                        <button
+                          className={historyId === t.id ? "primary" : "ghost"}
+                          title="Show this trade's timeline"
+                          onClick={() => void toggleHistory(t)}
+                        >
+                          History
+                        </button>
                       </div>
                     ) : (
                       !t.shadow && (
@@ -475,6 +508,13 @@ export function Trades({
                               {busyId === t.id ? "…" : "Archive"}
                             </button>
                           )}
+                          <button
+                            className={historyId === t.id ? "primary" : "ghost"}
+                            title="Show this trade's timeline (open, TP fills, partials, SL moves, close)"
+                            onClick={() => void toggleHistory(t)}
+                          >
+                            History
+                          </button>
                         </div>
                       )
                     )}
@@ -521,6 +561,40 @@ export function Trades({
                             ? "Resting order — SL/TP are stored and applied on fill."
                             : "Live: SL/TP are placed on the exchange."}
                         </span>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                {historyId === t.id && (
+                  <tr>
+                    <td colSpan={15} style={{ background: "rgba(255,255,255,0.02)" }}>
+                      <div style={{ padding: "6px 4px" }}>
+                        <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
+                          Trade history — {t.symbol} {t.side}
+                        </div>
+                        {historyBusy && <div className="muted" style={{ fontSize: 12 }}>Loading…</div>}
+                        {!historyBusy && historyRows && historyRows.length === 0 && (
+                          <div className="muted" style={{ fontSize: 12 }}>No history recorded for this trade.</div>
+                        )}
+                        {!historyBusy && historyRows && historyRows.length > 0 && (
+                          <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+                            <tbody>
+                              {historyRows.map((h, i) => (
+                                <tr key={i} style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }}>
+                                  <td className="muted" style={{ whiteSpace: "nowrap", padding: "3px 10px 3px 0", verticalAlign: "top" }}>
+                                    {shortTime(h.ts)}
+                                  </td>
+                                  <td className="muted" style={{ whiteSpace: "nowrap", padding: "3px 10px 3px 0", verticalAlign: "top" }}>
+                                    {h.category}
+                                  </td>
+                                  <td style={{ padding: "3px 0", color: h.level === "error" ? "#ef4444" : h.level === "warn" ? "#f59e0b" : undefined }}>
+                                    {h.message}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        )}
                       </div>
                     </td>
                   </tr>

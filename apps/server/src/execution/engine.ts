@@ -373,8 +373,17 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
                 : actions.find((a) => a.kind === "partial_close")?.fraction; // else keep the rules' %
             const wantPartial = partialFrac !== undefined || kinds.has("partial_close");
             const wantBE = !!mv.breakeven || kinds.has("sl_breakeven");
-            if (wantPartial || wantBE) {
-              actions = actions.filter((a) => a.kind !== "partial_close" && a.kind !== "sl_breakeven");
+            // A SPECIFIC SL price named across several coins ("move SL to 0.6712 on
+            // VIRTUAL+LTC"). Apply it to EACH named coin — the per-target handler's
+            // plausibility (within ~0.5–1.5× of the coin's price) + right-side check
+            // drops it on coins where the price can't fit (0.6712 is absurd for LTC
+            // ~54 → rejected there, applied on VIRTUAL ~0.72). This recovers the SL
+            // move that was previously dropped whole as an "ambiguous recap".
+            const slMoveStop =
+              mv.newStop !== undefined ? mv.newStop : actions.find((a) => a.kind === "sl_move")?.newStop;
+            const wantSlMove = slMoveStop !== undefined;
+            if (wantPartial || wantBE || wantSlMove) {
+              actions = actions.filter((a) => a.kind !== "partial_close" && a.kind !== "sl_breakeven" && a.kind !== "sl_move");
               // Breakeven is safe to over-apply (moving a stop to entry that's
               // already there is a no-op), so it goes to every named coin — this
               // guarantees the intended coin is protected ("set SL breakeven on
@@ -387,6 +396,10 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
               // partial is present it's a symmetric recap ("partial 20% on
               // VIRTUAL+SAND") → apply to every named coin.
               const beTargets: string[] = wantBE ? named : [];
+              // A specific SL price goes to every named coin that DIDN'T also get a
+              // break-even (BE wins — it's the safer, self-clamping move); the
+              // per-target plausibility/side check filters the rest.
+              const slTargets: string[] = wantSlMove ? named.filter((s) => !beTargets.includes(s)) : [];
               let partialTargets: string[] = wantPartial ? named : [];
               if (wantPartial && wantBE) {
                 // Restrict the partial to ONE coin ONLY when it is genuinely
@@ -405,12 +418,15 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
                 actions.push({ kind: "partial_close", symbol: s, fraction: partialFrac, explicitSymbol: true, note: `book ${partialFrac ? Math.round(partialFrac * 100) + "%" : "partial"} ${s}` });
               for (const s of beTargets)
                 actions.push({ kind: "sl_breakeven", symbol: s, explicitSymbol: true, note: `SL→BE ${s}` });
+              for (const s of slTargets)
+                actions.push({ kind: "sl_move", symbol: s, newStop: slMoveStop, explicitSymbol: true, note: `SL→${slMoveStop} ${s}` });
               if (partialTargets.length) kinds.add("partial_close");
               if (beTargets.length) kinds.add("sl_breakeven");
+              if (slTargets.length) kinds.add("sl_move");
               event(
                 "manage",
-                `Multi-symbol management → ${[partialTargets.length ? "partial " + partialTargets.join("/") : "", beTargets.length ? "BE " + beTargets.join("/") : ""].filter(Boolean).join(" · ")}`,
-                { partialTargets, beTargets, confidence: mv.confidence },
+                `Multi-symbol management → ${[partialTargets.length ? "partial " + partialTargets.join("/") : "", beTargets.length ? "BE " + beTargets.join("/") : "", slTargets.length ? `SL→${slMoveStop} ` + slTargets.join("/") : ""].filter(Boolean).join(" · ")}`,
+                { partialTargets, beTargets, slTargets, slMoveStop, confidence: mv.confidence },
                 { level: "info", groupId: group.id },
               );
             }

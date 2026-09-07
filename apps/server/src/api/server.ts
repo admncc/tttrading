@@ -767,6 +767,22 @@ export async function buildServer() {
     return tradesRepo.list(clampLimit(req.query.limit, 500, 5000));
   });
 
+  // Per-trade history timeline: open, native TP fills, booked/manual partials,
+  // SL/breakeven moves, close, cancel — assembled from tradeId-tagged events plus
+  // the trade's entry-signal events. Oldest first.
+  app.get<{ Params: { id: string } }>("/api/trades/:id/history", async (req, reply) => {
+    const trade = tradesRepo.get(req.params.id);
+    if (!trade) return reply.code(404).send({ error: "not found" });
+    const events = logsRepo.forTrade(trade.id, trade.signalId).map((e) => ({
+      ts: e.ts,
+      category: e.category,
+      level: e.level,
+      message: e.message,
+      meta: e.meta,
+    }));
+    return { tradeId: trade.id, symbol: trade.symbol, events };
+  });
+
   app.post<{ Params: { id: string } }>("/api/trades/:id/close", async (req, reply) => {
     const schema = z.object({ exitPrice: z.number().positive().optional() });
     const parsed = schema.safeParse(req.body ?? {});
