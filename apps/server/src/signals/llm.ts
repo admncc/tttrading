@@ -6,10 +6,10 @@ import { log } from "../logger.js";
 import { SPOT_BUY_RE, DCA_ADD_RE } from "./regex.js";
 
 /** Effective key/model: desk-configured value (DB) wins over the .env default. */
-function effectiveKey(): string {
+export function effectiveKey(): string {
   return settings.getAnthropicKey() || config.anthropic.apiKey;
 }
-function effectiveModel(): string {
+export function effectiveModel(): string {
   return settings.getAnthropicModel() || config.anthropic.model;
 }
 
@@ -48,7 +48,7 @@ function withInstructions(base: string, channelInstructions?: string): string {
 
 let client: Anthropic | null = null;
 let clientKey = "";
-function getClient(): Anthropic {
+export function getClient(): Anthropic {
   const key = effectiveKey();
   if (!client || clientKey !== key) {
     client = new Anthropic({ apiKey: key });

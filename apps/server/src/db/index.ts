@@ -119,6 +119,25 @@ CREATE TABLE IF NOT EXISTS message_images (
   created_at TEXT NOT NULL
 );
 
+-- Self-Healing: independent LLM review of each incoming message + derived action.
+CREATE TABLE IF NOT EXISTS self_healing (
+  id TEXT PRIMARY KEY,
+  ts TEXT NOT NULL,
+  verdict TEXT NOT NULL,
+  confidence REAL,
+  summary TEXT NOT NULL,
+  suggestion TEXT,
+  model TEXT NOT NULL,
+  group_id TEXT,
+  group_name TEXT,
+  signal_id TEXT,
+  trade_id TEXT,
+  message_excerpt TEXT,
+  system_action TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_selfheal_ts ON self_healing(ts);
+CREATE INDEX IF NOT EXISTS idx_selfheal_verdict ON self_healing(verdict);
+
 -- Phase 2: point-in-time features per signal (Shadow-Mode basis, dev-brief §7).
 -- One row per (signal, feature); computed at signal time and never recomputed with
 -- later data (computed_at <= signal_at). num_value for numeric, text_value for

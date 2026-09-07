@@ -165,6 +165,25 @@ export interface GlobalSettings {
    * traders in one coin then share (net on) that direction's venue. Default off.
    */
   directionalVenueSplit: boolean;
+  /**
+   * Self-Healing: after every incoming message and its derived action, run an
+   * independent LLM review that checks whether the system interpreted and acted
+   * on the message correctly, and surfaces a suggestion when it didn't. Analysis
+   * only — it never changes anything on its own. Default off.
+   */
+  selfHealingEnabled: boolean;
+  /**
+   * Model used for the Self-Healing review. Kept separate from the main parsing
+   * model so the reviewer can be a different (cheaper/independent) model. Default
+   * "claude-fable-5-1".
+   */
+  selfHealingModel: string;
+  /**
+   * When true, low-risk suggestions from the Self-Healing reviewer would be
+   * applied automatically. INERT for now — stored but never acted on; kept off
+   * until the review has proven reliable in analyze-only mode. Default off.
+   */
+  selfHealingAutoRepair: boolean;
 }
 
 /** Traffic-light risk classification. */
@@ -631,6 +650,37 @@ export interface LogEntry {
   tradeId?: string;
 }
 
+/** Verdict of a Self-Healing review of one incoming message + its action. */
+export type HealVerdict = "ok" | "warn" | "error" | "skipped";
+
+/**
+ * One Self-Healing review record: an independent LLM pass over a single incoming
+ * message and the action the system derived from it, judging whether the system
+ * did the right thing and (when not) what should have happened. Analysis only.
+ */
+export interface SelfHealingEntry {
+  id: string;
+  ts: string;
+  /** The reviewer's overall judgement of how the message was handled. */
+  verdict: HealVerdict;
+  /** 0..1 confidence in the verdict. */
+  confidence: number;
+  /** One-line human-readable summary of what happened and the judgement. */
+  summary: string;
+  /** What (if anything) the system should have done differently. Empty when ok. */
+  suggestion: string;
+  /** The model that produced this review. */
+  model: string;
+  groupId?: string;
+  groupName?: string;
+  signalId?: string;
+  tradeId?: string;
+  /** A short quote / description of the reviewed incoming message. */
+  messageExcerpt?: string;
+  /** What the system actually did (classification + action taken). */
+  systemAction?: string;
+}
+
 /** Messages broadcast over the WebSocket to the desk. */
 export type WsEvent =
   | { type: "signal"; signal: Signal }
@@ -640,6 +690,7 @@ export type WsEvent =
   | { type: "stats"; stats: DashboardStats }
   | { type: "log"; entry: LogEntry }
   | { type: "prices"; prices: Record<string, number> }
+  | { type: "heal"; entry: SelfHealingEntry }
   | { type: "secondOpinion"; secondOpinion: SecondOpinion };
 
 /** Payload to create/update a group from the desk. */

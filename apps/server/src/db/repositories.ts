@@ -10,6 +10,7 @@ import type {
   SecondOpinionOutcome,
   SecondOpinionTA,
   SecondOpinionVerdict,
+  SelfHealingEntry,
   Signal,
   SignalFeature,
   SignalStatus,
@@ -647,6 +648,13 @@ export const logs = {
   clear(): void {
     db.prepare("DELETE FROM logs").run();
   },
+  /** All events tagged with this signal id (oldest first) — the pipeline trace. */
+  forSignal(signalId: string): LogEntry[] {
+    const rows = db
+      .prepare("SELECT * FROM logs WHERE signal_id = ? ORDER BY ts ASC, rowid ASC")
+      .all(signalId) as LogRow[];
+    return rows.map(toLog);
+  },
   /**
    * Timeline for one trade (oldest first). Matches events tagged with this
    * `tradeId` (management: partials, TP fills, SL/breakeven moves, close) OR
@@ -664,6 +672,96 @@ export const logs = {
           .prepare("SELECT * FROM logs WHERE trade_id = ? ORDER BY ts ASC, rowid ASC")
           .all(tradeId) as LogRow[]);
     return rows.map(toLog);
+  },
+};
+
+/* ---------------------------- self-healing ----------------------------- */
+
+interface SelfHealRow {
+  id: string;
+  ts: string;
+  verdict: string;
+  confidence: number | null;
+  summary: string;
+  suggestion: string | null;
+  model: string;
+  group_id: string | null;
+  group_name: string | null;
+  signal_id: string | null;
+  trade_id: string | null;
+  message_excerpt: string | null;
+  system_action: string | null;
+}
+
+function toHeal(r: SelfHealRow): SelfHealingEntry {
+  return {
+    id: r.id,
+    ts: r.ts,
+    verdict: r.verdict as SelfHealingEntry["verdict"],
+    confidence: r.confidence ?? 0,
+    summary: r.summary,
+    suggestion: r.suggestion ?? "",
+    model: r.model,
+    groupId: r.group_id ?? undefined,
+    groupName: r.group_name ?? undefined,
+    signalId: r.signal_id ?? undefined,
+    tradeId: r.trade_id ?? undefined,
+    messageExcerpt: r.message_excerpt ?? undefined,
+    systemAction: r.system_action ?? undefined,
+  };
+}
+
+export const selfHealing = {
+  create(entry: SelfHealingEntry): void {
+    db.prepare(
+      `INSERT INTO self_healing
+         (id, ts, verdict, confidence, summary, suggestion, model,
+          group_id, group_name, signal_id, trade_id, message_excerpt, system_action)
+       VALUES (@id, @ts, @verdict, @confidence, @summary, @suggestion, @model,
+          @group_id, @group_name, @signal_id, @trade_id, @message_excerpt, @system_action)`,
+    ).run({
+      id: entry.id,
+      ts: entry.ts,
+      verdict: entry.verdict,
+      confidence: entry.confidence ?? null,
+      summary: entry.summary,
+      suggestion: entry.suggestion || null,
+      model: entry.model,
+      group_id: entry.groupId ?? null,
+      group_name: entry.groupName ?? null,
+      signal_id: entry.signalId ?? null,
+      trade_id: entry.tradeId ?? null,
+      message_excerpt: entry.messageExcerpt ?? null,
+      system_action: entry.systemAction ?? null,
+    });
+  },
+  /** Keyset-paginated history (newest first); `before` = previous page's cursor. */
+  page(opts: { limit?: number; before?: number; verdict?: string }): {
+    entries: SelfHealingEntry[];
+    nextCursor: number | null;
+  } {
+    const limit = opts.limit && opts.limit > 0 ? Math.min(opts.limit, 2000) : 200;
+    const where: string[] = [];
+    const params: (string | number)[] = [];
+    if (opts.before && opts.before > 0) {
+      where.push("rowid < ?");
+      params.push(opts.before);
+    }
+    if (opts.verdict) {
+      where.push("verdict = ?");
+      params.push(opts.verdict);
+    }
+    const sql =
+      `SELECT rowid AS _rid, * FROM self_healing` +
+      (where.length ? ` WHERE ${where.join(" AND ")}` : "") +
+      ` ORDER BY rowid DESC LIMIT ?`;
+    params.push(limit);
+    const rows = db.prepare(sql).all(...params) as (SelfHealRow & { _rid: number })[];
+    const nextCursor = rows.length === limit ? (rows[rows.length - 1]!._rid ?? null) : null;
+    return { entries: rows.map(toHeal), nextCursor };
+  },
+  clear(): void {
+    db.prepare("DELETE FROM self_healing").run();
   },
 };
 
@@ -753,6 +851,32 @@ export const settings = {
   setDirectionalVenueSplit(on: boolean): void {
     kvSet("directionalVenueSplit", on ? "true" : "false");
   },
+  /**
+   * Self-Healing: an independent LLM review of every incoming message + its
+   * derived action, surfacing a suggestion whenever the system got it wrong.
+   * Analysis only. Default OFF.
+   */
+  getSelfHealingEnabled(): boolean {
+    return kvGet("selfHealingEnabled") === "true";
+  },
+  setSelfHealingEnabled(on: boolean): void {
+    kvSet("selfHealingEnabled", on ? "true" : "false");
+  },
+  /** Model used for the Self-Healing review. Default Fable. */
+  getSelfHealingModel(): string {
+    const v = kvGet("selfHealingModel");
+    return v && v.trim() ? v.trim() : "claude-fable-5-1";
+  },
+  setSelfHealingModel(model: string): void {
+    kvSet("selfHealingModel", model.trim());
+  },
+  /** Auto-repair from Self-Healing suggestions. INERT for now. Default OFF. */
+  getSelfHealingAutoRepair(): boolean {
+    return kvGet("selfHealingAutoRepair") === "true";
+  },
+  setSelfHealingAutoRepair(on: boolean): void {
+    kvSet("selfHealingAutoRepair", on ? "true" : "false");
+  },
   getGlobalSettings(): import("@tttrading/shared").GlobalSettings {
     return {
       shadowMode: this.getShadowMode(),
@@ -764,6 +888,9 @@ export const settings = {
       splitOpposingVenues: this.getSplitOpposingVenues(),
       isolateSameCoinVenues: this.getIsolateSameCoinVenues(),
       directionalVenueSplit: this.getDirectionalVenueSplit(),
+      selfHealingEnabled: this.getSelfHealingEnabled(),
+      selfHealingModel: this.getSelfHealingModel(),
+      selfHealingAutoRepair: this.getSelfHealingAutoRepair(),
     };
   },
   /**

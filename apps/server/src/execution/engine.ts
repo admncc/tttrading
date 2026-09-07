@@ -12,6 +12,7 @@ import type { ExchangeConnector } from "../exchanges/types.js";
 import { NOTIONAL_MAX_OFF, notionalOffFraction } from "../exchanges/pricing.js";
 import { parseSignal } from "../signals/parser.js";
 import { readManagementLevels, reconsiderManagement, llmReady, type SignalImage, type PerSymbolAction } from "../signals/llm.js";
+import { reviewHandled } from "../signals/selfheal.js";
 import { classifyManagementAll, isTradeUpdate, isMarketCommentary, type ManagementAction } from "../signals/management.js";
 import { expandTakeProfits } from "../signals/takeprofit.js";
 import { assessRisk, tierSlippage, isNoCrossError, ENTRY_RETRY_SLIPPAGE, PROTECTIVE_SLIPPAGE } from "../risk/score.js";
@@ -52,8 +53,18 @@ function symbolAllowed(group: Group, symbol: string): boolean {
 /**
  * Entry point for a raw message from a group. Parses it, applies group rules,
  * and either executes immediately (auto) or queues it for confirmation.
+ *
+ * Thin wrapper over the pipeline that, after the message is fully handled, kicks
+ * off an independent Self-Healing review of how it was handled (fire-and-forget,
+ * analysis-only — it never affects trading and can never throw into this path).
  */
 export async function handleIncoming(group: Group, rawText: string, images?: SignalImage[]): Promise<Signal> {
+  const signal = await handleIncomingInner(group, rawText, images);
+  void reviewHandled(group, rawText, signal, images).catch(() => {});
+  return signal;
+}
+
+async function handleIncomingInner(group: Group, rawText: string, images?: SignalImage[]): Promise<Signal> {
   const imgs = (images ?? []).filter(Boolean);
   const primary = imgs[0];
   const preview = rawText.replace(/\s+/g, " ").trim().slice(0, 160);

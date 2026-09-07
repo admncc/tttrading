@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { DashboardStats, Group, LogEntry, Signal, Trade } from "@tttrading/shared";
+import type { DashboardStats, Group, LogEntry, SelfHealingEntry, Signal, Trade } from "@tttrading/shared";
 import { api, openWs, getToken, setToken, setAuthErrorHandler } from "./api.js";
 import { Overview } from "./pages/Overview.js";
 import { Analytics } from "./pages/Analytics.js";
@@ -10,10 +10,11 @@ import { Signals } from "./pages/Signals.js";
 import { Messages } from "./pages/Messages.js";
 import { Groups } from "./pages/Groups.js";
 import { Logs } from "./pages/Logs.js";
+import { SelfHealing } from "./pages/SelfHealing.js";
 import { Settings } from "./pages/Settings.js";
 import { Login } from "./pages/Login.js";
 
-type Tab = "overview" | "analytics" | "risk" | "secondopinion" | "trades" | "signals" | "messages" | "groups" | "settings" | "logs";
+type Tab = "overview" | "analytics" | "risk" | "secondopinion" | "trades" | "signals" | "messages" | "groups" | "settings" | "logs" | "selfhealing";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "overview", label: "Overview" },
@@ -24,6 +25,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "messages", label: "Messages" },
   { id: "trades", label: "Trades" },
   { id: "groups", label: "Groups" },
+  { id: "selfhealing", label: "Self Healing" },
   { id: "settings", label: "Settings" },
   { id: "logs", label: "Logs" },
 ];
@@ -42,6 +44,7 @@ export function App() {
   const [signals, setSignals] = useState<Signal[]>([]);
   const [trades, setTrades] = useState<Trade[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [heals, setHeals] = useState<SelfHealingEntry[]>([]);
   const [prices, setPrices] = useState<Record<string, number>>({});
 
   const reloadLogs = useCallback(() => {
@@ -208,6 +211,9 @@ export function App() {
         case "log":
           setLogs((prev) => [e.entry, ...prev].slice(0, 800));
           break;
+        case "heal":
+          setHeals((prev) => [e.entry, ...prev.filter((h) => h.id !== e.entry.id)].slice(0, 400));
+          break;
         case "prices":
           setPrices(e.prices);
           break;
@@ -321,6 +327,7 @@ export function App() {
         )}
         {tab === "trades" && <Trades trades={trades} prices={prices} onChange={refresh} />}
         {tab === "groups" && <Groups groups={groups} onChange={refresh} />}
+        {tab === "selfhealing" && <SelfHealing live={heals} />}
         {tab === "settings" && <Settings />}
         {tab === "logs" && <Logs logs={logs} onReload={reloadLogs} />}
       </main>

@@ -6,6 +6,7 @@ import type {
   GroupInput,
   LogEntry,
   SecondOpinion,
+  SelfHealingEntry,
   Signal,
   Trade,
   WsEvent,
@@ -211,6 +212,9 @@ export const api = {
       splitOpposingVenues: boolean;
       isolateSameCoinVenues: boolean;
       directionalVenueSplit: boolean;
+      selfHealingEnabled: boolean;
+      selfHealingModel: string;
+      selfHealingAutoRepair: boolean;
       anthropicConfigured: boolean;
       anthropicKeySource: string;
       anthropicModel: string;
@@ -233,6 +237,10 @@ export const api = {
     liveMaxOrderUsd?: number;
     splitOpposingVenues?: boolean;
     isolateSameCoinVenues?: boolean;
+    directionalVenueSplit?: boolean;
+    selfHealingEnabled?: boolean;
+    selfHealingModel?: string;
+    selfHealingAutoRepair?: boolean;
     autoRefine?: boolean;
     parseMode?: "regex" | "llm";
     llmMemory?: string;
@@ -424,6 +432,18 @@ export const api = {
   logs: (limit = 300, category?: string) =>
     req<LogEntry[]>(`/api/logs?limit=${limit}${category ? `&category=${category}` : ""}`),
   clearLogs: () => req<{ ok: boolean }>("/api/logs", { method: "DELETE" }),
+
+  selfHealing: (opts: { limit?: number; before?: number; verdict?: string } = {}) => {
+    const p = new URLSearchParams();
+    if (opts.limit) p.set("limit", String(opts.limit));
+    if (opts.before) p.set("before", String(opts.before));
+    if (opts.verdict) p.set("verdict", opts.verdict);
+    const qs = p.toString();
+    return req<{ entries: SelfHealingEntry[]; nextCursor: number | null }>(
+      `/api/self-healing${qs ? `?${qs}` : ""}`,
+    );
+  },
+  clearSelfHealing: () => req<{ ok: boolean }>("/api/self-healing", { method: "DELETE" }),
 };
 
 /** Fetch a file with auth and trigger a browser download. */

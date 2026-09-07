@@ -60,6 +60,7 @@ import {
   logs as logsRepo,
   messageImages as messageImagesRepo,
   secondOpinions as secondOpinionsRepo,
+  selfHealing as selfHealingRepo,
   settings as settingsRepo,
   signals as signalsRepo,
   trades as tradesRepo,
@@ -300,6 +301,9 @@ export async function buildServer() {
       splitOpposingVenues: z.boolean().optional(),
       isolateSameCoinVenues: z.boolean().optional(),
       directionalVenueSplit: z.boolean().optional(),
+      selfHealingEnabled: z.boolean().optional(),
+      selfHealingModel: z.string().max(100).optional(),
+      selfHealingAutoRepair: z.boolean().optional(),
       anthropicKey: z.string().max(500).optional(), // "" clears the desk-stored key
       anthropicModel: z.string().max(100).optional(),
       autoRefine: z.boolean().optional(),
@@ -333,6 +337,15 @@ export async function buildServer() {
     if (d.splitOpposingVenues !== undefined) settingsRepo.setSplitOpposingVenues(d.splitOpposingVenues);
     if (d.isolateSameCoinVenues !== undefined) settingsRepo.setIsolateSameCoinVenues(d.isolateSameCoinVenues);
     if (d.directionalVenueSplit !== undefined) settingsRepo.setDirectionalVenueSplit(d.directionalVenueSplit);
+    if (d.selfHealingEnabled !== undefined) {
+      settingsRepo.setSelfHealingEnabled(d.selfHealingEnabled);
+      log.info(`Self-Healing review ${d.selfHealingEnabled ? "ENABLED" : "disabled"}.`);
+    }
+    if (d.selfHealingModel !== undefined) settingsRepo.setSelfHealingModel(d.selfHealingModel);
+    if (d.selfHealingAutoRepair !== undefined) {
+      settingsRepo.setSelfHealingAutoRepair(d.selfHealingAutoRepair);
+      log.warn(`Self-Healing auto-repair ${d.selfHealingAutoRepair ? "ENABLED (inert — no auto-repair wired yet)" : "disabled"}.`);
+    }
     if (d.parseMode !== undefined) settingsRepo.setParseMode(d.parseMode);
     if (d.anthropicKey !== undefined) {
       settingsRepo.setAnthropicKey(d.anthropicKey.trim());
@@ -912,6 +925,26 @@ export async function buildServer() {
     return { ok: true };
   });
 
+  /* --------------------------- self-healing --------------------------- */
+  // Independent LLM reviews of how each incoming message was handled (newest
+  // first, keyset-paginated by rowid via `before`). Analysis only.
+  app.get<{ Querystring: { limit?: string; before?: string; verdict?: string } }>(
+    "/api/self-healing",
+    async (req) => {
+      const before = req.query.before ? Number(req.query.before) : undefined;
+      return selfHealingRepo.page({
+        limit: clampLimit(req.query.limit, 200, 2000),
+        before: Number.isFinite(before) ? before : undefined,
+        verdict: req.query.verdict,
+      });
+    },
+  );
+  app.delete("/api/self-healing", async (req, reply) => {
+    if (!authEnabled) return reply.code(403).send({ error: "Set DESK_PASSWORD to clear." });
+    selfHealingRepo.clear();
+    return { ok: true };
+  });
+
   /* ------------------------- stats & positions ------------------------ */
   app.get("/api/stats", async () => dashboard());
 
@@ -1174,6 +1207,8 @@ export async function buildServer() {
       recentSignals: signalsRepo.list(60),
       // Independent per-signal assessments (observe-only) — full access here.
       secondOpinions: secondOpinionsRepo.list(120),
+      // Self-Healing: independent LLM reviews of how each message was handled.
+      selfHealing: selfHealingRepo.page({ limit: 120 }).entries,
       // Full per-channel message history (newest first, capped per group) right in
       // the main snapshot — so a channel's real conventions, incl. all its
       // non-actionable market updates, can be reviewed from the normal /diagnostic
