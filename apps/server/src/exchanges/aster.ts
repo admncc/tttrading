@@ -5,6 +5,7 @@ import { settings } from "../db/repositories.js";
 import { asterUser, asterSigner, asterPrivateKey, asterBaseUrl, asterEnabled, asterReady } from "./credentials.js";
 import { log } from "../logger.js";
 import { canonicalSymbol, symbolAliases } from "../symbols.js";
+import { NOTIONAL_MAX_OFF, notionalOffFraction, resolveSizingMid } from "./pricing.js";
 import type {
   AccountSummary,
   AssetInfo,
@@ -444,7 +445,33 @@ export class AsterConnector implements ExchangeConnector {
     if (!asset) return { ok: false, filledPrice: 0, size: 0, simulated: !this.live, error: `Unknown symbol ${req.symbol}` };
     if (!mid || mid <= 0) return { ok: false, filledPrice: 0, size: 0, simulated: !this.live, error: `No price for ${req.symbol}` };
 
+    // Sizing-price sanity gate (opens only): a corrupt/stale mid mis-sizes the order
+    // (size = notionalUsd / mid). Re-read a couple of ticks against the signal's
+    // stated entry; a transient bad tick self-heals, a persistent gross deviation
+    // fails the order closed. See exchanges/pricing.ts.
+    if (!req.reduceOnly && req.refPrice && req.refPrice > 0) {
+      const resolved = await resolveSizingMid(req.refPrice, mid, () => this.getMidPrice(req.symbol));
+      if ("error" in resolved) {
+        return { ok: false, filledPrice: mid, size: 0, simulated: !this.live, error: resolved.error };
+      }
+      mid = resolved.mid;
+    }
+
     const size = roundStep(req.notionalUsd / mid, asset.stepSize, asset.szDecimals, "floor");
+    // Notional gate (opens only): confirm the order matches the configured size,
+    // valuing the computed size at the trusted entry (not the mid it came from).
+    if (!req.reduceOnly && req.refPrice && req.refPrice > 0) {
+      const off = notionalOffFraction(size, req.refPrice, req.notionalUsd);
+      if (off !== undefined && off > NOTIONAL_MAX_OFF) {
+        return {
+          ok: false,
+          filledPrice: mid,
+          size: 0,
+          simulated: !this.live,
+          error: `notional sanity: order would open ${(size * req.refPrice).toFixed(2)} USDC vs configured ${req.notionalUsd.toFixed(2)} (off ${(off * 100).toFixed(0)}%, max ${(NOTIONAL_MAX_OFF * 100).toFixed(0)}%) — refusing to size`,
+        };
+      }
+    }
     // A reduce-only close of a small remainder must always be attempted — never
     // block it on minQty, or cancelling its brackets first would orphan an
     // unprotected position that can't be closed. (Opens still respect minQty.)

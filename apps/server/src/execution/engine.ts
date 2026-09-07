@@ -9,6 +9,7 @@ import {
 } from "../db/repositories.js";
 import { activeHyperliquid, byName, known, resolveAllForSymbol, resolveForSymbol } from "../exchanges/registry.js";
 import type { ExchangeConnector } from "../exchanges/types.js";
+import { NOTIONAL_MAX_OFF, notionalOffFraction } from "../exchanges/pricing.js";
 import { parseSignal } from "../signals/parser.js";
 import { readManagementLevels, reconsiderManagement, llmReady, type SignalImage, type PerSymbolAction } from "../signals/llm.js";
 import { classifyManagementAll, isTradeUpdate, isMarketCommentary, type ManagementAction } from "../signals/management.js";
@@ -792,16 +793,22 @@ const FEE_RATE = 0.00035;
  * realizedPnl when the trade eventually closes. Does NOT touch tpFilledCount —
  * that counter belongs to native TP scale-out, a separate mechanism.
  */
-async function partialClose(tradeInput: Trade, rawFraction: number): Promise<void> {
+/**
+ * Book a partial. Returns TRUE only when a leg was actually booked (position
+ * reduced + banked recorded); FALSE on any early exit or a failed exchange order —
+ * so the caller reports `acted` truthfully instead of logging a booking that never
+ * happened (e.g. an order the venue rejected on its $10 minimum).
+ */
+async function partialClose(tradeInput: Trade, rawFraction: number): Promise<boolean> {
   const frac = Math.min(Math.max(rawFraction, 0), 0.95);
-  if (frac <= 0) return;
+  if (frac <= 0) return false;
   const id = tradeInput.id;
   // Serialize with close/other partials on the same trade (prevents over-close).
-  if (closing.has(id)) return;
+  if (closing.has(id)) return false;
   closing.add(id);
   try {
     const trade = tradesRepo.get(id);
-    if (!trade || trade.status !== "open" || trade.shadow) return;
+    if (!trade || trade.status !== "open" || trade.shadow) return false;
     const ex = connectorFor(trade);
     // Base the fraction on the ACTUAL live position, not trade.size: a TP
     // scale-out bumps tpFilledCount but does NOT decrement trade.size, so
@@ -828,7 +835,7 @@ async function partialClose(tradeInput: Trade, rawFraction: number): Promise<voi
       }
     }
     const intendedSize = base * frac;
-    if (intendedSize <= 0) return;
+    if (intendedSize <= 0) return false;
 
     // Determine the exit price up front from the live mid, then size the order
     // off THAT price (the connector derives size = notional / mid).
@@ -855,7 +862,7 @@ async function partialClose(tradeInput: Trade, rawFraction: number): Promise<voi
       });
       if (!res.ok) {
         log.warn(`partialClose: order failed for ${trade.symbol}: ${res.error}`);
-        return;
+        return false;
       }
       if (res.filledPrice > 0) exitPx = res.filledPrice;
       if (res.size > 0) closedSize = res.size; // ACTUAL filled size (partials)
@@ -948,6 +955,7 @@ async function partialClose(tradeInput: Trade, rawFraction: number): Promise<voi
         }
       }
     }
+    return true;
   } finally {
     closing.delete(id);
   }
@@ -1292,10 +1300,22 @@ async function applyManagement(
         // represents for THIS trade (1 TP → 50%, N TPs → 1/N), falling back to the
         // group default when the trade has no TPs.
         const frac = action.fraction ?? defaultPartialFraction(t.takeProfits?.length ?? 0, group.settings.defaultPartialPct ?? 50);
-        await partialClose(t, frac);
+        const booked = await partialClose(t, frac);
+        let beMoved = false;
         if (action.alsoBreakeven) {
           const fresh = tradesRepo.get(t.id);
-          if (fresh) await moveStop(fresh, fresh.entryPrice, true);
+          if (fresh) {
+            await moveStop(fresh, fresh.entryPrice, true);
+            beMoved = true;
+          }
+        }
+        // A partial the venue rejected (e.g. below its $10 minimum) did NOT book —
+        // report it truthfully instead of logging a booking that never happened. A
+        // paired break-even that DID move still counts as acting on the message.
+        if (!booked && !beMoved) {
+          results.push(`partial ${(frac * 100).toFixed(0)}% of ${t.symbol} NOT booked (order rejected)`);
+          event("manage", `Partial NOT booked for ${t.symbol}: ${(frac * 100).toFixed(0)}% order rejected (e.g. below venue minimum)`, { fraction: frac, symbol: t.symbol }, { level: "warn", groupId: group.id });
+          continue;
         }
       } else if (action.kind === "tp_hit") {
         if (t.simulated) {
@@ -2176,6 +2196,7 @@ async function placeEntry(
     leverage,
     marginMode,
     maxSlippage: entrySlip,
+    refPrice: parsed.entry,
   });
 
   // Retry ONCE, wider, ONLY when the aggressive IOC found no resting liquidity to
@@ -2197,6 +2218,7 @@ async function placeEntry(
       leverage,
       marginMode,
       maxSlippage: ENTRY_RETRY_SLIPPAGE,
+      refPrice: parsed.entry,
     });
   }
 
@@ -2219,6 +2241,22 @@ async function placeEntry(
     { simulated: result.simulated, size: result.size, price: result.filledPrice, orderId: result.orderId },
     { groupId: group.id, signalId: signal.id },
   );
+
+  // Post-fill notional check: the pre-fill sizing gate needs a stated entry to
+  // compare against; a bare market order has none, so verify against the ACTUAL
+  // fill here (the ground truth). The position is already open — we can't prevent
+  // it — but a gross mis-size (e.g. a bad sizing tick opening 1/60th of the
+  // configured notional) must alert loudly so it's caught immediately, not weeks
+  // later when it "made too little profit".
+  if (!result.simulated) {
+    const off = notionalOffFraction(result.size, result.filledPrice, tradeSizeUsd);
+    if (off !== undefined && off > NOTIONAL_MAX_OFF) {
+      const actual = result.size * result.filledPrice;
+      const msg = `opened ${actual.toFixed(2)} USDC vs configured ${tradeSizeUsd.toFixed(2)} (off ${(off * 100).toFixed(0)}%) — likely a mis-sized order from a bad price`;
+      event("exec", `Notional MISMATCH ${parsed.symbol}: ${msg}`, { actual, configured: tradeSizeUsd, off, size: result.size, price: result.filledPrice }, { level: "error", groupId: group.id, signalId: signal.id });
+      alertError(`notional ${parsed.symbol} (${group.name})`, msg);
+    }
+  }
 
   return recordFilledEntry(signal, group, parsed, risk, tradeSizeUsd, ex, {
     filledPrice: result.filledPrice,
@@ -2395,6 +2433,13 @@ async function recordFilledEntry(
     event("exec", `Bracket (SL/TP) placement failed for ${parsed.symbol}: ${bracket.error}`, { error: bracket.error }, { level: bracket.stopMissing ? "error" : "warn", groupId: group.id, signalId: signal.id });
   }
 
+  // Record the ACTUAL filled notional (size × fill price), not the requested
+  // order size — they diverge when the fill is partial or a bad sizing tick
+  // opened the wrong amount, and the desk must show what's really on the exchange,
+  // not what we asked for. Fall back to the requested notional only when the fill
+  // price/size are unreadable.
+  const actualNotional =
+    fill.filledSize > 0 && fill.filledPrice > 0 ? fill.filledSize * fill.filledPrice : notionalUsd;
   const trade = tradesRepo.create({
     signalId: signal.id,
     groupId: group.id,
@@ -2407,7 +2452,7 @@ async function recordFilledEntry(
     // Store the leverage the venue ACTUALLY applied (clamped to the pair's max),
     // not the desk default — so margin figures match the exchange.
     leverage: fill.effectiveLeverage ?? group.settings.leverage,
-    notionalUsd,
+    notionalUsd: actualNotional,
     size: fill.filledSize,
     entryPrice: fill.filledPrice,
     signalEntry: parsed.entry,
@@ -2695,7 +2740,8 @@ export async function bookTradePartial(
   if (trade.shadow) return { ok: false, error: "shadow trade" };
   if (trade.status !== "open") return { ok: false, error: "trade not open" };
   if (!(fraction > 0 && fraction < 1)) return { ok: false, error: "fraction must be between 0 and 1" };
-  await partialClose(trade, fraction);
+  const booked = await partialClose(trade, fraction);
+  if (!booked) return { ok: false, error: "partial not booked — the exchange rejected the reduce order (e.g. below its minimum size)" };
   event("manage", `Desk booked ${(fraction * 100).toFixed(0)}% of ${trade.symbol}`, { fraction }, { groupId: trade.groupId });
   return { ok: true, trade: tradesRepo.get(tradeId) };
 }

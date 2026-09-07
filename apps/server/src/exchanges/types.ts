@@ -35,6 +35,13 @@ export interface OrderRequest {
   leverage: number;
   marginMode: "cross" | "isolated";
   maxSlippage: number;
+  /**
+   * Signal's stated entry price, passed on OPENS as a reference for the sizing-price
+   * sanity gate: `size = notionalUsd / mid`, so a corrupt mid mis-sizes the order —
+   * the connector re-reads the mid and refuses to size when it deviates grossly from
+   * this reference. Omit on reduce-only closes (no configured notional to check).
+   */
+  refPrice?: number;
   /** Reduce-only (for closing/scaling out) — never opens/flips a position. */
   reduceOnly?: boolean;
   /**

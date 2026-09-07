@@ -5,6 +5,7 @@ import { config } from "../config.js";
 import { settings } from "../db/repositories.js";
 import { hlAccountAddress, hlPrivateKey, hlReady } from "../exchanges/credentials.js";
 import { canonicalSymbol, symbolAliases } from "../symbols.js";
+import { NOTIONAL_MAX_OFF, notionalOffFraction, resolveSizingMid } from "../exchanges/pricing.js";
 import { log } from "../logger.js";
 import type {
   AccountSummary,
@@ -487,9 +488,40 @@ export class HyperliquidConnector implements ExchangeConnector {
     if (!mid || mid <= 0) {
       return { ok: false, filledPrice: 0, size: 0, simulated: !this.live, error: `No price for ${req.symbol}` };
     }
+    // Sizing-price sanity gate (opens only): size = notionalUsd / mid, so a corrupt
+    // or stale mid — a bad tick, a freshly listed pair whose feed hasn't settled, an
+    // asset-index mix-up — silently mis-sizes the order by orders of magnitude (a mid
+    // of 32.6 for a $0.55 coin once opened ~1/60th of the intended notional). When the
+    // caller passes the signal's stated entry, re-read the mid a couple of ticks; a
+    // transient bad tick self-heals and we size against the corrected price, while a
+    // persistent gross deviation fails the order closed.
+    if (!req.reduceOnly && req.refPrice && req.refPrice > 0) {
+      const resolved = await resolveSizingMid(req.refPrice, mid, () => this.getMidPrice(req.symbol));
+      if ("error" in resolved) {
+        return { ok: false, filledPrice: mid, size: 0, simulated: !this.live, error: resolved.error };
+      }
+      mid = resolved.mid;
+    }
 
     const isBuy = req.side === "long";
     const size = roundSize(req.notionalUsd / mid, asset.szDecimals);
+    // Notional gate (opens only): confirm the position we're about to send is the
+    // size we configured (e.g. ~2000 USDC) — value the computed size at the trusted
+    // entry, not the mid it was derived from (size × mid is consistent by
+    // construction and would hide a bad mid). Catches any residual mis-size before
+    // a real order goes out.
+    if (!req.reduceOnly && req.refPrice && req.refPrice > 0) {
+      const off = notionalOffFraction(size, req.refPrice, req.notionalUsd);
+      if (off !== undefined && off > NOTIONAL_MAX_OFF) {
+        return {
+          ok: false,
+          filledPrice: mid,
+          size: 0,
+          simulated: !this.live,
+          error: `notional sanity: order would open ${(size * req.refPrice).toFixed(2)} USDC vs configured ${req.notionalUsd.toFixed(2)} (off ${(off * 100).toFixed(0)}%, max ${(NOTIONAL_MAX_OFF * 100).toFixed(0)}%) — refusing to size`,
+        };
+      }
+    }
     if (!(size > 0)) {
       const minLot = 1 / 10 ** asset.szDecimals;
       return {
