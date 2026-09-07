@@ -223,7 +223,7 @@ function SideTable({ rows }: { rows: AnalyticsBucket[] }) {
   );
 }
 
-function PnlBars({ title, rows }: { title: string; rows: AnalyticsBucket[] }) {
+function PnlBars({ title, rows, columns }: { title: string; rows: AnalyticsBucket[]; columns?: boolean }) {
   const data = rows
     .map((b) => ({ name: b.label, pnl: Number(b.stats.realizedPnl.toFixed(2)) }))
     .filter((d) => d.pnl !== 0);
@@ -241,22 +241,40 @@ function PnlBars({ title, rows }: { title: string; rows: AnalyticsBucket[] }) {
             <div className="e-title">Nothing to plot</div>
           </div>
         ) : (
-          <ResponsiveContainer width="100%" height={Math.max(180, data.length * 34)}>
-            <BarChart data={data} layout="vertical" margin={{ top: 6, right: 20, left: 10, bottom: 6 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.07)" />
-              <XAxis type="number" stroke="#8a8478" fontSize={11} />
-              <YAxis type="category" dataKey="name" stroke="#8a8478" fontSize={11} width={90} />
-              <Tooltip
-                contentStyle={{ background: "#1b1a18", border: "1px solid rgba(255,255,255,0.2)", borderRadius: 8 }}
-                formatter={(v: number) => usd(v)}
-                cursor={{ fill: "rgba(255,255,255,0.05)" }}
-              />
-              <Bar dataKey="pnl" radius={[0, 4, 4, 0]}>
-                {data.map((d, i) => (
-                  <Cell key={i} fill={d.pnl >= 0 ? "#36c77e" : "#ef5560"} />
-                ))}
-              </Bar>
-            </BarChart>
+          <ResponsiveContainer width="100%" height={columns ? 260 : Math.max(180, data.length * 34)}>
+            {columns ? (
+              <BarChart data={data} margin={{ top: 6, right: 12, left: 4, bottom: 6 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.07)" />
+                <XAxis type="category" dataKey="name" stroke="#8a8478" fontSize={11} interval={0} angle={-30} textAnchor="end" height={54} />
+                <YAxis type="number" stroke="#8a8478" fontSize={11} width={60} />
+                <Tooltip
+                  contentStyle={{ background: "#1b1a18", border: "1px solid rgba(255,255,255,0.2)", borderRadius: 8 }}
+                  formatter={(v: number) => usd(v)}
+                  cursor={{ fill: "rgba(255,255,255,0.05)" }}
+                />
+                <Bar dataKey="pnl" radius={[4, 4, 0, 0]}>
+                  {data.map((d, i) => (
+                    <Cell key={i} fill={d.pnl >= 0 ? "#36c77e" : "#ef5560"} />
+                  ))}
+                </Bar>
+              </BarChart>
+            ) : (
+              <BarChart data={data} layout="vertical" margin={{ top: 6, right: 20, left: 10, bottom: 6 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.07)" />
+                <XAxis type="number" stroke="#8a8478" fontSize={11} />
+                <YAxis type="category" dataKey="name" stroke="#8a8478" fontSize={11} width={90} />
+                <Tooltip
+                  contentStyle={{ background: "#1b1a18", border: "1px solid rgba(255,255,255,0.2)", borderRadius: 8 }}
+                  formatter={(v: number) => usd(v)}
+                  cursor={{ fill: "rgba(255,255,255,0.05)" }}
+                />
+                <Bar dataKey="pnl" radius={[0, 4, 4, 0]}>
+                  {data.map((d, i) => (
+                    <Cell key={i} fill={d.pnl >= 0 ? "#36c77e" : "#ef5560"} />
+                  ))}
+                </Bar>
+              </BarChart>
+            )}
           </ResponsiveContainer>
         )}
       </div>
@@ -649,7 +667,7 @@ export function Analytics() {
           <BucketTable title="Performance by crypto" hint="by trades" rows={data.bySymbol} symbol />
 
           <div className="grid-11">
-            <PnlBars title="PnL by crypto" rows={data.bySymbol} />
+            <PnlBars title="PnL by crypto" rows={data.bySymbol} columns />
             <PnlBars title="PnL by group" rows={data.byGroup} />
           </div>
 

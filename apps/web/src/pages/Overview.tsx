@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import {
   Area,
   AreaChart,
@@ -183,6 +183,7 @@ export function Overview({
   trades: Trade[];
   prices: Record<string, number>;
 }) {
+  const [range, setRange] = useState<"7d" | "30d" | "90d" | "ytd" | "all">("all");
   if (!stats) return <Empty title="Loading…" />;
   const o = stats.overall;
 
@@ -253,7 +254,14 @@ export function Overview({
     .sort((a, b) => (a.receivedAt < b.receivedAt ? 1 : -1))
     .slice(0, 10);
 
-  const equityData = stats.equityCurve.map((p) => ({ t: shortTime(p.t), pnl: p.pnl }));
+  const rangeCutoff = (() => {
+    if (range === "all") return 0;
+    if (range === "ytd") return new Date(new Date().getFullYear(), 0, 1).getTime();
+    const days = range === "7d" ? 7 : range === "30d" ? 30 : 90;
+    return Date.now() - days * 86_400_000;
+  })();
+  const curve = stats.equityCurve.filter((p) => new Date(p.t).getTime() >= rangeCutoff);
+  const equityData = curve.map((p) => ({ t: shortTime(p.t), pnl: p.pnl }));
   const equitySeries = stats.equityCurve.map((p) => p.pnl);
   const groupData = stats.byGroup.map((g) => ({
     name: g.groupName,
@@ -377,6 +385,19 @@ export function Overview({
               <h2>
                 Cumulative PnL<span className="sub">realized</span>
               </h2>
+              <div className="actions">
+                <div className="seg">
+                  {(["7d", "30d", "90d", "ytd", "all"] as const).map((r) => (
+                    <span
+                      key={r}
+                      className={`seg-item${range === r ? " active" : ""}`}
+                      onClick={() => setRange(r)}
+                    >
+                      {r === "ytd" ? "YTD" : r === "all" ? "All" : r}
+                    </span>
+                  ))}
+                </div>
+              </div>
             </div>
             <div className="panel-body">
               {equityData.length === 0 ? (
