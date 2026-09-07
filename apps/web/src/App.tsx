@@ -92,6 +92,8 @@ export function App() {
   const [healLearnings, setHealLearnings] = useState<SelfHealingLearning[]>([]);
   const [prices, setPrices] = useState<Record<string, number>>({});
   const [now, setNow] = useState(() => new Date());
+  const [jump, setJump] = useState("");
+  const [jumpOpen, setJumpOpen] = useState(false);
 
   const reloadLogs = useCallback(() => {
     api.logs(500).then(setLogs).catch(() => {});
@@ -173,6 +175,21 @@ export function App() {
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(t);
+  }, []);
+
+  // ⌘K / Ctrl+K focuses the jump-to search; Escape closes it.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setJumpOpen(true);
+        setTimeout(() => document.getElementById("jump-input")?.focus(), 0);
+      } else if (e.key === "Escape") {
+        setJumpOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, []);
 
   // Poll health + account so the badge/equity self-heal after a change that
@@ -320,16 +337,36 @@ export function App() {
     return null;
   };
 
+  const closedCount = useMemo(() => trades.filter((t) => t.status === "closed").length, [trades]);
+  const jumpMatches = useMemo(
+    () => NAV.flatMap((s) => s.items).filter((i) => i.label.toLowerCase().includes(jump.toLowerCase())),
+    [jump],
+  );
+  const goTab = (id: Tab) => { setTab(id); setJump(""); setJumpOpen(false); };
   const pageMeta = (): string => {
     switch (tab) {
       case "overview":
         return `${now.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })} · ${groups.length} groups`;
       case "trades":
-        return `${openCount} open · ${workingCount} working`;
+        return `${openCount} open · ${workingCount} working · ${closedCount} closed`;
       case "signals":
-        return `${pendingCount} pending`;
+        return `${pendingCount} pending · ${signals.length} recent`;
+      case "messages":
+        return `${groups.length} channels`;
       case "groups":
         return `${groups.length} channels`;
+      case "selfhealing":
+        return `independent review · learnings${health?.tradingPaused ? "" : ""}`;
+      case "analytics":
+        return "performance over the selected range";
+      case "risk":
+        return "live portfolio risk · per-channel edge";
+      case "secondopinion":
+        return "independent, observe-only assessments";
+      case "settings":
+        return "global config · exchanges · safety · diagnostic";
+      case "logs":
+        return `${logs.length} lines · live`;
       default:
         return "";
     }
@@ -463,6 +500,35 @@ export function App() {
               </span>
             )}
             <span className="chip num">{clock} UTC</span>
+            <div className="search" style={{ position: "relative" }}>
+              <Icon name="search" />
+              <input
+                id="jump-input"
+                value={jump}
+                onChange={(e) => { setJump(e.target.value); setJumpOpen(true); }}
+                onFocus={() => setJumpOpen(true)}
+                onBlur={() => setTimeout(() => setJumpOpen(false), 150)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && jumpMatches[0]) { goTab(jumpMatches[0].id); (e.target as HTMLInputElement).blur(); }
+                }}
+                placeholder="Jump to…"
+                style={{ border: "none", background: "transparent", height: "auto", padding: 0, width: "100%", color: "var(--ink)", outline: "none", boxShadow: "none", fontSize: "var(--fs-sm)" }}
+              />
+              <span className="kbd">⌘K</span>
+              {jumpOpen && jump && jumpMatches.length > 0 && (
+                <div style={{ position: "absolute", top: "120%", left: 0, right: 0, background: "var(--surface-overlay)", border: "1px solid var(--line-x)", borderRadius: 8, boxShadow: "var(--shadow-2)", zIndex: 50, overflow: "hidden" }}>
+                  {jumpMatches.map((m) => (
+                    <div
+                      key={m.id}
+                      onMouseDown={() => goTab(m.id)}
+                      style={{ padding: "7px 10px", cursor: "pointer", color: tab === m.id ? "var(--champagne)" : "var(--ink-2)", fontSize: "var(--fs-sm)" }}
+                    >
+                      {m.label}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </header>
 
@@ -474,7 +540,11 @@ export function App() {
               </span>
               <div>
                 <div className="b-title">Test mode</div>
-                <div className="b-text">Signals are processed and simulated at live prices — no real orders are sent. Flip “Go live” in the sidebar when you're ready.</div>
+                <div className="b-text">Signals are processed and simulated at live prices — no real orders are sent. Flip “Go live” when you're ready.</div>
+              </div>
+              <div className="b-actions">
+                <button className="btn sm ghost" onClick={() => setTab("settings")}>Readiness</button>
+                <button className="btn sm warn" onClick={toggleShadow}>Go live…</button>
               </div>
             </div>
           )}
