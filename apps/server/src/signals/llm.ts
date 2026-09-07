@@ -272,7 +272,7 @@ export async function parseWithLlm(
 const MANAGE_TOOL: Anthropic.Tool = {
   name: "record_management",
   description:
-    "Record a trade-management update for an EXISTING position (not a new entry). Read the attached chart if present — a moved stop-loss is often drawn as a line.",
+    "Record a trade-management update for an EXISTING position (not a new entry). Read the attached chart if present — a moved stop-loss is often drawn as a line/marker rather than typed. To read its exact PRICE, CALIBRATE against the labeled price-axis gridlines (e.g. 54.00 and 56.00): find the drawn line's position relative to those known levels and INTERPOLATE its precise value — do not just snap to the nearest label. A stop drawn just above entry after a move 'into profit' is that interpolated level (e.g. ~54.3 between the 54 and 56 gridlines), which goes in new_stop_loss — not break-even.",
   input_schema: {
     type: "object",
     properties: {
@@ -284,8 +284,8 @@ const MANAGE_TOOL: Anthropic.Tool = {
         description:
           "ALL base tickers the SAME action explicitly applies to when the message names SEVERAL positions to act on together — e.g. 'close Hype and Sui', 'stopped LTC and PENGU', 'closing A, B and C'. List every named coin (also put the first in `symbol`). Leave empty for a single-coin action or a recap where the verb applies to only one of several mentioned coins.",
       },
-      new_stop_loss: { type: "number", description: "New stop-loss PRICE if the stop was moved to a specific level (read the drawn SL line if only on the chart). Omit otherwise." },
-      move_to_breakeven: { type: "boolean", description: "True if the stop was moved to entry / 'risk-free' / break-even." },
+      new_stop_loss: { type: "number", description: "New stop-loss PRICE if the stop was moved to a specific level — read the drawn SL line/box from the CHART if the number is only there. This INCLUDES a stop moved 'into profit' / 'to lock profit' / 'to secure gains' (a level ABOVE entry for a long, BELOW for a short): find the drawn stop level on the chart and put it here. Omit only when truly no level is stated or drawn." },
+      move_to_breakeven: { type: "boolean", description: "True ONLY when the stop is moved to the ENTRY itself — 'break-even', 'risk-free', 'to entry', 'to my entry zone'. A stop moved 'into profit' / 'to lock profit' is NOT break-even (it sits above entry) — put its level in new_stop_loss (reading the chart if the number is only drawn), and leave this false." },
       closed: { type: "boolean", description: "True if the whole position was closed/stopped/invalidated." },
       cancel_entry: { type: "boolean", description: "True if the message says to CANCEL / PULL / REMOVE a still-resting, UNFILLED limit ENTRY order (e.g. 'cancel this limit entry on H', 'pull the pending order', 'remove the limit'). This cancels a pending order — it is NOT closing an already-open position (that is `closed`)." },
       partial_percent: { type: "number", description: "Percent booked if a partial profit was taken (e.g. 50). Omit if none or unknown." },
@@ -299,8 +299,8 @@ const MANAGE_TOOL: Anthropic.Tool = {
             symbol: { type: "string", description: "Base ticker this entry acts on." },
             closed: { type: "boolean", description: "True if THIS coin's whole position was closed/stopped." },
             partial_percent: { type: "number", description: "Percent booked on THIS coin, if a partial." },
-            move_to_breakeven: { type: "boolean", description: "True if THIS coin's stop moved to entry/break-even." },
-            new_stop_loss: { type: "number", description: "New stop PRICE for THIS coin, if moved to a level." },
+            move_to_breakeven: { type: "boolean", description: "True ONLY if THIS coin's stop moved to the ENTRY (break-even/risk-free). A stop moved 'into profit' is NOT break-even — use new_stop_loss." },
+            new_stop_loss: { type: "number", description: "New stop PRICE for THIS coin — read the drawn SL line from the chart if only there; INCLUDES a stop moved 'into profit'/'to lock profit' (a level above entry for a long)." },
           },
           required: ["symbol"],
         },
@@ -489,8 +489,8 @@ const RECONSIDER_MANAGE_TOOL: Anthropic.Tool = {
         description:
           "ALL base tickers the SAME action explicitly applies to when the message names SEVERAL positions together ('close A and B'). List every named coin (also put the first in `symbol`). Empty for a single-coin action or an ambiguous recap.",
       },
-      new_stop_loss: { type: "number", description: "New stop-loss PRICE if moved to a level. Omit otherwise." },
-      move_to_breakeven: { type: "boolean", description: "True if the stop moved to entry / break-even." },
+      new_stop_loss: { type: "number", description: "New stop-loss PRICE if moved to a level — read the drawn SL line/box from the CHART if the number is only there. This INCLUDES a stop moved 'into profit'/'to lock profit'/'to secure gains' (a level ABOVE entry for a long, BELOW for a short): read that drawn level here. Omit only when no level is stated or drawn." },
+      move_to_breakeven: { type: "boolean", description: "True ONLY when the stop moves to the ENTRY itself — 'break-even'/'risk-free'/'to entry'. A stop moved 'into profit'/'to lock profit' is NOT break-even (it sits above entry) — put its level in new_stop_loss (read the chart if only drawn) and leave this false." },
       closed: { type: "boolean", description: "True if the WHOLE position was closed/stopped/invalidated." },
       cancel_entry: { type: "boolean", description: "True if the message cancels/pulls a still-resting, UNFILLED limit ENTRY order (not a position close)." },
       partial_percent: { type: "number", description: "Percent booked ONLY if a specific fraction is stated (e.g. 50). Omit for a full close or when unknown." },
@@ -504,8 +504,8 @@ const RECONSIDER_MANAGE_TOOL: Anthropic.Tool = {
             symbol: { type: "string", description: "Base ticker this entry acts on." },
             closed: { type: "boolean", description: "True if THIS coin's whole position was closed/stopped." },
             partial_percent: { type: "number", description: "Percent booked on THIS coin, if a partial." },
-            move_to_breakeven: { type: "boolean", description: "True if THIS coin's stop moved to entry/break-even." },
-            new_stop_loss: { type: "number", description: "New stop PRICE for THIS coin, if moved to a level." },
+            move_to_breakeven: { type: "boolean", description: "True ONLY if THIS coin's stop moved to the ENTRY (break-even/risk-free). A stop moved 'into profit' is NOT break-even — use new_stop_loss." },
+            new_stop_loss: { type: "number", description: "New stop PRICE for THIS coin — read the drawn SL line from the chart if only there; INCLUDES a stop moved 'into profit'/'to lock profit' (a level above entry for a long)." },
           },
           required: ["symbol"],
         },
