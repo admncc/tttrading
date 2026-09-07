@@ -26,34 +26,36 @@ export function Login({ onSuccess }: { onSuccess: () => void }) {
   };
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-      }}
-    >
-      <form onSubmit={submit} className="panel" style={{ width: 320 }}>
-        <div className="brand" style={{ padding: "0 0 16px" }}>
-          TT<span>Desk</span>
+    <div className="login">
+      <form onSubmit={submit} className="login-card">
+        <div className="brand">
+          <span className="mark">TT</span>
+          <span>
+            <div className="word">TT Desk</div>
+            <div className="sub">Operator cockpit</div>
+          </span>
+        </div>
+        <div>
+          <div style={{ fontSize: 15, fontWeight: 600 }}>Sign in</div>
+          <div className="small muted">One operator · one password · bearer token stored locally</div>
         </div>
         <div className="field">
-          <label>Password</label>
+          <label>Operator password</label>
           <input
+            className="input"
             type="password"
             autoFocus
             value={password}
             onChange={(e) => setPassword(e.target.value)}
+            placeholder="••••••••••••"
           />
         </div>
-        {error && (
-          <div className="neg" style={{ marginBottom: 12, fontSize: 13 }}>
-            {error}
-          </div>
-        )}
-        <button className="primary" type="submit" disabled={busy || !password} style={{ width: "100%" }}>
-          {busy ? "Signing in…" : "Sign in"}
+        {error && <div className="loss small">{error}</div>}
+        <button className="btn primary lg block" type="submit" disabled={busy || !password}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M5 12h14M13 6l6 6-6 6" />
+          </svg>
+          {busy ? "Signing in…" : "Enter the desk"}
         </button>
       </form>
     </div>
