@@ -1,11 +1,20 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api, type CapTier, type InsightTrade, type OpenRisk, type RiskHeat } from "../api.js";
+import { usd as money } from "../format.js";
 import { DEFAULT_RANGE, RangePicker, rangeWindow, type RangeState } from "../dateRange.js";
 
+/* ---- local display helpers (compact, sign-first — preserved verbatim) ------ */
 const pct = (n: number) => `${(n * 100).toFixed(0)}%`;
 const usd = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(0)}`;
-const netColor = (n: number) => (n > 0 ? "#22c55e" : n < 0 ? "#ef4444" : "var(--muted)");
-const wrColor = (w: number) => (w >= 0.55 ? "#22c55e" : w >= 0.45 ? "#f59e0b" : "#ef4444");
+const clampW = (n: number) => `${Math.max(0, Math.min(100, n)).toFixed(0)}%`;
+
+/* Semantic colour → v2 class (money or danger only). */
+const signCls = (n: number) => (n > 0 ? "gain" : n < 0 ? "loss" : "muted");
+const wrCls = (w: number) => (w >= 0.55 ? "gain" : w >= 0.45 ? "warn" : "loss");
+const pfCls = (p: number) => (p >= 2 ? "gain" : p >= 1.3 ? "warn" : "loss");
+const expCls = (e?: number) => (e === undefined ? "muted" : e >= 0.3 ? "gain" : e >= 0 ? "warn" : "loss");
+const sqnCls = (s?: number) => (s === undefined ? "muted" : s >= 2.5 ? "gain" : s >= 1.6 ? "warn" : "loss");
+const meterCls = (cls: string) => (cls === "gain" ? "ok" : cls === "loss" ? "danger" : cls);
 
 interface Bucket { key: string; tier?: CapTier; n: number; winRate: number; net: number; avg: number }
 
@@ -47,6 +56,10 @@ function holdBucket(h?: number): string {
   if (h < 24) return "Intraday 4–24h";
   if (h < 72) return "Swing 1–3d";
   return "Position >3d";
+}
+function holdFmt(h?: number): string {
+  if (h === undefined) return "—";
+  return h >= 24 ? `${(h / 24).toFixed(1)}d` : `${h.toFixed(1)}h`;
 }
 
 /* ================= professional edge statistics ============================ */
@@ -134,12 +147,6 @@ function edgeOf(trades: InsightTrade[]): Edge {
 }
 
 // Van Tharp SQN bands (100-trade scale).
-function sqnColor(s?: number): string {
-  if (s === undefined) return "var(--muted)";
-  if (s >= 2.5) return "#22c55e";
-  if (s >= 1.6) return "#f59e0b";
-  return "#ef4444";
-}
 function sqnLabel(s?: number): string {
   if (s === undefined) return "—";
   if (s >= 5) return "superb";
@@ -149,10 +156,9 @@ function sqnLabel(s?: number): string {
   if (s >= 1.6) return "below avg";
   return "poor";
 }
-const pfColor = (p: number) => (p >= 2 ? "#22c55e" : p >= 1.3 ? "#f59e0b" : "#ef4444");
-const expColor = (e?: number) => (e === undefined ? "var(--muted)" : e >= 0.3 ? "#22c55e" : e >= 0 ? "#f59e0b" : "#ef4444");
 const fmt = (n?: number, d = 2) => (n === undefined || !Number.isFinite(n) ? "—" : n.toFixed(d));
 const inf = (n: number, d = 2) => (Number.isFinite(n) ? n.toFixed(d) : "∞");
+const rMult = (e?: number) => (e === undefined ? "—" : `${e >= 0 ? "+" : ""}${e.toFixed(2)}R`);
 
 /* ---- best factor combination per trader (Spotlight) ----------------------- */
 interface Combo { label: string; n: number; winRate: number; net: number }
@@ -214,6 +220,23 @@ function agg(trades: InsightTrade[], keyOf: (t: InsightTrade) => string, tierOf?
     .sort((a, b) => b.net - a.net);
 }
 
+/* Best-net bucket in each of a channel's headline dimensions. */
+interface DimBest { dim: string; label: string; net: number }
+function bestByDim(trades: InsightTrade[]): DimBest[] {
+  const dims: { dim: string; keyOf: (t: InsightTrade) => string }[] = [
+    { dim: "Session", keyOf: (t) => sessionOf(t.openedAt) },
+    { dim: "Hold", keyOf: (t) => holdBucket(t.holdHours) },
+    { dim: "Coin", keyOf: (t) => t.symbol },
+    { dim: "Side", keyOf: (t) => t.side },
+  ];
+  const out: DimBest[] = [];
+  for (const d of dims) {
+    const best = agg(trades, d.keyOf)[0]; // agg is sorted by net desc
+    if (best && best.key) out.push({ dim: d.dim, label: best.key, net: best.net });
+  }
+  return out;
+}
+
 function equitySeries(trades: InsightTrade[]): number[] {
   const asc = [...trades].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
   let c = 0;
@@ -221,7 +244,7 @@ function equitySeries(trades: InsightTrade[]): number[] {
 }
 
 function Sparkline({ data, width = 200, height = 40, full }: { data: number[]; width?: number; height?: number; full?: boolean }) {
-  if (!data.length) return <span className="muted" style={{ fontSize: 11 }}>—</span>;
+  if (!data.length) return <span className="muted xs">—</span>;
   const min = Math.min(0, ...data);
   const max = Math.max(0, ...data);
   const span = max - min || 1;
@@ -230,64 +253,350 @@ function Sparkline({ data, width = 200, height = 40, full }: { data: number[]; w
   const y = (v: number) => height - ((v - min) / span) * height;
   const pts = data.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
   const last = data[data.length - 1] ?? 0;
-  const color = last >= 0 ? "#22c55e" : "#ef4444";
+  const stroke = last >= 0 ? "var(--gain)" : "var(--loss)";
   return (
-    <svg width={full ? "100%" : width} height={height} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" style={{ display: "block" }}>
-      <line x1={0} y1={y(0)} x2={width} y2={y(0)} stroke="var(--border)" strokeWidth={1} />
-      <polyline points={pts} fill="none" stroke={color} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
+    <svg width={full ? "100%" : width} height={height} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="spark" style={{ display: "block" }}>
+      <line x1={0} y1={y(0)} x2={width} y2={y(0)} stroke="var(--line)" strokeWidth={1} />
+      <polyline points={pts} fill="none" stroke={stroke} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
     </svg>
   );
 }
 
 function TierTag({ tier }: { tier?: string }) {
   if (!tier) return null;
-  const bg = tier === "large" ? "#16a34a" : tier === "small" ? "#b45309" : "#475569";
-  return <span className="tag" style={{ marginLeft: 6, background: bg, color: "#fff", fontSize: 10 }}>{tier}</span>;
+  return <span className="tag neutral plain" style={{ marginLeft: 6, fontSize: 10, height: 16 }}>{tier}</span>;
 }
 
-function Card({ title, children, hint }: { title: string; children: ReactNode; hint?: string }) {
+/* ================= portfolio risk (KPI grid + live positions) ============== */
+function PortfolioRisk({ open, heat, onRefresh }: { open: OpenRisk[]; heat?: RiskHeat; onRefresh: () => void }) {
+  // RI-2: heat is measured on FILLED positions only; working limit orders are
+  // shown separately as the worst-case "if all fill" number, never as live heat.
+  const real = open.filter((p) => !p.working);
+  const workingOrders = open.filter((p) => p.working);
+
+  const longN = real.filter((p) => p.side === "long").reduce((s, p) => s + p.notional, 0);
+  const shortN = real.filter((p) => p.side === "short").reduce((s, p) => s + p.notional, 0);
+  const gross = longN + shortN;
+  const netExp = longN - shortN;
+  const knownRisk = heat?.riskLiveUsd ?? real.filter((p) => p.riskUsd !== undefined).reduce((s, p) => s + (p.riskUsd ?? 0), 0);
+  const naked = real.filter((p) => !p.hasStop);
+  const nakedNotional = naked.reduce((s, p) => s + p.notional, 0);
+  const equity = heat?.totalEquity; // RI-1: summed across all venues
+  const heatPct = heat?.heatLive ?? (equity && equity > 0 ? knownRisk / equity : undefined);
+  const heatIfAll = heat?.heatIfAllFilled;
+  const grossPct = equity && equity > 0 ? gross / equity : undefined;
+  const netPct = equity && equity > 0 ? netExp / equity : undefined;
+  const perVenue = (heat?.perVenue ?? []).filter((v) => v.equity > 0 || v.riskUsd > 0);
+  const venues = [...new Set(real.map((p) => p.venue))];
+
+  // Single-name + tier concentration (share of gross exposure).
+  const byCoin = new Map<string, number>();
+  const byTier = new Map<string, number>();
+  for (const p of real) {
+    byCoin.set(p.symbol, (byCoin.get(p.symbol) ?? 0) + p.notional);
+    byTier.set(p.tier, (byTier.get(p.tier) ?? 0) + p.notional);
+  }
+  const topCoin = [...byCoin.entries()].sort((a, b) => b[1] - a[1])[0];
+  const topCoinPct = topCoin && gross > 0 ? topCoin[1] / gross : 0;
+
+  const heatKpiCls = heatPct === undefined ? "" : heatPct > 0.06 ? "loss" : heatPct > 0.03 ? "warn" : "gain";
+  const venueHeatCls = (h?: number) => (h === undefined ? "muted" : h > 0.06 ? "loss" : h > 0.03 ? "warn" : "gain");
+
+  const flags = [
+    naked.length ? `${naked.length} position(s) without a stop — unbounded downside` : "",
+    heatPct !== undefined && heatPct > 0.06 ? `heat ${(heatPct * 100).toFixed(1)}% over the ~6% prudent cap` : "",
+    Math.abs(netPct ?? 0) > 1.2 ? `directional: net exposure ${((netPct ?? 0) * 100).toFixed(0)}% of equity (one-way beta bet)` : "",
+    topCoinPct > 0.5 ? `${topCoin?.[0]} is ${(topCoinPct * 100).toFixed(0)}% of gross — single-name concentration` : "",
+  ].filter(Boolean).join(" · ");
+
+  const maxRisk = Math.max(1, ...real.map((p) => p.riskUsd ?? 0));
+
   return (
-    <div className="panel" style={{ margin: 0 }}>
-      <h3 style={{ margin: "0 0 4px" }}>{title}</h3>
-      {hint && <p className="muted" style={{ margin: "0 0 8px", fontSize: 11 }}>{hint}</p>}
-      <div style={{ overflowX: "auto" }}>{children}</div>
-    </div>
+    <>
+      <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(6, minmax(0, 1fr))" }}>
+        <div className="kpi">
+          <div className="label">Portfolio heat</div>
+          <div className="value">
+            {heatPct === undefined ? money(knownRisk, 0) : <span className={heatKpiCls}>{(heatPct * 100).toFixed(1)}<small>%</small></span>}
+          </div>
+          <div className="delta">
+            {heatPct !== undefined && (
+              <div className={`meter ${meterCls(heatKpiCls)}`} style={{ width: 56 }}><i style={{ width: clampW((heatPct / 0.06) * 100) }} /></div>
+            )}
+            <span className="small muted">
+              {heatPct === undefined
+                ? "risk USDC (equity n/a)"
+                : `${money(knownRisk, 0)} at risk · cap ~6%${heatIfAll !== undefined ? ` · if all fill ${(heatIfAll * 100).toFixed(1)}%` : ""}`}
+            </span>
+          </div>
+        </div>
+
+        <div className="kpi">
+          <div className="label">Naked positions</div>
+          <div className="value"><span className={naked.length ? "loss" : "gain"}>{naked.length}</span></div>
+          <div className="delta">{naked.length ? `${money(nakedNotional, 0)} unbounded · ${naked.map((p) => p.symbol).join(", ")}` : "every position has a stop"}</div>
+        </div>
+
+        <div className="kpi">
+          <div className="label">Net exposure</div>
+          <div className="value"><span className={signCls(netExp)}>{netExp >= 0 ? "+" : "−"}{money(Math.abs(netExp), 0)}</span></div>
+          <div className="delta">
+            long {money(longN, 0)} · short {money(shortN, 0)}{netPct !== undefined ? ` · ${netPct >= 0 ? "+" : ""}${(netPct * 100).toFixed(0)}% of equity` : ""}
+          </div>
+        </div>
+
+        <div className="kpi">
+          <div className="label">Gross leverage</div>
+          <div className="value">{grossPct === undefined ? money(gross, 0) : <>{grossPct.toFixed(2)}<small>x</small></>}</div>
+          <div className="delta">{money(gross, 0)} notional{equity ? ` / ${money(equity, 0)} equity` : ""}</div>
+        </div>
+
+        <div className="kpi">
+          <div className="label">Top-coin concentration</div>
+          <div className="value">
+            {topCoin ? <span className={topCoinPct > 0.4 ? "warn" : ""}>{(topCoinPct * 100).toFixed(1)}<small>%</small></span> : "—"}
+          </div>
+          <div className="delta">{topCoin ? `${topCoin[0]} · ${money(topCoin[1], 0)} of ${money(gross, 0)}` : "no open exposure"}</div>
+        </div>
+
+        <div className="kpi">
+          <div className="label">Open positions</div>
+          <div className="value">{real.length}{workingOrders.length ? <small>+{workingOrders.length} working</small> : null}</div>
+          <div className="delta">
+            {gross > 0 ? [...byTier.entries()].map(([t, v]) => `${t} ${((v / gross) * 100).toFixed(0)}%`).join(" · ") : "—"}
+            {venues.length ? ` · ${venues.length} venue${venues.length === 1 ? "" : "s"}` : ""}
+          </div>
+        </div>
+      </div>
+
+      <section className="panel">
+        <div className="panel-head">
+          <h2>Portfolio risk — live open positions<span className="sub">all venues</span></h2>
+          <div className="actions">
+            <button className="btn ghost sm" onClick={onRefresh} title="Reload risk data">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7" /><path d="M3 4v5h5" /></svg>
+              Refresh
+            </button>
+          </div>
+        </div>
+
+        {real.length === 0 && workingOrders.length === 0 ? (
+          <div className="panel-body">
+            <div className="empty">
+              <div className="e-title">No open positions</div>
+              <div className="e-why">Nothing is at risk right now. Heat, exposure and concentration appear once positions are live.</div>
+            </div>
+          </div>
+        ) : (
+          <div className="panel-body flush">
+            <div className="table-scroll">
+              <table className="table compact">
+                <thead>
+                  <tr>
+                    <th>Position</th>
+                    <th>Venue</th>
+                    <th>Side</th>
+                    <th className="num">Notional</th>
+                    <th className="num">Lev</th>
+                    <th className="num">Risk $ to stop</th>
+                    <th className="num">% equity</th>
+                    <th>Stop</th>
+                    <th>Working?</th>
+                    <th>Heat</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {open.map((p, i) => {
+                    const isWorking = p.working;
+                    const riskKnown = !isWorking && p.riskUsd !== undefined;
+                    const eqPct = riskKnown && equity && equity > 0 ? ((p.riskUsd ?? 0) / equity) * 100 : undefined;
+                    const stop = isWorking
+                      ? <span className="tag neutral">stop planned</span>
+                      : !p.hasStop
+                        ? <span className="tag loss">no stop</span>
+                        : (p.riskUsd ?? -1) === 0
+                          ? <span className="tag brand">at break-even</span>
+                          : <span className="tag ok">stop set</span>;
+                    return (
+                      <tr key={`${p.symbol}-${p.channel}-${i}`}>
+                        <td>
+                          <span className="sym">
+                            <span className="coin">{p.symbol.slice(0, 3)}</span>
+                            <span>{p.symbol}<span className="sub">{p.channel}</span></span>
+                          </span>
+                        </td>
+                        <td><span className="tag venue">{p.venue}</span></td>
+                        <td><span className={`tag side ${p.side}`}>{p.side}</span></td>
+                        <td className="num">{money(p.notional, 0)}</td>
+                        <td className="num">{p.leverage}x</td>
+                        <td className="num">
+                          {!riskKnown ? <span className="muted">—</span>
+                            : (p.riskUsd ?? 0) === 0 ? <span className="gain">{money(0, 2)}</span>
+                              : <span className="loss">−{money(p.riskUsd ?? 0, 2)}</span>}
+                        </td>
+                        <td className="num">{eqPct === undefined ? <span className="muted">—</span> : `${eqPct.toFixed(2)}%`}</td>
+                        <td>{stop}</td>
+                        <td>{isWorking ? <span className="tag working">yes · resting</span> : <span className="tag neutral plain">no</span>}</td>
+                        <td>
+                          {riskKnown ? (
+                            <div className={`meter ${(p.riskUsd ?? 0) / maxRisk >= 0.75 ? "warn" : "ok"}`} style={{ width: 72 }}>
+                              <i style={{ width: clampW(((p.riskUsd ?? 0) / maxRisk) * 100) }} />
+                            </div>
+                          ) : null}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr>
+                    <td colSpan={5} className="right w600">Total risk to stop</td>
+                    <td className="num loss">−{money(knownRisk, 2)}</td>
+                    <td className="num">{equity && equity > 0 ? `${((knownRisk / equity) * 100).toFixed(2)}%` : "—"}</td>
+                    <td colSpan={3} />
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {(perVenue.length > 1 || flags) && (
+          <div className="panel-body" style={{ borderTop: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 10 }}>
+            {perVenue.length > 1 && (
+              <div>
+                <div className="caps mb8">Per-venue heat <span className="muted" style={{ textTransform: "none", letterSpacing: 0, fontWeight: 400 }}>(margin isn't shared — liquidation risk is per venue)</span></div>
+                <div className="flex" style={{ flexWrap: "wrap", gap: 8 }}>
+                  {perVenue.map((v) => (
+                    <span className="kv" key={v.venue}>
+                      <span className="k">{v.venue}</span>
+                      <b className={venueHeatCls(v.heat)}>{v.heat === undefined ? "—" : `${(v.heat * 100).toFixed(1)}%`}</b>
+                      <span className="muted">{money(v.riskUsd, 0)} / {money(v.equity, 0)}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {flags && <div className="callout suggest">⚠ Risk flags: {flags}</div>}
+          </div>
+        )}
+
+        <div className="panel-foot">
+          <span>Risk $ = distance to stop × size. Working orders commit margin but carry no stop risk until filled.</span>
+          <span>Live heat <span className={heatKpiCls || "muted"}>{heatPct === undefined ? "n/a" : `${(heatPct * 100).toFixed(1)}%`}</span> · {money(knownRisk, 0)} at risk</span>
+        </div>
+      </section>
+    </>
   );
 }
 
-function BucketTable({ rows, label, showTier, sparks }: { rows: Bucket[]; label: string; showTier?: boolean; sparks?: Record<string, number[]> }) {
-  if (!rows.length) return <div className="muted" style={{ fontSize: 12, padding: "8px 0" }}>No trades match.</div>;
-  const maxAbs = Math.max(1, ...rows.map((r) => Math.abs(r.net)));
+/* ---- edge scorecard card (per channel) ------------------------------------ */
+function EdgeCard({ rank, name, e, trades }: { rank: number; name: string; e: Edge; trades: InsightTrade[] }) {
+  const dims = bestByDim(trades);
   return (
-    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-      <thead>
-        <tr className="muted" style={{ textAlign: "left", fontSize: 11 }}>
-          <th style={{ padding: "6px 8px" }}>{label}</th>
-          <th style={{ padding: "6px 8px", textAlign: "right" }}>trades</th>
-          <th style={{ padding: "6px 8px", textAlign: "right" }}>win rate</th>
-          <th style={{ padding: "6px 8px", textAlign: "right", minWidth: 120 }}>net</th>
-          <th style={{ padding: "6px 8px", textAlign: "right" }}>avg</th>
-          {sparks && <th style={{ padding: "6px 8px" }}>trend</th>}
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((r) => (
-          <tr key={r.key} style={{ borderTop: "1px solid var(--border)" }}>
-            <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{r.key}{showTier && <TierTag tier={r.tier} />}</td>
-            <td style={{ padding: "6px 8px", textAlign: "right" }} className="muted">{r.n}</td>
-            <td style={{ padding: "6px 8px", textAlign: "right", color: wrColor(r.winRate), fontVariantNumeric: "tabular-nums" }}>{pct(r.winRate)}</td>
-            <td style={{ padding: "6px 8px", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
-              <div style={{ color: netColor(r.net) }}>{usd(r.net)}</div>
-              <div style={{ height: 3, background: "var(--border)", borderRadius: 2, marginTop: 3, display: "flex", justifyContent: "flex-end" }}>
-                <div style={{ height: "100%", width: `${(Math.abs(r.net) / maxAbs) * 100}%`, background: netColor(r.net), borderRadius: 2 }} />
+    <section className="panel">
+      <div className="panel-head">
+        <h2>{name}<span className="sub">{e.n} trades</span></h2>
+        <div className="actions"><span className="tag brand">rank {rank}</span></div>
+      </div>
+      <div className="panel-body">
+        <div className="stat-grid">
+          <div className="stat">
+            <span className="caps">Expectancy</span>
+            <span className={`v ${expCls(e.expectancyR)}`}>{rMult(e.expectancyR)}</span>
+            <span className="d">{e.nR}/{e.n} with stop</span>
+          </div>
+          <div className="stat">
+            <span className="caps">SQN</span>
+            <span className={`v ${e.nR < 30 ? "muted" : sqnCls(e.sqn)}`}>{fmt(e.sqn, 2)}</span>
+            <span className="d">{e.nR < 30 ? `N=${e.nR}` : sqnLabel(e.sqn)}</span>
+          </div>
+          <div className="stat">
+            <span className="caps">Win rate</span>
+            <span className={`v ${wrCls(e.winRate)}`}>{(e.winRate * 100).toFixed(1)}<small>%</small></span>
+          </div>
+          <div className="stat">
+            <span className="caps">PF</span>
+            <span className={`v ${pfCls(e.profitFactor)}`}>{inf(e.profitFactor)}</span>
+            <span className="d">payoff {inf(e.payoff)}×</span>
+          </div>
+          <div className="stat">
+            <span className="caps">Max DD</span>
+            <span className="v loss">−{e.maxDD.toFixed(0)}</span>
+            <span className="d">{e.maxDDpct !== undefined ? `${(e.maxDDpct * 100).toFixed(0)}% of peak` : "USDC"}</span>
+          </div>
+          <div className="stat">
+            <span className="caps">Loss streak</span>
+            <span className={`v ${e.maxLossStreak >= 5 ? "loss" : ""}`}>{e.maxLossStreak}<small>L</small></span>
+            <span className="d">best win {e.maxWinStreak}</span>
+          </div>
+          <div className="stat">
+            <span className="caps">Top-3 dep.</span>
+            <span className={`v ${e.top3Share !== undefined && e.top3Share > 0.5 ? "warn" : ""}`}>{e.top3Share === undefined ? "—" : `${(e.top3Share * 100).toFixed(0)}`}<small>%</small></span>
+            <span className="d">of gross profit</span>
+          </div>
+          <div className="stat">
+            <span className="caps">Avg hold</span>
+            <span className="v">{holdFmt(e.avgHold)}</span>
+            <span className="d">{e.avgSlip !== undefined ? `slip ${e.avgSlip >= 0 ? "+" : ""}${e.avgSlip.toFixed(2)}%` : ""}</span>
+          </div>
+        </div>
+        {dims.length > 0 && (
+          <>
+            <div className="caps mt16 mb8">Best factor per dimension</div>
+            {dims.map((d) => (
+              <div className="between small" key={d.dim} style={{ padding: "5px 0", borderBottom: "1px solid var(--line)" }}>
+                <span className="muted" style={{ width: 56 }}>{d.dim}</span>
+                <span className="grow">{d.label}</span>
+                <span className={`num ${signCls(d.net)}`}>{usd(d.net)}</span>
               </div>
-            </td>
-            <td style={{ padding: "6px 8px", textAlign: "right", color: netColor(r.avg), fontVariantNumeric: "tabular-nums" }}>{usd(r.avg)}</td>
-            {sparks && <td style={{ padding: "6px 8px", width: 130 }}><Sparkline data={sparks[r.key] ?? []} width={120} height={28} /></td>}
-          </tr>
-        ))}
-      </tbody>
-    </table>
+            ))}
+          </>
+        )}
+      </div>
+    </section>
+  );
+}
+
+/* ---- compact breakdown table panel ---------------------------------------- */
+function BreakdownPanel({ title, sub, rows, nameLabel, showTier, sparks }: {
+  title: string; sub?: string; rows: Bucket[]; nameLabel: string; showTier?: boolean; sparks?: Record<string, number[]>;
+}) {
+  const cols = sparks ? 6 : 5;
+  return (
+    <section className="panel">
+      <div className="panel-head"><h2>{title}{sub && <span className="sub">{sub}</span>}</h2></div>
+      <div className="panel-body flush">
+        <div className="table-scroll">
+          <table className="table compact">
+            <thead>
+              <tr>
+                <th>{nameLabel}</th>
+                <th className="num">Trades</th>
+                <th className="num">Win</th>
+                <th className="num">Net</th>
+                <th className="num">Avg</th>
+                {sparks && <th>Trend</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.length === 0 ? (
+                <tr><td colSpan={cols}><div className="empty"><div className="e-why">No trades match.</div></div></td></tr>
+              ) : rows.map((r) => (
+                <tr key={r.key}>
+                  <td>{r.key}{showTier && <TierTag tier={r.tier} />}</td>
+                  <td className="num muted">{r.n}</td>
+                  <td className={`num ${wrCls(r.winRate)}`}>{pct(r.winRate)}</td>
+                  <td className={`num ${signCls(r.net)}`}>{usd(r.net)}</td>
+                  <td className={`num ${signCls(r.avg)}`}>{usd(r.avg)}</td>
+                  {sparks && <td style={{ width: 130 }}><Sparkline data={sparks[r.key] ?? []} width={120} height={26} /></td>}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -303,185 +612,19 @@ const R_BUCKETS: { label: string; lo: number; hi: number }[] = [
 ];
 function RHistogram({ trades }: { trades: InsightTrade[] }) {
   const rs = trades.map((t) => t.r).filter((r): r is number => r !== undefined && Number.isFinite(r));
-  if (rs.length === 0) return <div className="muted" style={{ fontSize: 12 }}>No trades with a known stop yet — R-multiples need entry + stop.</div>;
-  const counts = R_BUCKETS.map((b) => rs.filter((r) => r > b.lo && r <= b.hi).length);
-  const max = Math.max(1, ...counts);
+  if (rs.length === 0) return <div className="empty"><div className="e-why">No trades with a known stop yet — R-multiples need entry + stop.</div></div>;
+  const rows = R_BUCKETS.map((b) => ({ b, c: rs.filter((r) => r > b.lo && r <= b.hi).length }));
+  const max = Math.max(1, ...rows.map((r) => r.c));
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "84px 1fr 32px", gap: 4, alignItems: "center", fontSize: 12 }}>
-      {R_BUCKETS.map((b, i) => (
+    <div style={{ display: "grid", gridTemplateColumns: "84px 1fr 32px", gap: 6, alignItems: "center" }}>
+      {rows.map(({ b, c }) => (
         <div key={b.label} style={{ display: "contents" }}>
-          <span className="muted" style={{ textAlign: "right", paddingRight: 6 }}>{b.label}</span>
-          <div style={{ background: "var(--border)", borderRadius: 3, height: 14 }}>
-            <div style={{ width: `${(counts[i]! / max) * 100}%`, height: "100%", background: b.hi <= 0 ? "#ef4444" : "#22c55e", borderRadius: 3 }} />
-          </div>
-          <span style={{ textAlign: "right" }}>{counts[i]}</span>
+          <span className="caps" style={{ textAlign: "right", letterSpacing: 0 }}>{b.label}</span>
+          <div className={`meter ${b.hi <= 0 ? "danger" : "ok"}`}><i style={{ width: clampW((c / max) * 100) }} /></div>
+          <span className="num right">{c}</span>
         </div>
       ))}
     </div>
-  );
-}
-
-/* ---- edge scorecard table ------------------------------------------------- */
-function EdgeTable({ rows }: { rows: { key: string; e: Edge }[] }) {
-  if (!rows.length) return <div className="muted" style={{ fontSize: 12, padding: "8px 0" }}>No trades match.</div>;
-  const th = (t: string, extra?: object) => <th style={{ padding: "6px 8px", textAlign: "right", ...extra }}>{t}</th>;
-  const td = (v: ReactNode, color?: string) => (
-    <td style={{ padding: "6px 8px", textAlign: "right", color, fontVariantNumeric: "tabular-nums" }}>{v}</td>
-  );
-  return (
-    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-      <thead>
-        <tr className="muted" style={{ textAlign: "left", fontSize: 11 }}>
-          <th style={{ padding: "6px 8px" }}>Channel</th>
-          {th("trades")}{th("win")}{th("expectancy (R)")}{th("SQN")}{th("profit factor")}{th("payoff")}{th("max DD")}{th("loss streak")}{th("avg hold")}
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map(({ key, e }) => (
-          <tr key={key} style={{ borderTop: "1px solid var(--border)" }}>
-            <td style={{ padding: "6px 8px", whiteSpace: "nowrap", fontWeight: 600 }}>{key}</td>
-            {td(e.n, "var(--muted)")}
-            {td(pct(e.winRate), wrColor(e.winRate))}
-            {td(
-              e.expectancyR === undefined ? "—" : `${e.expectancyR >= 0 ? "+" : ""}${fmt(e.expectancyR, 2)}R`,
-              expColor(e.expectancyR),
-            )}
-            {td(
-              <span style={{ opacity: e.nR < 30 ? 0.5 : 1 }} title={e.nR < 30 ? `only ${e.nR} trades with a stop — SQN needs ~30 to be reliable` : ""}>
-                {fmt(e.sqn, 2)} <span className="muted" style={{ fontSize: 10 }}>{e.nR < 30 ? `N=${e.nR}` : sqnLabel(e.sqn)}</span>
-              </span>,
-              e.nR < 30 ? "var(--muted)" : sqnColor(e.sqn),
-            )}
-            {td(inf(e.profitFactor, 2), pfColor(e.profitFactor))}
-            {td(inf(e.payoff, 2))}
-            {td(<span style={{ color: "#ef4444" }}>−{e.maxDD.toFixed(0)}{e.maxDDpct !== undefined ? ` (${(e.maxDDpct * 100).toFixed(0)}%)` : ""}</span>)}
-            {td(e.maxLossStreak, e.maxLossStreak >= 5 ? "#ef4444" : undefined)}
-            {td(e.avgHold === undefined ? "—" : e.avgHold >= 24 ? `${(e.avgHold / 24).toFixed(1)}d` : `${e.avgHold.toFixed(1)}h`, "var(--muted)")}
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  );
-}
-
-function StatTile({ label, value, color, sub }: { label: string; value: ReactNode; color?: string; sub?: string }) {
-  return (
-    <div className="panel" style={{ margin: 0, padding: "10px 12px" }}>
-      <div className="muted" style={{ fontSize: 11 }}>{label}</div>
-      <div style={{ fontSize: 20, fontWeight: 700, color, fontVariantNumeric: "tabular-nums" }}>{value}</div>
-      {sub && <div className="muted" style={{ fontSize: 11 }}>{sub}</div>}
-    </div>
-  );
-}
-
-/* ================= portfolio risk (live open positions) ==================== */
-function PortfolioRisk({ open, heat }: { open: OpenRisk[]; heat?: RiskHeat }) {
-  // RI-2: heat is measured on FILLED positions only; working limit orders are
-  // shown separately as the worst-case "if all fill" number, never as live heat.
-  const real = open.filter((p) => !p.working);
-  const workingOrders = open.filter((p) => p.working);
-  if (real.length === 0 && workingOrders.length === 0)
-    return <div className="muted" style={{ fontSize: 12 }}>No open positions.</div>;
-  const longN = real.filter((p) => p.side === "long").reduce((s, p) => s + p.notional, 0);
-  const shortN = real.filter((p) => p.side === "short").reduce((s, p) => s + p.notional, 0);
-  const gross = longN + shortN;
-  const netExp = longN - shortN;
-  const knownRisk = heat?.riskLiveUsd ?? real.filter((p) => p.riskUsd !== undefined).reduce((s, p) => s + (p.riskUsd ?? 0), 0);
-  const naked = real.filter((p) => !p.hasStop);
-  const nakedNotional = naked.reduce((s, p) => s + p.notional, 0);
-  const equity = heat?.totalEquity; // RI-1: summed across all venues
-  const heatPct = heat?.heatLive ?? (equity && equity > 0 ? knownRisk / equity : undefined);
-  const heatIfAll = heat?.heatIfAllFilled;
-  const grossPct = equity && equity > 0 ? gross / equity : undefined;
-  const netPct = equity && equity > 0 ? netExp / equity : undefined;
-  const perVenue = (heat?.perVenue ?? []).filter((v) => v.equity > 0 || v.riskUsd > 0);
-
-  // Single-name + tier concentration (share of gross exposure).
-  const byCoin = new Map<string, number>();
-  const byTier = new Map<string, number>();
-  for (const p of real) {
-    byCoin.set(p.symbol, (byCoin.get(p.symbol) ?? 0) + p.notional);
-    byTier.set(p.tier, (byTier.get(p.tier) ?? 0) + p.notional);
-  }
-  const topCoin = [...byCoin.entries()].sort((a, b) => b[1] - a[1])[0];
-  const topCoinPct = topCoin && gross > 0 ? topCoin[1] / gross : 0;
-
-  const heatColor = heatPct === undefined ? "var(--muted)" : heatPct > 0.06 ? "#ef4444" : heatPct > 0.03 ? "#f59e0b" : "#22c55e";
-  const dirColor = netPct === undefined ? undefined : Math.abs(netPct) > 1 ? "#f59e0b" : undefined;
-
-  return (
-    <>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
-        <StatTile
-          label="Portfolio heat (live, all venues)"
-          value={heatPct === undefined ? `${knownRisk.toFixed(0)}` : `${(heatPct * 100).toFixed(1)}%`}
-          color={heatColor}
-          sub={
-            heatPct === undefined
-              ? "risk USDC (equity n/a)"
-              : `${knownRisk.toFixed(0)} USDC · cap ~6%${heatIfAll !== undefined ? ` · if all fill ${(heatIfAll * 100).toFixed(1)}%` : ""}`
-          }
-        />
-        <StatTile
-          label="Naked positions (no stop)"
-          value={naked.length}
-          color={naked.length ? "#ef4444" : "#22c55e"}
-          sub={naked.length ? `${nakedNotional.toFixed(0)} USDC unbounded · ${naked.map((p) => p.symbol).join(", ")}` : "all stopped"}
-        />
-        <StatTile
-          label="Net exposure (long − short)"
-          value={netPct === undefined ? usd(netExp) : `${netPct >= 0 ? "+" : ""}${(netPct * 100).toFixed(0)}%`}
-          color={dirColor}
-          sub={`long ${longN.toFixed(0)} / short ${shortN.toFixed(0)}`}
-        />
-        <StatTile
-          label="Gross leverage"
-          value={grossPct === undefined ? `${gross.toFixed(0)}` : `${grossPct.toFixed(1)}×`}
-          sub={`gross ${gross.toFixed(0)} USDC${equity ? ` / equity ${equity.toFixed(0)}` : ""}`}
-        />
-        <StatTile
-          label="Top-coin concentration"
-          value={topCoin ? `${(topCoinPct * 100).toFixed(0)}%` : "—"}
-          color={topCoinPct > 0.4 ? "#f59e0b" : undefined}
-          sub={topCoin ? `${topCoin[0]} · ${topCoin[1].toFixed(0)} USDC` : ""}
-        />
-        <StatTile
-          label="Open positions"
-          value={real.length}
-          sub={
-            (gross > 0 ? [...byTier.entries()].map(([t, v]) => `${t} ${((v / gross) * 100).toFixed(0)}%`).join(" · ") : "") +
-            (workingOrders.length ? ` · ${workingOrders.length} working` : "")
-          }
-        />
-      </div>
-      {perVenue.length > 1 && (
-        <div className="panel" style={{ marginTop: 10, fontSize: 12 }}>
-          <b>Per-venue heat</b> <span className="muted">(margin isn't shared — liquidation risk is per venue)</span>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginTop: 6 }}>
-            {perVenue.map((v) => (
-              <span key={v.venue}>
-                {v.venue}:{" "}
-                <b style={{ color: v.heat !== undefined && v.heat > 0.06 ? "#ef4444" : v.heat !== undefined && v.heat > 0.03 ? "#f59e0b" : "#22c55e" }}>
-                  {v.heat === undefined ? "—" : `${(v.heat * 100).toFixed(1)}%`}
-                </b>{" "}
-                <span className="muted">({v.riskUsd.toFixed(0)} / {v.equity.toFixed(0)} USDC)</span>
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-      {(naked.length > 0 || (heatPct !== undefined && heatPct > 0.06) || Math.abs(netPct ?? 0) > 1.2 || topCoinPct > 0.5) && (
-        <div className="panel" style={{ marginTop: 10, borderColor: "#b45309", fontSize: 12 }}>
-          <b>⚠ Risk flags:</b>{" "}
-          {[
-            naked.length ? `${naked.length} position(s) without a stop — unbounded downside` : "",
-            heatPct !== undefined && heatPct > 0.06 ? `heat ${(heatPct * 100).toFixed(1)}% over the ~6% prudent cap` : "",
-            Math.abs(netPct ?? 0) > 1.2 ? `directional: net exposure ${((netPct ?? 0) * 100).toFixed(0)}% of equity (one-way beta bet)` : "",
-            topCoinPct > 0.5 ? `${topCoin?.[0]} is ${(topCoinPct * 100).toFixed(0)}% of gross — single-name concentration` : "",
-          ].filter(Boolean).join(" · ")}
-        </div>
-      )}
-    </>
   );
 }
 
@@ -530,6 +673,7 @@ export function RiskInsights() {
     for (const t of filtered) { const a = byCh.get(t.channel) ?? []; a.push(t); byCh.set(t.channel, a); }
     return [...byCh.entries()].map(([key, ts]) => ({ key, e: edgeOf(ts) })).sort((a, b) => (b.e.expectancyR ?? -99) - (a.e.expectancyR ?? -99));
   }, [filtered]);
+  const maxExp = useMemo(() => Math.max(0.0001, ...edgeRows.map((r) => r.e.expectancyR ?? 0)), [edgeRows]);
 
   const byChannel = useMemo(() => agg(filtered, (t) => t.channel), [filtered]);
   const bySymbol = useMemo(() => agg(filtered, (t) => t.symbol, (t) => t.tier), [filtered]);
@@ -543,6 +687,7 @@ export function RiskInsights() {
   );
   const byWeek = useMemo(() => agg(filtered, (t) => weekLabel(t.at)).sort((a, b) => a.key.localeCompare(b.key)), [filtered]);
   const eq = useMemo(() => equitySeries(filtered), [filtered]);
+  const eqLast = eq[eq.length - 1] ?? 0;
   const spotlight = useMemo(() => {
     const byCh = new Map<string, InsightTrade[]>();
     for (const t of filtered) { const a = byCh.get(t.channel) ?? []; a.push(t); byCh.set(t.channel, a); }
@@ -557,148 +702,169 @@ export function RiskInsights() {
 
   const filtersActive = fChannel !== ALL || fCoin !== ALL || fTier !== ALL || fSide !== ALL || range.preset !== "all";
   const sel = (label: string, value: string, set: (v: string) => void, opts: { v: string; l: string }[]) => (
-    <label style={{ display: "inline-flex", flexDirection: "column", gap: 3 }}>
-      <span className="muted" style={{ fontSize: 11 }}>{label}</span>
-      <select value={value} onChange={(e) => set(e.target.value)} style={{ width: "auto", minWidth: 130 }}>
+    <div className="field" style={{ minWidth: 130 }}>
+      <span className="label">{label}</span>
+      <select className="input" value={value} onChange={(e) => set(e.target.value)}>
         {opts.map((o) => <option key={o.v} value={o.v}>{o.l}</option>)}
       </select>
-    </label>
+    </div>
   );
 
-  return (
-    <div>
-      <div className="row-between">
-        <h1 style={{ margin: 0 }}>Risk Insights</h1>
-        <button className="ghost" onClick={load}>Refresh</button>
-      </div>
-      <p className="muted" style={{ marginTop: 4, maxWidth: 820 }}>
-        A professional edge read on every provider — expectancy in R-multiples, System Quality (SQN), profit factor,
-        payoff, drawdown and streaks — plus live portfolio risk (heat, naked stops, concentration) and the classic
-        channel/coin/tier/side/session breakdowns. From settled trades{trades ? ` · ${trades.length} total` : ""}.
-        Sharper as data accumulates.
-      </p>
+  if (err) return <div className="error-card"><span>{err}</span></div>;
+  if (!trades) return <div className="empty"><div className="e-title">Loading…</div></div>;
 
-      {err && <div className="panel" style={{ color: "#ef4444" }}>{err}</div>}
-      {!trades ? (
-        <div className="empty">Loading…</div>
+  return (
+    <>
+      {/* Live portfolio risk — independent of the closed-trade filters. */}
+      <PortfolioRisk open={open} heat={heat} onRefresh={load} />
+
+      {trades.length === 0 ? (
+        <div className="empty">
+          <div className="e-title">No settled trades yet</div>
+          <div className="e-why">Edge stats — expectancy, SQN, profit factor, drawdown — appear once trades close.</div>
+        </div>
       ) : (
         <>
-          {/* Live portfolio risk — independent of the closed-trade filters. */}
-          <h2 style={{ marginBottom: 4 }}>Portfolio risk — live open positions</h2>
-          <p className="muted" style={{ marginTop: 0, fontSize: 12, maxWidth: 820 }}>
-            What you are exposed to <b>right now</b>. Heat = summed risk-to-stop as a share of equity (veterans cap total
-            open risk near 6%); naked = positions with no stop (unbounded); net exposure &gt; ~100% of equity is a
-            one-way directional bet.
-          </p>
-          <div className="panel"><PortfolioRisk open={open} heat={heat} /></div>
+          {/* filter bar */}
+          <section className="panel">
+            <div className="panel-body tight" style={{ display: "flex", gap: 14, alignItems: "flex-end", flexWrap: "wrap" }}>
+              {sel("Channel", fChannel, setFChannel, [{ v: ALL, l: "All channels" }, ...channelOpts.map((c) => ({ v: c, l: c }))])}
+              {sel("Coin", fCoin, setFCoin, [{ v: ALL, l: "All coins" }, ...coinOpts.map((c) => ({ v: c, l: c }))])}
+              {sel("Cap tier", fTier, setFTier, [{ v: ALL, l: "All tiers" }, { v: "large", l: "large" }, { v: "mid", l: "mid" }, { v: "small", l: "small" }])}
+              {sel("Side", fSide, setFSide, [{ v: ALL, l: "Long + Short" }, { v: "long", l: "long" }, { v: "short", l: "short" }])}
+              <div className="field"><span className="label">Range</span><RangePicker value={range} onChange={setRange} /></div>
+              <div style={{ flex: 1 }} />
+              <span className="small muted" style={{ alignSelf: "center" }}>
+                {filtered.length} trade{filtered.length === 1 ? "" : "s"} · <span className={signCls(eqLast)}>{usd(eqLast)} USDC net</span>
+              </span>
+              {filtersActive && <button className="btn ghost sm" onClick={() => { setFChannel(ALL); setFCoin(ALL); setFTier(ALL); setFSide(ALL); setRange(DEFAULT_RANGE); }}>Clear</button>}
+            </div>
+          </section>
 
-          {trades.length === 0 ? (
-            <div className="empty" style={{ marginTop: 12 }}>No settled trades yet — edge stats appear once trades close.</div>
+          {filtered.length === 0 ? (
+            <div className="empty"><div className="e-title">No trades match these filters</div><div className="e-why">Widen the range or clear a filter to see edge stats.</div></div>
           ) : (
             <>
-              {/* filter bar */}
-              <div className="panel" style={{ display: "flex", gap: 14, alignItems: "flex-end", flexWrap: "wrap", marginTop: 12 }}>
-                {sel("Channel", fChannel, setFChannel, [{ v: ALL, l: "All channels" }, ...channelOpts.map((c) => ({ v: c, l: c }))])}
-                {sel("Coin", fCoin, setFCoin, [{ v: ALL, l: "All coins" }, ...coinOpts.map((c) => ({ v: c, l: c }))])}
-                {sel("Cap tier", fTier, setFTier, [{ v: ALL, l: "All tiers" }, { v: "large", l: "large" }, { v: "mid", l: "mid" }, { v: "small", l: "small" }])}
-                {sel("Side", fSide, setFSide, [{ v: ALL, l: "Long + Short" }, { v: "long", l: "long" }, { v: "short", l: "short" }])}
-                <label style={{ display: "inline-flex", flexDirection: "column", gap: 3 }}>
-                  <span className="muted" style={{ fontSize: 11 }}>Range</span>
-                  <RangePicker value={range} onChange={setRange} />
-                </label>
-                <div style={{ flex: 1 }} />
-                <span className="muted" style={{ fontSize: 12, alignSelf: "center" }}>
-                  {filtered.length} trade{filtered.length === 1 ? "" : "s"} ·{" "}
-                  <span style={{ color: netColor(eq[eq.length - 1] ?? 0) }}>{usd(eq[eq.length - 1] ?? 0)} USDC net</span>
-                </span>
-                {filtersActive && <button className="ghost" onClick={() => { setFChannel(ALL); setFCoin(ALL); setFTier(ALL); setFSide(ALL); setRange(DEFAULT_RANGE); }}>Clear</button>}
+              {/* headline edge for the current selection */}
+              <section className="panel">
+                <div className="panel-head"><h2>Edge — current selection<span className="sub">expectancy · system quality · profit factor · drawdown</span></h2></div>
+                <div className="panel-body">
+                  <div className="stat-grid">
+                    <div className="stat"><span className="caps">Expectancy</span><span className={`v ${expCls(overall.expectancyR)}`}>{rMult(overall.expectancyR)}</span><span className="d">per trade · {overall.nR}/{overall.n} with stop</span></div>
+                    <div className="stat"><span className="caps">System Quality</span><span className={`v ${overall.nR < 30 ? "muted" : sqnCls(overall.sqn)}`}>{fmt(overall.sqn, 2)}</span><span className="d">{overall.nR < 30 ? `low conf · ${overall.nR}/30+` : sqnLabel(overall.sqn)}</span></div>
+                    <div className="stat"><span className="caps">Win rate</span><span className={`v ${wrCls(overall.winRate)}`}>{(overall.winRate * 100).toFixed(1)}<small>%</small></span><span className="d">break-even {overall.breakEvenWr ? pct(overall.breakEvenWr) : "—"}</span></div>
+                    <div className="stat"><span className="caps">Profit factor</span><span className={`v ${pfCls(overall.profitFactor)}`}>{inf(overall.profitFactor)}</span><span className="d">payoff {inf(overall.payoff)}×</span></div>
+                    <div className="stat"><span className="caps">Max drawdown</span><span className="v loss">−{overall.maxDD.toFixed(0)}</span><span className="d">{overall.maxDDpct !== undefined ? `${(overall.maxDDpct * 100).toFixed(0)}% of peak` : "USDC"}</span></div>
+                    <div className="stat"><span className="caps">Worst loss streak</span><span className={`v ${overall.maxLossStreak >= 5 ? "loss" : ""}`}>{overall.maxLossStreak}<small>L</small></span><span className="d">best win {overall.maxWinStreak}</span></div>
+                    <div className="stat"><span className="caps">Top-3 dependence</span><span className={`v ${overall.top3Share !== undefined && overall.top3Share > 0.5 ? "warn" : ""}`}>{overall.top3Share === undefined ? "—" : `${(overall.top3Share * 100).toFixed(0)}`}<small>%</small></span><span className="d">of gross profit</span></div>
+                    <div className="stat"><span className="caps">Avg hold</span><span className="v">{holdFmt(overall.avgHold)}</span><span className="d">{overall.avgSlip !== undefined ? `slip ${overall.avgSlip >= 0 ? "+" : ""}${overall.avgSlip.toFixed(2)}%` : ""}</span></div>
+                  </div>
+                </div>
+              </section>
+
+              {/* equity curve */}
+              <section className="panel">
+                <div className="panel-head">
+                  <h2>Equity curve — cumulative net{filtersActive ? " (filtered)" : ""}</h2>
+                  <div className="actions"><span className={`num ${signCls(eqLast)}`}>{usd(eqLast)} USDC</span></div>
+                </div>
+                <div className="panel-body"><Sparkline data={eq} height={72} full /></div>
+              </section>
+
+              {/* edge scorecard cards */}
+              <div className="section-title"><h2>Edge scorecard — per channel</h2><span className="sub">expectancy (avg R) · SQN (≥2.5 good) · profit factor (≥2 strong) · streaks · dependence</span></div>
+              <div className="grid-3">
+                {edgeRows.map((r, i) => (
+                  <EdgeCard key={r.key} rank={i + 1} name={r.key} e={r.e} trades={filtered.filter((t) => t.channel === r.key)} />
+                ))}
               </div>
 
-              {filtered.length === 0 ? (
-                <div className="empty">No trades match these filters.</div>
-              ) : (
-                <>
-                  {/* headline edge tiles for the current selection */}
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginTop: 12 }}>
-                    <StatTile label="Expectancy" value={overall.expectancyR === undefined ? "—" : `${overall.expectancyR >= 0 ? "+" : ""}${overall.expectancyR.toFixed(2)}R`} color={expColor(overall.expectancyR)} sub={`per trade · ${overall.nR}/${overall.n} with stop`} />
-                    <StatTile label="System Quality (SQN)" value={fmt(overall.sqn, 2)} color={overall.nR < 30 ? "var(--muted)" : sqnColor(overall.sqn)} sub={overall.nR < 30 ? `low confidence · ${overall.nR}/30+ trades` : sqnLabel(overall.sqn)} />
-                    <StatTile label="Win rate" value={pct(overall.winRate)} color={wrColor(overall.winRate)} sub={`break-even ${overall.breakEvenWr ? pct(overall.breakEvenWr) : "—"}`} />
-                    <StatTile label="Profit factor" value={inf(overall.profitFactor)} color={pfColor(overall.profitFactor)} sub={`payoff ${inf(overall.payoff)}×`} />
-                    <StatTile label="Max drawdown" value={`−${overall.maxDD.toFixed(0)}`} color="#ef4444" sub={overall.maxDDpct !== undefined ? `${(overall.maxDDpct * 100).toFixed(0)}% of peak` : "USDC"} />
-                    <StatTile label="Worst loss streak" value={overall.maxLossStreak} color={overall.maxLossStreak >= 5 ? "#ef4444" : undefined} sub={`best win streak ${overall.maxWinStreak}`} />
-                    <StatTile label="Top-3 trade dependence" value={overall.top3Share === undefined ? "—" : pct(overall.top3Share)} color={overall.top3Share !== undefined && overall.top3Share > 0.5 ? "#f59e0b" : undefined} sub="of gross profit from 3 best" />
-                    <StatTile label="Avg hold" value={overall.avgHold === undefined ? "—" : overall.avgHold >= 24 ? `${(overall.avgHold / 24).toFixed(1)}d` : `${overall.avgHold.toFixed(1)}h`} sub={overall.avgSlip !== undefined ? `slippage ${overall.avgSlip >= 0 ? "+" : ""}${overall.avgSlip.toFixed(2)}%` : ""} />
+              {/* channels — ranked, with an edge meter */}
+              <section className="panel">
+                <div className="panel-head"><h2>Channels<span className="sub">ranked by expectancy</span></h2></div>
+                <div className="panel-body flush">
+                  <div className="table-scroll">
+                    <table className="table compact">
+                      <thead>
+                        <tr>
+                          <th>#</th><th>Channel</th><th className="num">Trades</th><th className="num">Win %</th>
+                          <th className="num">Net</th><th className="num">Avg</th><th className="num">Expectancy</th>
+                          <th className="num">PF</th><th className="num">Max DD</th><th>Trend</th><th>Edge</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {edgeRows.map((r, i) => {
+                          const exp = r.e.expectancyR;
+                          const eCls = exp === undefined ? (r.e.net >= 0 ? "ok" : "danger") : exp >= 0.3 ? "ok" : exp >= 0 ? "warn" : "danger";
+                          const width = exp === undefined ? 0 : (Math.max(0, exp) / maxExp) * 100;
+                          return (
+                            <tr key={r.key}>
+                              <td className="num muted">{i + 1}</td>
+                              <td className="w600">{r.key}</td>
+                              <td className="num muted">{r.e.n}</td>
+                              <td className={`num ${wrCls(r.e.winRate)}`}>{(r.e.winRate * 100).toFixed(1)}%</td>
+                              <td className={`num ${signCls(r.e.net)}`}>{usd(r.e.net)}</td>
+                              <td className={`num ${signCls(r.e.avg)}`}>{usd(r.e.avg)}</td>
+                              <td className={`num ${expCls(exp)}`}>{rMult(exp)}</td>
+                              <td className={`num ${pfCls(r.e.profitFactor)}`}>{inf(r.e.profitFactor)}</td>
+                              <td className="num loss">−{r.e.maxDD.toFixed(0)}</td>
+                              <td style={{ width: 120 }}><Sparkline data={channelSparks[r.key] ?? []} width={110} height={24} /></td>
+                              <td><div className={`meter ${eCls}`} style={{ width: 80 }}><i style={{ width: clampW(width) }} /></div></td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   </div>
+                </div>
+              </section>
 
-                  <div className="panel" style={{ marginTop: 12 }}>
-                    <div className="row-between">
-                      <h3 style={{ margin: 0 }}>Equity curve — cumulative net{filtersActive ? " (filtered)" : ""}</h3>
-                      <span style={{ color: netColor(eq[eq.length - 1] ?? 0), fontVariantNumeric: "tabular-nums" }}>{usd(eq[eq.length - 1] ?? 0)} USDC</span>
-                    </div>
-                    <div style={{ marginTop: 8 }}><Sparkline data={eq} height={64} full /></div>
-                  </div>
+              {/* extra breakdowns — nothing dropped */}
+              <div className="section-title"><h2>Breakdowns</h2><span className="sub">where the edge lives — session · hold · coin · tier · side · time</span></div>
+              <div className="grid-3">
+                <section className="panel">
+                  <div className="panel-head"><h2>R-multiple distribution<span className="sub">outcomes in units of initial risk</span></h2></div>
+                  <div className="panel-body"><RHistogram trades={filtered} /></div>
+                </section>
+                <BreakdownPanel title="By trading session" sub="Asia 00–07 · EU 07–12 · US 12–21 · Late 21–24 (UTC)" rows={bySession} nameLabel="Session" />
+                <BreakdownPanel title="By hold time" sub="scalps vs swings" rows={byHold} nameLabel="Hold" />
+                <BreakdownPanel title="By coin" rows={bySymbol} nameLabel="Coin" showTier />
+                <BreakdownPanel title="By market-cap tier" rows={byTier} nameLabel="Tier" />
+                <BreakdownPanel title="By side" sub="long / short" rows={bySide} nameLabel="Side" />
+                <BreakdownPanel title="By weekday" sub="entry day" rows={byWeekday} nameLabel="Weekday" />
+                <BreakdownPanel title="By week of month" rows={byWeek} nameLabel="Week" />
+              </div>
 
-                  <h2 style={{ marginBottom: 4, marginTop: 8 }}>Edge scorecard — per channel</h2>
-                  <p className="muted" style={{ marginTop: 0, fontSize: 12, maxWidth: 820 }}>
-                    Expectancy is average R (profit per unit risked); SQN is Van Tharp's System Quality (≥2.5 good,
-                    ≥3 excellent); profit factor is gross profit ÷ gross loss (≥2 strong); payoff is avg win ÷ avg loss.
-                  </p>
-                  <div className="panel" style={{ overflowX: "auto" }}><EdgeTable rows={edgeRows} /></div>
-
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 12, marginTop: 12 }}>
-                    <Card title="R-multiple distribution" hint="Shape of the edge — where outcomes land in units of initial risk (stop-based).">
-                      <RHistogram trades={filtered} />
-                    </Card>
-                    <Card title="By trading session (entry, UTC)" hint="Asia 00–07 · EU 07–12 · US 12–21 · Late 21–24">
-                      <BucketTable rows={bySession} label="Session" />
-                    </Card>
-                    <Card title="By hold time" hint="Does the edge live in scalps or swings?">
-                      <BucketTable rows={byHold} label="Hold" />
-                    </Card>
-                    <Card title="By coin"><BucketTable rows={bySymbol} label="Coin" showTier /></Card>
-                    <Card title="By market-cap tier"><BucketTable rows={byTier} label="Tier" /></Card>
-                    <Card title="By side (long / short)"><BucketTable rows={bySide} label="Side" /></Card>
-                    <Card title="By weekday (entry day)"><BucketTable rows={byWeekday} label="Weekday" /></Card>
-                    <Card title="By week of month"><BucketTable rows={byWeek} label="Week" /></Card>
-                  </div>
-
-                  <h2 style={{ marginBottom: 4, marginTop: 8 }}>Channels</h2>
-                  <div className="panel" style={{ overflowX: "auto" }}><BucketTable rows={byChannel} label="Channel" sparks={channelSparks} /></div>
-
-                  <h2 style={{ marginBottom: 4, marginTop: 8 }}>Spotlight — best factor combination per trader</h2>
-                  <p className="muted" style={{ marginTop: 0, fontSize: 12, maxWidth: 760 }}>
-                    The most profitable mix of factors (side · cap-tier / coin · weekday · week · session) in each
-                    channel's settled trades — at least 3 trades and a winning record.
-                  </p>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
-                    {spotlight.map((s) => (
-                      <Card key={s.channel} title={s.channel}>
-                        {s.combos.length === 0 ? (
-                          <div className="muted" style={{ fontSize: 12 }}>No standout combination yet — thin data.</div>
-                        ) : (
-                          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                            {s.combos.map((c, i) => (
-                              <div key={c.label} style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
-                                <span style={{ fontWeight: i === 0 ? 600 : 400 }}>{i === 0 ? "🏆 " : "• "}{c.label}</span>
-                                <span style={{ whiteSpace: "nowrap", fontSize: 12 }}>
-                                  <span style={{ color: wrColor(c.winRate) }}>{pct(c.winRate)}</span>
-                                  <span className="muted"> · </span>
-                                  <span style={{ color: netColor(c.net) }}>{usd(c.net)}</span>
-                                  <span className="muted"> · {c.n}×</span>
-                                </span>
-                              </div>
-                            ))}
+              {/* spotlight */}
+              <div className="section-title"><h2>Spotlight — best factor combination per trader</h2><span className="sub">most profitable factor mix (side · tier/coin · weekday · week · session) · ≥3 trades, winning record</span></div>
+              <div className="grid-3">
+                {spotlight.map((s) => (
+                  <div className="callout learn" key={s.channel}>
+                    <span className="k">{s.channel} · {s.n} trades</span>
+                    {s.combos.length === 0 ? (
+                      <div className="muted small">No standout combination yet — thin data.</div>
+                    ) : (
+                      <div className="stack" style={{ gap: 6 }}>
+                        {s.combos.map((c, i) => (
+                          <div className="between" key={c.label} style={{ alignItems: "baseline", gap: 10 }}>
+                            <span className={i === 0 ? "w600" : ""}>{i === 0 ? "🏆 " : "• "}{c.label}</span>
+                            <span className="nowrap small">
+                              <span className={wrCls(c.winRate)}>{pct(c.winRate)}</span>
+                              <span className="muted"> · </span>
+                              <span className={signCls(c.net)}>{usd(c.net)}</span>
+                              <span className="muted"> · {c.n}×</span>
+                            </span>
                           </div>
-                        )}
-                      </Card>
-                    ))}
+                        ))}
+                      </div>
+                    )}
                   </div>
-                </>
-              )}
+                ))}
+              </div>
             </>
           )}
         </>
       )}
-    </div>
+    </>
   );
 }
