@@ -341,6 +341,31 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
             kinds.delete("close");
           }
 
+          // STOPPED-OUTCOME GUARD: "X stopped breakeven / stopped out after good
+          // profits / got stopped / SL hit" is a past-tense RECAP of a stop the
+          // exchange already enforces via our own SL — NOT a command to flatten a
+          // still-open runner (the FARTCOIN+PUMPFUN "stopped breakeven" info post
+          // that the LLM read as a full close). Drop a full-close whose ONLY close
+          // signal is such outcome language, i.e. no REAL close verb is present
+          // (KIND_VERB_RE.close also matches "stopped", so exclude that here). If
+          // one of our positions truly stopped, reconcile books it from the fill.
+          const stoppedRecap =
+            /\bstopped\s+(?:out|breakeven|break\s*even|at\s+break\s*even)\b|\bgot\s+stopped\b|\b(?:sl|stop(?:\s*loss)?)\s+(?:was\s+)?hit\b/i.test(
+              rawText,
+            );
+          const realCloseVerb = /\b(?:clos|exit|flatten|dump|invalidat|cut\b|off\s+the\s+table|get\s+out|take\s+it\s+off)/i.test(rawText);
+          if (mv.closed && stoppedRecap && !realCloseVerb) {
+            event(
+              "manage",
+              `Ignoring full-close for ${mv.symbol ?? mv.symbols?.join("+") ?? "?"} — "stopped/SL-hit" outcome recap, not a close command (our own stop enforces real stop-outs)`,
+              { symbol: mv.symbol, symbols: mv.symbols, confidence: mv.confidence },
+              { level: "warn", groupId: group.id },
+            );
+            mv = { ...mv, closed: false };
+            actions = actions.filter((a) => a.kind !== "close");
+            kinds.delete("close");
+          }
+
           // ASYMMETRIC per-coin management ("Closed BTC, booking 50% on ETH";
           // "stopped SOL out, moved SUI to breakeven"). The flat schema can only
           // carry ONE close/partial/BE, so both used to collapse onto mv.symbol —

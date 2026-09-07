@@ -286,11 +286,11 @@ const MANAGE_TOOL: Anthropic.Tool = {
         type: "array",
         items: { type: "string" },
         description:
-          "ALL base tickers the SAME action explicitly applies to when the message names SEVERAL positions to act on together — e.g. 'close Hype and Sui', 'stopped LTC and PENGU', 'closing A, B and C'. List every named coin (also put the first in `symbol`). Leave empty for a single-coin action or a recap where the verb applies to only one of several mentioned coins.",
+          "ALL base tickers the SAME IMPERATIVE action explicitly applies to when the message commands acting on SEVERAL positions together — e.g. 'close Hype and Sui', 'exit A, B and C now'. List every named coin (also put the first in `symbol`). Leave empty for a single-coin action, a recap where the verb applies to only one of several mentioned coins, or a PAST-TENSE outcome recap ('A and B stopped breakeven') which is informational, not a command.",
       },
       new_stop_loss: { type: "number", description: "New stop-loss PRICE if the stop was moved to a specific level — read the drawn SL line/box from the CHART if the number is only there. This INCLUDES a stop moved 'into profit' / 'to lock profit' / 'to secure gains' (a level ABOVE entry for a long, BELOW for a short): find the drawn stop level on the chart and put it here. Omit only when truly no level is stated or drawn." },
       move_to_breakeven: { type: "boolean", description: "True ONLY when the stop is moved to the ENTRY itself — 'break-even', 'risk-free', 'to entry', 'to my entry zone'. A stop moved 'into profit' / 'to lock profit' is NOT break-even (it sits above entry) — put its level in new_stop_loss (reading the chart if the number is only drawn), and leave this false." },
-      closed: { type: "boolean", description: "True if the whole position was closed/stopped/invalidated." },
+      closed: { type: "boolean", description: "True ONLY for an explicit instruction to CLOSE/EXIT the position now ('close X', 'exit', 'flatten', 'out of X', 'took it off', 'cut it'), or an explicit 'I closed/invalidated X'. Do NOT set true for a stop-loss OUTCOME recap — 'stopped breakeven', 'stopped at breakeven', 'stopped out after profits', 'got stopped', 'SL hit' — that is INFORMATIONAL (our own stop already enforces a real stop-out); leave false for those." },
       cancel_entry: { type: "boolean", description: "True if the message says to CANCEL / PULL / REMOVE a still-resting, UNFILLED limit ENTRY order (e.g. 'cancel this limit entry on H', 'pull the pending order', 'remove the limit'). This cancels a pending order — it is NOT closing an already-open position (that is `closed`)." },
       partial_percent: { type: "number", description: "Percent booked if a partial profit was taken (e.g. 50). Omit if none or unknown." },
       per_symbol: {
@@ -301,7 +301,7 @@ const MANAGE_TOOL: Anthropic.Tool = {
           type: "object",
           properties: {
             symbol: { type: "string", description: "Base ticker this entry acts on." },
-            closed: { type: "boolean", description: "True if THIS coin's whole position was closed/stopped." },
+            closed: { type: "boolean", description: "True ONLY for an explicit close/exit of THIS coin now. A 'stopped breakeven / stopped out' OUTCOME recap is NOT a close — leave false (our own stop handles real stop-outs)." },
             partial_percent: { type: "number", description: "Percent booked on THIS coin, if a partial." },
             move_to_breakeven: { type: "boolean", description: "True ONLY if THIS coin's stop moved to the ENTRY (break-even/risk-free). A stop moved 'into profit' is NOT break-even — use new_stop_loss." },
             new_stop_loss: { type: "number", description: "New stop PRICE for THIS coin — read the drawn SL line from the chart if only there; INCLUDES a stop moved 'into profit'/'to lock profit' (a level above entry for a long)." },
@@ -321,11 +321,20 @@ drawn as lines/boxes. Extract only what is stated or clearly drawn: whether the 
 specific price (read it off the chart if the text omits the number), whether it moved to
 break-even / risk-free, whether the position was closed, and any booked partial percentage.
 This is NOT a new entry. If nothing actionable, set is_management=false.
-If the message closes/stops SEVERAL positions at once ("close Hype and Sui",
-"stopped LTC and PENGU"), set closed=true and list EVERY named coin in "symbols"
-(also put the first in "symbol"). Only do this for an explicit close-them-all
-instruction — a recap where the verb applies to just one of several mentioned
-coins is NOT a multi-close (leave symbols empty).
+OUTCOME RECAP ≠ COMMAND: a message that REPORTS, in the past tense, what already
+happened to trades — "$A and $B stopped breakeven after good profits", "got
+stopped on $C", "SL hit", "TP1 tapped", "$D did +18%", "all targets booked,
+closed for profit" — is INFORMATIONAL. Our own stop-loss / take-profit orders on
+the exchange already enforce those outcomes, so DO NOT set closed / partial /
+breakeven from such a recap: set is_management=false (unless the SAME message
+also gives a fresh imperative instruction). Only an IMPERATIVE — "close/exit/
+flatten X now", "book 50% here", "move SL to …" — is actionable.
+If the message IMPERATIVELY closes SEVERAL positions at once ("close Hype and
+Sui", "exit A and B now"), set closed=true and list EVERY named coin in "symbols"
+(also put the first in "symbol"). Only for an explicit close-them-all COMMAND —
+a past-tense "A and B stopped/closed" recap is NOT a multi-close (is_management=
+false), and a recap where the verb applies to just one of several mentioned coins
+is NOT a multi-close (leave symbols empty).
 If the message says to CANCEL / PULL / REMOVE a still-resting, UNFILLED limit
 ENTRY order ("gonna cancel this limit entry on H", "pull the pending order"), set
 cancel_entry=true (and is_management=true). That cancels a pending order — it is
@@ -495,7 +504,7 @@ const RECONSIDER_MANAGE_TOOL: Anthropic.Tool = {
       },
       new_stop_loss: { type: "number", description: "New stop-loss PRICE if moved to a level — read the drawn SL line/box from the CHART if the number is only there. This INCLUDES a stop moved 'into profit'/'to lock profit'/'to secure gains' (a level ABOVE entry for a long, BELOW for a short): read that drawn level here. Omit only when no level is stated or drawn." },
       move_to_breakeven: { type: "boolean", description: "True ONLY when the stop moves to the ENTRY itself — 'break-even'/'risk-free'/'to entry'. A stop moved 'into profit'/'to lock profit' is NOT break-even (it sits above entry) — put its level in new_stop_loss (read the chart if only drawn) and leave this false." },
-      closed: { type: "boolean", description: "True if the WHOLE position was closed/stopped/invalidated." },
+      closed: { type: "boolean", description: "True ONLY for an explicit instruction to CLOSE/EXIT the position now ('close X', 'exit', 'flatten', 'out of X', 'cut it') or an explicit 'I closed/invalidated X'. A stop-loss OUTCOME recap — 'stopped breakeven', 'stopped out after profits', 'got stopped', 'SL hit' — is INFORMATIONAL (our own stop enforces real stop-outs); leave false." },
       cancel_entry: { type: "boolean", description: "True if the message cancels/pulls a still-resting, UNFILLED limit ENTRY order (not a position close)." },
       partial_percent: { type: "number", description: "Percent booked ONLY if a specific fraction is stated (e.g. 50). Omit for a full close or when unknown." },
       per_symbol: {
@@ -506,7 +515,7 @@ const RECONSIDER_MANAGE_TOOL: Anthropic.Tool = {
           type: "object",
           properties: {
             symbol: { type: "string", description: "Base ticker this entry acts on." },
-            closed: { type: "boolean", description: "True if THIS coin's whole position was closed/stopped." },
+            closed: { type: "boolean", description: "True ONLY for an explicit close/exit of THIS coin now. A 'stopped breakeven / stopped out' OUTCOME recap is NOT a close — leave false (our own stop handles real stop-outs)." },
             partial_percent: { type: "number", description: "Percent booked on THIS coin, if a partial." },
             move_to_breakeven: { type: "boolean", description: "True ONLY if THIS coin's stop moved to the ENTRY (break-even/risk-free). A stop moved 'into profit' is NOT break-even — use new_stop_loss." },
             new_stop_loss: { type: "number", description: "New stop PRICE for THIS coin — read the drawn SL line from the chart if only there; INCLUDES a stop moved 'into profit'/'to lock profit' (a level above entry for a long)." },
