@@ -100,17 +100,17 @@ function PnlBars({ title, rows }: { title: string; rows: AnalyticsBucket[] }) {
       <h2>{title}</h2>
       <ResponsiveContainer width="100%" height={Math.max(200, data.length * 34)}>
         <BarChart data={data} layout="vertical" margin={{ top: 6, right: 16, left: 10, bottom: 6 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#232838" />
-          <XAxis type="number" stroke="#8b93a7" fontSize={11} />
-          <YAxis type="category" dataKey="name" stroke="#8b93a7" fontSize={11} width={90} />
+          <CartesianGrid strokeDasharray="3 3" stroke="#26241f" />
+          <XAxis type="number" stroke="#8a8478" fontSize={11} />
+          <YAxis type="category" dataKey="name" stroke="#8a8478" fontSize={11} width={90} />
           <Tooltip
-            contentStyle={{ background: "#131722", border: "1px solid #232838" }}
+            contentStyle={{ background: "#1b1a18", border: "1px solid #26241f" }}
             formatter={(v: number) => usd(v)}
-            cursor={{ fill: "#1a1f2e" }}
+            cursor={{ fill: "#262422" }}
           />
           <Bar dataKey="pnl">
             {data.map((d, i) => (
-              <Cell key={i} fill={d.pnl >= 0 ? "#22c55e" : "#ef4444"} />
+              <Cell key={i} fill={d.pnl >= 0 ? "#36c77e" : "#ef5560"} />
             ))}
           </Bar>
         </BarChart>
@@ -219,18 +219,18 @@ export function Analytics() {
                 <AreaChart data={equity} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                   <defs>
                     <linearGradient id="aPnl" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.4} />
-                      <stop offset="100%" stopColor="#3b82f6" stopOpacity={0} />
+                      <stop offset="0%" stopColor="#d8bb78" stopOpacity={0.4} />
+                      <stop offset="100%" stopColor="#d8bb78" stopOpacity={0} />
                     </linearGradient>
                   </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#232838" />
-                  <XAxis dataKey="t" stroke="#8b93a7" fontSize={11} minTickGap={40} />
-                  <YAxis stroke="#8b93a7" fontSize={11} width={70} />
+                  <CartesianGrid strokeDasharray="3 3" stroke="#26241f" />
+                  <XAxis dataKey="t" stroke="#8a8478" fontSize={11} minTickGap={40} />
+                  <YAxis stroke="#8a8478" fontSize={11} width={70} />
                   <Tooltip
-                    contentStyle={{ background: "#131722", border: "1px solid #232838" }}
+                    contentStyle={{ background: "#1b1a18", border: "1px solid #26241f" }}
                     formatter={(v: number) => usd(v)}
                   />
-                  <Area type="monotone" dataKey="pnl" stroke="#3b82f6" fill="url(#aPnl)" />
+                  <Area type="monotone" dataKey="pnl" stroke="#d8bb78" fill="url(#aPnl)" />
                 </AreaChart>
               </ResponsiveContainer>
             )}
