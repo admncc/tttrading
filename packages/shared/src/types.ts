@@ -184,6 +184,16 @@ export interface GlobalSettings {
    * until the review has proven reliable in analyze-only mode. Default off.
    */
   selfHealingAutoRepair: boolean;
+  /**
+   * Veto flow: the reviewer becomes a PRE-execution decision gate. The system
+   * still reads the message and derives the action as usual, but before it runs,
+   * the derived action is submitted to the reviewer, which approves it or blocks
+   * it (a veto). A blocked action is NOT executed. Requires Self-Healing enabled
+   * and a key; if the reviewer is unavailable the action proceeds (fail-open), so
+   * an LLM outage never halts trades that already passed the normal guards.
+   * Default off — this changes live behaviour.
+   */
+  selfHealingVetoFlow: boolean;
 }
 
 /** Traffic-light risk classification. */
@@ -661,6 +671,14 @@ export type HealVerdict = "ok" | "warn" | "error" | "skipped";
 export interface SelfHealingEntry {
   id: string;
   ts: string;
+  /**
+   * "review" = a post-hoc analysis of a message ALREADY handled (default).
+   * "veto"   = a PRE-execution decision: the reviewer was asked to approve the
+   *            derived action before it ran (veto flow). See `decision`.
+   */
+  phase?: "review" | "veto";
+  /** For a veto-phase entry: whether the reviewer approved the action or blocked it. */
+  decision?: "approve" | "reject";
   /** The reviewer's overall judgement of how the message was handled. */
   verdict: HealVerdict;
   /** 0..1 confidence in the verdict. */
@@ -679,6 +697,29 @@ export interface SelfHealingEntry {
   messageExcerpt?: string;
   /** What the system actually did (classification + action taken). */
   systemAction?: string;
+  /**
+   * Operator's comment on this review (agreeing, correcting, or adding context).
+   * A comment is also distilled into an accumulating Learning that future reviews
+   * are briefed with, closing the feedback loop.
+   */
+  comment?: string;
+  commentedAt?: string;
+}
+
+/**
+ * An accumulated Self-Healing learning: a durable note (usually distilled from an
+ * operator's comment on a review) that is folded into the reviewer's briefing on
+ * every future review, so the reviewer improves over time. Operator-authored /
+ * trusted guidance — the reviewer's growing memory.
+ */
+export interface SelfHealingLearning {
+  id: string;
+  ts: string;
+  text: string;
+  /** The review this learning was distilled from, if any. */
+  sourceReviewId?: string;
+  groupId?: string;
+  groupName?: string;
 }
 
 /** Messages broadcast over the WebSocket to the desk. */
@@ -691,6 +732,7 @@ export type WsEvent =
   | { type: "log"; entry: LogEntry }
   | { type: "prices"; prices: Record<string, number> }
   | { type: "heal"; entry: SelfHealingEntry }
+  | { type: "healLearning"; learning: SelfHealingLearning }
   | { type: "secondOpinion"; secondOpinion: SecondOpinion };
 
 /** Payload to create/update a group from the desk. */

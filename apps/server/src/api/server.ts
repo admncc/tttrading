@@ -61,6 +61,7 @@ import {
   messageImages as messageImagesRepo,
   secondOpinions as secondOpinionsRepo,
   selfHealing as selfHealingRepo,
+  selfHealingLearnings as selfHealingLearningsRepo,
   settings as settingsRepo,
   signals as signalsRepo,
   trades as tradesRepo,
@@ -105,6 +106,7 @@ import { getListenerHealth } from "../telegram/listener.js";
 import { getPrices } from "../market/ticker.js";
 import { backtestGroup } from "../backtest/engine.js";
 import { suggestChannelInstructions } from "../signals/llm.js";
+import { commentReview } from "../signals/selfheal.js";
 import { MANAGEMENT_RULES } from "../signals/management.js";
 import { ENTRY_RULES } from "../signals/regex.js";
 import { exportAllText, exportGroupText, safeFilename } from "../export/text.js";
@@ -304,6 +306,7 @@ export async function buildServer() {
       selfHealingEnabled: z.boolean().optional(),
       selfHealingModel: z.string().max(100).optional(),
       selfHealingAutoRepair: z.boolean().optional(),
+      selfHealingVetoFlow: z.boolean().optional(),
       anthropicKey: z.string().max(500).optional(), // "" clears the desk-stored key
       anthropicModel: z.string().max(100).optional(),
       autoRefine: z.boolean().optional(),
@@ -345,6 +348,10 @@ export async function buildServer() {
     if (d.selfHealingAutoRepair !== undefined) {
       settingsRepo.setSelfHealingAutoRepair(d.selfHealingAutoRepair);
       log.warn(`Self-Healing auto-repair ${d.selfHealingAutoRepair ? "ENABLED (inert — no auto-repair wired yet)" : "disabled"}.`);
+    }
+    if (d.selfHealingVetoFlow !== undefined) {
+      settingsRepo.setSelfHealingVetoFlow(d.selfHealingVetoFlow);
+      log.warn(`Self-Healing VETO FLOW ${d.selfHealingVetoFlow ? "ENABLED — the reviewer now gates actions before execution" : "disabled"}.`);
     }
     if (d.parseMode !== undefined) settingsRepo.setParseMode(d.parseMode);
     if (d.anthropicKey !== undefined) {
@@ -944,6 +951,29 @@ export async function buildServer() {
     selfHealingRepo.clear();
     return { ok: true };
   });
+  // Comment on one review — the comment is saved on the review AND distilled into a
+  // durable learning that future reviews are briefed with (the feedback loop).
+  app.post<{ Params: { id: string }; Body: { comment?: string } }>(
+    "/api/self-healing/:id/comment",
+    async (req, reply) => {
+      if (!authEnabled) return reply.code(403).send({ error: "Set DESK_PASSWORD to comment." });
+      const comment = (req.body?.comment ?? "").trim();
+      if (!comment) return reply.code(400).send({ error: "comment required" });
+      const res = commentReview(req.params.id, comment);
+      if (!res) return reply.code(404).send({ error: "review not found" });
+      audit(req, "self-healing comment added", { reviewId: req.params.id });
+      return res;
+    },
+  );
+  // The reviewer's accumulated learnings (its memory), newest first.
+  app.get<{ Querystring: { limit?: string } }>("/api/self-healing/learnings", async (req) => {
+    return selfHealingLearningsRepo.list(clampLimit(req.query.limit, 500, 2000));
+  });
+  app.delete<{ Params: { id: string } }>("/api/self-healing/learnings/:id", async (req, reply) => {
+    if (!authEnabled) return reply.code(403).send({ error: "Set DESK_PASSWORD to edit learnings." });
+    selfHealingLearningsRepo.delete(req.params.id);
+    return { ok: true };
+  });
 
   /* ------------------------- stats & positions ------------------------ */
   app.get("/api/stats", async () => dashboard());
@@ -1207,8 +1237,10 @@ export async function buildServer() {
       recentSignals: signalsRepo.list(60),
       // Independent per-signal assessments (observe-only) — full access here.
       secondOpinions: secondOpinionsRepo.list(120),
-      // Self-Healing: independent LLM reviews of how each message was handled.
+      // Self-Healing: independent LLM reviews of how each message was handled,
+      // plus the reviewer's accumulated learnings (its memory).
       selfHealing: selfHealingRepo.page({ limit: 120 }).entries,
+      selfHealingLearnings: selfHealingLearningsRepo.list(200),
       // Full per-channel message history (newest first, capped per group) right in
       // the main snapshot — so a channel's real conventions, incl. all its
       // non-actionable market updates, can be reviewed from the normal /diagnostic

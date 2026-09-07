@@ -11,6 +11,7 @@ import type {
   SecondOpinionTA,
   SecondOpinionVerdict,
   SelfHealingEntry,
+  SelfHealingLearning,
   Signal,
   SignalFeature,
   SignalStatus,
@@ -691,12 +692,18 @@ interface SelfHealRow {
   trade_id: string | null;
   message_excerpt: string | null;
   system_action: string | null;
+  comment: string | null;
+  commented_at: string | null;
+  phase: string | null;
+  decision: string | null;
 }
 
 function toHeal(r: SelfHealRow): SelfHealingEntry {
   return {
     id: r.id,
     ts: r.ts,
+    phase: (r.phase as SelfHealingEntry["phase"]) ?? "review",
+    decision: (r.decision as SelfHealingEntry["decision"]) ?? undefined,
     verdict: r.verdict as SelfHealingEntry["verdict"],
     confidence: r.confidence ?? 0,
     summary: r.summary,
@@ -708,6 +715,28 @@ function toHeal(r: SelfHealRow): SelfHealingEntry {
     tradeId: r.trade_id ?? undefined,
     messageExcerpt: r.message_excerpt ?? undefined,
     systemAction: r.system_action ?? undefined,
+    comment: r.comment ?? undefined,
+    commentedAt: r.commented_at ?? undefined,
+  };
+}
+
+interface HealLearningRow {
+  id: string;
+  ts: string;
+  text: string;
+  source_review_id: string | null;
+  group_id: string | null;
+  group_name: string | null;
+}
+
+function toLearning(r: HealLearningRow): SelfHealingLearning {
+  return {
+    id: r.id,
+    ts: r.ts,
+    text: r.text,
+    sourceReviewId: r.source_review_id ?? undefined,
+    groupId: r.group_id ?? undefined,
+    groupName: r.group_name ?? undefined,
   };
 }
 
@@ -716,9 +745,11 @@ export const selfHealing = {
     db.prepare(
       `INSERT INTO self_healing
          (id, ts, verdict, confidence, summary, suggestion, model,
-          group_id, group_name, signal_id, trade_id, message_excerpt, system_action)
+          group_id, group_name, signal_id, trade_id, message_excerpt, system_action,
+          comment, commented_at, phase, decision)
        VALUES (@id, @ts, @verdict, @confidence, @summary, @suggestion, @model,
-          @group_id, @group_name, @signal_id, @trade_id, @message_excerpt, @system_action)`,
+          @group_id, @group_name, @signal_id, @trade_id, @message_excerpt, @system_action,
+          @comment, @commented_at, @phase, @decision)`,
     ).run({
       id: entry.id,
       ts: entry.ts,
@@ -733,7 +764,26 @@ export const selfHealing = {
       trade_id: entry.tradeId ?? null,
       message_excerpt: entry.messageExcerpt ?? null,
       system_action: entry.systemAction ?? null,
+      comment: entry.comment ?? null,
+      commented_at: entry.commentedAt ?? null,
+      phase: entry.phase ?? "review",
+      decision: entry.decision ?? null,
     });
+  },
+  get(id: string): SelfHealingEntry | undefined {
+    const r = db.prepare("SELECT * FROM self_healing WHERE id = ?").get(id) as
+      | SelfHealRow
+      | undefined;
+    return r ? toHeal(r) : undefined;
+  },
+  /** Attach (or replace) the operator's comment on a review. Returns the updated row. */
+  addComment(id: string, comment: string): SelfHealingEntry | undefined {
+    db.prepare("UPDATE self_healing SET comment = ?, commented_at = ? WHERE id = ?").run(
+      comment,
+      new Date().toISOString(),
+      id,
+    );
+    return this.get(id);
   },
   /** Keyset-paginated history (newest first); `before` = previous page's cursor. */
   page(opts: { limit?: number; before?: number; verdict?: string }): {
@@ -762,6 +812,45 @@ export const selfHealing = {
   },
   clear(): void {
     db.prepare("DELETE FROM self_healing").run();
+  },
+};
+
+/**
+ * The reviewer's growing memory: durable learnings (usually distilled from
+ * operator comments) that are folded into every future review's briefing.
+ */
+export const selfHealingLearnings = {
+  create(learning: SelfHealingLearning): void {
+    db.prepare(
+      `INSERT INTO self_healing_learnings (id, ts, text, source_review_id, group_id, group_name)
+       VALUES (@id, @ts, @text, @source_review_id, @group_id, @group_name)`,
+    ).run({
+      id: learning.id,
+      ts: learning.ts,
+      text: learning.text,
+      source_review_id: learning.sourceReviewId ?? null,
+      group_id: learning.groupId ?? null,
+      group_name: learning.groupName ?? null,
+    });
+  },
+  list(limit = 500): SelfHealingLearning[] {
+    const rows = db
+      .prepare("SELECT * FROM self_healing_learnings ORDER BY ts DESC LIMIT ?")
+      .all(limit) as HealLearningRow[];
+    return rows.map(toLearning);
+  },
+  /** Oldest-first, for folding into the reviewer briefing (chronological memory). */
+  recent(limit = 60): SelfHealingLearning[] {
+    const rows = db
+      .prepare("SELECT * FROM (SELECT * FROM self_healing_learnings ORDER BY ts DESC LIMIT ?) ORDER BY ts ASC")
+      .all(limit) as HealLearningRow[];
+    return rows.map(toLearning);
+  },
+  delete(id: string): void {
+    db.prepare("DELETE FROM self_healing_learnings WHERE id = ?").run(id);
+  },
+  clear(): void {
+    db.prepare("DELETE FROM self_healing_learnings").run();
   },
 };
 
@@ -877,6 +966,16 @@ export const settings = {
   setSelfHealingAutoRepair(on: boolean): void {
     kvSet("selfHealingAutoRepair", on ? "true" : "false");
   },
+  /**
+   * Veto flow: the reviewer gates actions BEFORE execution (approve/block).
+   * Changes live behaviour, so default OFF. Fail-open if the reviewer is down.
+   */
+  getSelfHealingVetoFlow(): boolean {
+    return kvGet("selfHealingVetoFlow") === "true";
+  },
+  setSelfHealingVetoFlow(on: boolean): void {
+    kvSet("selfHealingVetoFlow", on ? "true" : "false");
+  },
   getGlobalSettings(): import("@tttrading/shared").GlobalSettings {
     return {
       shadowMode: this.getShadowMode(),
@@ -891,6 +990,7 @@ export const settings = {
       selfHealingEnabled: this.getSelfHealingEnabled(),
       selfHealingModel: this.getSelfHealingModel(),
       selfHealingAutoRepair: this.getSelfHealingAutoRepair(),
+      selfHealingVetoFlow: this.getSelfHealingVetoFlow(),
     };
   },
   /**

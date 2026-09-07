@@ -7,6 +7,7 @@ import type {
   LogEntry,
   SecondOpinion,
   SelfHealingEntry,
+  SelfHealingLearning,
   Signal,
   Trade,
   WsEvent,
@@ -215,6 +216,7 @@ export const api = {
       selfHealingEnabled: boolean;
       selfHealingModel: string;
       selfHealingAutoRepair: boolean;
+      selfHealingVetoFlow: boolean;
       anthropicConfigured: boolean;
       anthropicKeySource: string;
       anthropicModel: string;
@@ -241,6 +243,7 @@ export const api = {
     selfHealingEnabled?: boolean;
     selfHealingModel?: string;
     selfHealingAutoRepair?: boolean;
+    selfHealingVetoFlow?: boolean;
     autoRefine?: boolean;
     parseMode?: "regex" | "llm";
     llmMemory?: string;
@@ -444,6 +447,15 @@ export const api = {
     );
   },
   clearSelfHealing: () => req<{ ok: boolean }>("/api/self-healing", { method: "DELETE" }),
+  commentSelfHealing: (id: string, comment: string) =>
+    req<{ entry: SelfHealingEntry; learning: SelfHealingLearning }>(
+      `/api/self-healing/${id}/comment`,
+      { method: "POST", body: JSON.stringify({ comment }) },
+    ),
+  selfHealingLearnings: (limit = 500) =>
+    req<SelfHealingLearning[]>(`/api/self-healing/learnings?limit=${limit}`),
+  deleteSelfHealingLearning: (id: string) =>
+    req<{ ok: boolean }>(`/api/self-healing/learnings/${id}`, { method: "DELETE" }),
 };
 
 /** Fetch a file with auth and trigger a browser download. */

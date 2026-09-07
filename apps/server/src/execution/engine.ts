@@ -12,7 +12,7 @@ import type { ExchangeConnector } from "../exchanges/types.js";
 import { NOTIONAL_MAX_OFF, notionalOffFraction } from "../exchanges/pricing.js";
 import { parseSignal } from "../signals/parser.js";
 import { readManagementLevels, reconsiderManagement, llmReady, type SignalImage, type PerSymbolAction } from "../signals/llm.js";
-import { reviewHandled } from "../signals/selfheal.js";
+import { reviewHandled, vetoGate } from "../signals/selfheal.js";
 import { classifyManagementAll, isTradeUpdate, isMarketCommentary, type ManagementAction } from "../signals/management.js";
 import { expandTakeProfits } from "../signals/takeprofit.js";
 import { assessRisk, tierSlippage, isNoCrossError, ENTRY_RETRY_SLIPPAGE, PROTECTIVE_SLIPPAGE } from "../risk/score.js";
@@ -1196,6 +1196,31 @@ async function applyManagement(
   // Don't let messages manage positions of a channel the operator disabled.
   if (!group.enabled) return null;
 
+  // Veto flow (final decision gate): with veto flow ON, submit the derived
+  // management action(s) to the independent reviewer before touching any
+  // position. A reject blocks ALL management for this message. Pass-through when
+  // veto flow is off; fail-open on error.
+  {
+    const summary = actions
+      .map((a) => `${a.kind}${a.symbol ? ` ${a.symbol}` : ""}${a.newStop !== undefined ? ` SL→${a.newStop}` : ""}${a.fraction !== undefined ? ` ${Math.round(a.fraction * 100)}%` : ""}`)
+      .join("; ");
+    const veto = await vetoGate({
+      kind: "management",
+      group,
+      rawText,
+      actionSummary: summary || "(no actions)",
+    });
+    if (!veto.approved) {
+      event(
+        "manage",
+        `VETOED management (${actions.map((a) => a.kind).join(", ")}): ${veto.reason}`,
+        { reason: veto.reason, alternative: veto.alternative },
+        { level: "warn", groupId: group.id },
+      );
+      return null;
+    }
+  }
+
   const results: string[] = [];
   let acted = false;
   const actedSymbols = new Set<string>();
@@ -1935,6 +1960,40 @@ async function execute(
 
   if (ex.name !== "hyperliquid" && ex.name !== "hyperliquid-testnet") {
     event("exec", `Routing ${parsed.symbol} to ${ex.name}`, { exchange: ex.name }, { groupId: group.id, signalId: signal.id });
+  }
+
+  // Veto flow (final decision gate): with veto flow ON, submit the fully-derived
+  // entry to the independent reviewer before placing any order. A reject blocks
+  // the entry entirely. Pass-through when veto flow is off; fail-open on error.
+  {
+    const entryDesc =
+      `OPEN ${parsed.side.toUpperCase()} ${parsed.symbol} on ${ex.name}` +
+      (parsed.entry !== undefined ? ` @ ${parsed.entry}` : " @ market") +
+      (parsed.entries && parsed.entries.length > 1 ? ` (${parsed.entries.length} scale-in legs)` : "") +
+      (parsed.stopLoss !== undefined ? `, SL ${parsed.stopLoss}` : "") +
+      (parsed.takeProfits?.length ? `, TP [${parsed.takeProfits.join(", ")}]` : "") +
+      (parsed.leverageHint ? `, lev ${parsed.leverageHint}x` : "") +
+      ` (source=${parsed.source}, confidence=${parsed.confidence})`;
+    const veto = await vetoGate({
+      kind: "entry",
+      group,
+      rawText: signal.rawText,
+      actionSummary: entryDesc,
+      signalId: signal.id,
+    });
+    if (!veto.approved) {
+      const reason = `veto: ${veto.reason}${veto.alternative ? ` — instead: ${veto.alternative}` : ""}`;
+      const rejected = signalsRepo.update(signal.id, { status: "rejected", error: reason })!;
+      event(
+        "exec",
+        `VETOED ${parsed.side} ${parsed.symbol}: ${veto.reason}`,
+        { reason: veto.reason, alternative: veto.alternative },
+        { level: "warn", groupId: group.id, signalId: signal.id },
+      );
+      alertSkipped(group.name, `${parsed.side.toUpperCase()} ${parsed.symbol}`, `vetoed by Self-Healing — ${veto.reason}`);
+      broadcast({ type: "signal", signal: rejected });
+      return rejected;
+    }
   }
 
   // Remember the entered coin so a symbol-less management follow-up ("SL to

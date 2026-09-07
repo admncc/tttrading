@@ -133,10 +133,26 @@ CREATE TABLE IF NOT EXISTS self_healing (
   signal_id TEXT,
   trade_id TEXT,
   message_excerpt TEXT,
-  system_action TEXT
+  system_action TEXT,
+  comment TEXT,
+  commented_at TEXT,
+  phase TEXT,
+  decision TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_selfheal_ts ON self_healing(ts);
 CREATE INDEX IF NOT EXISTS idx_selfheal_verdict ON self_healing(verdict);
+
+-- Self-Healing learnings: durable notes (usually distilled from operator comments)
+-- folded into the reviewer's briefing on every future review — its growing memory.
+CREATE TABLE IF NOT EXISTS self_healing_learnings (
+  id TEXT PRIMARY KEY,
+  ts TEXT NOT NULL,
+  text TEXT NOT NULL,
+  source_review_id TEXT,
+  group_id TEXT,
+  group_name TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_heal_learn_ts ON self_healing_learnings(ts);
 
 -- Phase 2: point-in-time features per signal (Shadow-Mode basis, dev-brief §7).
 -- One row per (signal, feature); computed at signal time and never recomputed with
@@ -199,6 +215,12 @@ function migrate(database: Database.Database): void {
     },
     logs: {
       trade_id: "TEXT",
+    },
+    self_healing: {
+      comment: "TEXT",
+      commented_at: "TEXT",
+      phase: "TEXT",
+      decision: "TEXT",
     },
   };
   for (const [table, cols] of Object.entries(additions)) {
