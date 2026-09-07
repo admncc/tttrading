@@ -58,27 +58,25 @@ export function Trades({
   const [tpInput, setTpInput] = useState("");
   const [bookInput, setBookInput] = useState("");
   const [historyId, setHistoryId] = useState<string | null>(null);
-  const [historyRows, setHistoryRows] = useState<
-    { ts: string; category: string; level: string; message: string }[] | null
-  >(null);
+  const [history, setHistory] = useState<Awaited<ReturnType<typeof api.tradeHistory>> | null>(null);
+  const [historyErr, setHistoryErr] = useState<string | null>(null);
   const [historyBusy, setHistoryBusy] = useState(false);
 
   const toggleHistory = async (t: Trade): Promise<void> => {
     if (historyId === t.id) {
       setHistoryId(null);
-      setHistoryRows(null);
+      setHistory(null);
+      setHistoryErr(null);
       return;
     }
     setHistoryId(t.id);
-    setHistoryRows(null);
+    setHistory(null);
+    setHistoryErr(null);
     setHistoryBusy(true);
     try {
-      const res = await api.tradeHistory(t.id);
-      setHistoryRows(res.events);
+      setHistory(await api.tradeHistory(t.id));
     } catch (e) {
-      setHistoryRows([
-        { ts: new Date().toISOString(), category: "system", level: "error", message: `History failed: ${e instanceof Error ? e.message : e}` },
-      ]);
+      setHistoryErr(`History failed: ${e instanceof Error ? e.message : e}`);
     } finally {
       setHistoryBusy(false);
     }
@@ -573,28 +571,79 @@ export function Trades({
                           Trade history — {t.symbol} {t.side}
                         </div>
                         {historyBusy && <div className="muted" style={{ fontSize: 12 }}>Loading…</div>}
-                        {!historyBusy && historyRows && historyRows.length === 0 && (
-                          <div className="muted" style={{ fontSize: 12 }}>No history recorded for this trade.</div>
-                        )}
-                        {!historyBusy && historyRows && historyRows.length > 0 && (
-                          <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
-                            <tbody>
-                              {historyRows.map((h, i) => (
-                                <tr key={i} style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }}>
-                                  <td className="muted" style={{ whiteSpace: "nowrap", padding: "3px 10px 3px 0", verticalAlign: "top" }}>
-                                    {shortTime(h.ts)}
-                                  </td>
-                                  <td className="muted" style={{ whiteSpace: "nowrap", padding: "3px 10px 3px 0", verticalAlign: "top" }}>
-                                    {h.category}
-                                  </td>
-                                  <td style={{ padding: "3px 0", color: h.level === "error" ? "#ef4444" : h.level === "warn" ? "#f59e0b" : undefined }}>
-                                    {h.message}
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        )}
+                        {historyErr && <div style={{ fontSize: 12, color: "#ef4444" }}>{historyErr}</div>}
+                        {!historyBusy && history && (() => {
+                          const s = history.summary;
+                          const bookedLegs = s.manualPartials;
+                          const totalTargets = s.manualPartials + s.takeProfits.length;
+                          return (
+                            <div style={{ display: "grid", gap: 8 }}>
+                              {/* Synthesized state summary — full TP ladder + fill status */}
+                              <div style={{ display: "flex", flexWrap: "wrap", gap: 14, fontSize: 12, alignItems: "baseline" }}>
+                                <span>Entry <b>{num(s.entryPrice)}</b></span>
+                                <span>
+                                  SL <b>{s.stopLoss !== undefined ? num(s.stopLoss) : "—"}</b>
+                                  {s.slMovedToBreakeven ? <span style={{ color: "#22c55e" }}> · BE</span> : null}
+                                </span>
+                                <span>
+                                  Size <b>{num(s.openSize ?? s.size)}</b>
+                                  {s.initialSize && s.initialSize > (s.openSize ?? s.size) + 1e-9
+                                    ? <span className="muted"> / {num(s.initialSize)} orig</span> : null}
+                                </span>
+                                <span>Banked <b style={{ color: (s.bankedPnl + s.tpRealizedPnl) >= 0 ? "#22c55e" : "#ef4444" }}>
+                                  {num(s.bankedPnl + s.tpRealizedPnl)} USDC</b></span>
+                                {totalTargets > 0 && (
+                                  <span>Hit <b>{bookedLegs + s.tpFilledCount}/{totalTargets}</b></span>
+                                )}
+                              </div>
+                              {/* TP ladder with per-rung fill status */}
+                              {s.takeProfits.length > 0 && (
+                                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, fontSize: 12 }}>
+                                  {s.takeProfits.map((tp, i) => {
+                                    const filled = i < s.tpFilledCount;
+                                    return (
+                                      <span key={i} style={{
+                                        padding: "1px 8px", borderRadius: 4,
+                                        border: "1px solid rgba(255,255,255,0.12)",
+                                        background: filled ? "rgba(34,197,94,0.15)" : "transparent",
+                                        color: filled ? "#22c55e" : undefined,
+                                      }}>
+                                        TP{i + 1} {num(tp)} {filled ? "✓" : "○"}
+                                      </span>
+                                    );
+                                  })}
+                                  {s.manualPartials > 0 && (
+                                    <span className="muted">+ {s.manualPartials} manual book{s.manualPartials > 1 ? "s" : ""}</span>
+                                  )}
+                                </div>
+                              )}
+                              {/* Timestamped event timeline (richer for trades opened after tagging) */}
+                              {history.events.length > 0 ? (
+                                <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+                                  <tbody>
+                                    {history.events.map((h, i) => (
+                                      <tr key={i} style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }}>
+                                        <td className="muted" style={{ whiteSpace: "nowrap", padding: "3px 10px 3px 0", verticalAlign: "top" }}>
+                                          {shortTime(h.ts)}
+                                        </td>
+                                        <td className="muted" style={{ whiteSpace: "nowrap", padding: "3px 10px 3px 0", verticalAlign: "top" }}>
+                                          {h.category}
+                                        </td>
+                                        <td style={{ padding: "3px 0", color: h.level === "error" ? "#ef4444" : h.level === "warn" ? "#f59e0b" : undefined }}>
+                                          {h.message}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              ) : (
+                                <div className="muted" style={{ fontSize: 11 }}>
+                                  No timestamped events recorded (this trade predates per-event tagging — the summary above is reconstructed from the trade record; new trades show a full event timeline).
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </div>
                     </td>
                   </tr>

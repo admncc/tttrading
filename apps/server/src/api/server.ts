@@ -780,7 +780,34 @@ export async function buildServer() {
       message: e.message,
       meta: e.meta,
     }));
-    return { tradeId: trade.id, symbol: trade.symbol, events };
+    // Synthesized summary from the trade RECORD — so even trades that predate
+    // per-trade event tagging still show their full TP ladder + fill status,
+    // booked partials, break-even and sizing. Discrete timestamped events (above)
+    // enrich this for trades opened after tagging shipped.
+    const summary = {
+      side: trade.side,
+      status: trade.status,
+      openedAt: trade.openedAt,
+      closedAt: trade.closedAt,
+      entryPrice: trade.entryPrice,
+      stopLoss: trade.stopLoss,
+      slMovedToBreakeven: !!trade.slMovedToBreakeven,
+      takeProfits: trade.takeProfits ?? [],
+      tpFilledCount: trade.tpFilledCount ?? 0,
+      manualPartials: trade.manualPartials ?? 0,
+      bankedPnl: trade.bankedPnl ?? 0,
+      tpRealizedPnl: trade.tpRealizedPnl ?? 0,
+      realizedPnl: trade.realizedPnl,
+      exitPrice: trade.exitPrice,
+      size: trade.size,
+      initialSize: trade.initialSize,
+      openSize: trade.openSize,
+      notionalUsd: trade.notionalUsd,
+      leverage: trade.leverage,
+      exchange: trade.exchange,
+      env: trade.env,
+    };
+    return { tradeId: trade.id, symbol: trade.symbol, summary, events };
   });
 
   app.post<{ Params: { id: string } }>("/api/trades/:id/close", async (req, reply) => {

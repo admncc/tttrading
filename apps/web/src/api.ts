@@ -384,6 +384,29 @@ export const api = {
     req<{
       tradeId: string;
       symbol: string;
+      summary: {
+        side: string;
+        status: string;
+        openedAt: string;
+        closedAt?: string;
+        entryPrice: number;
+        stopLoss?: number;
+        slMovedToBreakeven: boolean;
+        takeProfits: number[];
+        tpFilledCount: number;
+        manualPartials: number;
+        bankedPnl: number;
+        tpRealizedPnl: number;
+        realizedPnl?: number;
+        exitPrice?: number;
+        size: number;
+        initialSize?: number;
+        openSize?: number;
+        notionalUsd: number;
+        leverage: number;
+        exchange?: string;
+        env: string;
+      };
       events: { ts: string; category: string; level: string; message: string; meta?: Record<string, unknown> }[];
     }>(`/api/trades/${id}/history`),
   syncTrade: (id: string) =>
