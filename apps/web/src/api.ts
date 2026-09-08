@@ -73,6 +73,8 @@ export interface AccountInfo {
   withdrawable?: number;
   totalMarginUsed?: number;
   spotUsdc?: number;
+  /** Equity per venue (margin isn't shared) — e.g. { hyperliquid: 1234, aster: 567 }. */
+  equityByVenue?: Record<string, number>;
   positions: {
     symbol: string;
     size: number;

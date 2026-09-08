@@ -1090,7 +1090,20 @@ export async function buildServer() {
       address: hl.publicAddress(),
       signer: hl.signerAddress(),
     };
-    if (!base.address) return { ...base, positions: [] };
+    // Equity per venue (margin isn't shared across venues, so the desk shows each
+    // — e.g. Hyperliquid + Aster — rather than a single figure).
+    const equityByVenue: Record<string, number> = {};
+    await Promise.all(
+      allExchanges().map(async (ex) => {
+        try {
+          const summ = await ex.getAccountSummary();
+          if (summ && Number.isFinite(summ.accountValue)) equityByVenue[ex.name] = summ.accountValue;
+        } catch {
+          /* venue equity unavailable — omit it */
+        }
+      }),
+    );
+    if (!base.address) return { ...base, positions: [], equityByVenue };
     try {
       const [summary, positions, spotUsdc] = await Promise.all([
         hl.getAccountSummary(),
@@ -1104,11 +1117,12 @@ export async function buildServer() {
         totalMarginUsed: summary?.totalMarginUsed,
         spotUsdc: spotUsdc ?? undefined,
         positions,
+        equityByVenue,
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.warn("account summary unavailable:", msg);
-      return { ...base, positions: [], error: msg };
+      return { ...base, positions: [], error: msg, equityByVenue };
     }
   });
 

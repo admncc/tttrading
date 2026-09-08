@@ -343,6 +343,23 @@ export function App() {
     [jump],
   );
   const goTab = (id: Tab) => { setTab(id); setJump(""); setJumpOpen(false); };
+
+  // Per-venue equity for the status bar (margin isn't shared across venues, so
+  // Hyperliquid + Aster + … are shown separately rather than one figure).
+  const VENUE_LABEL: Record<string, string> = {
+    hyperliquid: "HL",
+    "hyperliquid-testnet": "HL-test",
+    aster: "Aster",
+    mexc: "MEXC",
+  };
+  const equityChips = useMemo(() => {
+    const by = account?.equityByVenue ?? {};
+    return Object.entries(by)
+      .filter(([, v]) => typeof v === "number" && Number.isFinite(v))
+      .sort((a, b) => b[1] - a[1])
+      .map(([name, value]) => ({ label: VENUE_LABEL[name] ?? name, value }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [account]);
   const pageMeta = (): string => {
     switch (tab) {
       case "overview":
@@ -494,11 +511,17 @@ export function App() {
             <span className="chip">
               <span className="dot live" /> Live feed
             </span>
-            {account?.accountValue != null && (
-              <span className="chip">
-                Equity <span className="num">{usd(account.accountValue)}</span>
-              </span>
-            )}
+            {equityChips.length > 0
+              ? equityChips.map((v) => (
+                  <span className="chip" key={v.label} title={`${v.label} equity`}>
+                    {v.label} <span className="num">{usd(v.value)}</span>
+                  </span>
+                ))
+              : account?.accountValue != null && (
+                  <span className="chip">
+                    Equity <span className="num">{usd(account.accountValue)}</span>
+                  </span>
+                )}
             <span className="chip num">{clock} UTC</span>
             <div className="search" style={{ position: "relative" }}>
               <Icon name="search" />
