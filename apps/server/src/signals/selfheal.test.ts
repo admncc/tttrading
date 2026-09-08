@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Signal } from "@tttrading/shared";
-import { describeStatus, foldBriefing } from "./selfheal.js";
+import { describeStatus, foldBriefing, parseJsonObject } from "./selfheal.js";
 
 function sig(partial: Partial<Signal>): Signal {
   return {
@@ -61,4 +61,27 @@ test("foldBriefing: folds in desk memory, channel instructions, and learnings", 
 test("foldBriefing: blank/whitespace layers are skipped", () => {
   const s = foldBriefing("BASE", { memory: "   ", channel: "", learnings: ["", "  "] });
   assert.equal(s, "BASE");
+});
+
+test("parseJsonObject: plain JSON object", () => {
+  const o = parseJsonObject('{"verdict":"ok","confidence":0.9}');
+  assert.equal(o?.verdict, "ok");
+  assert.equal(o?.confidence, 0.9);
+});
+
+test("parseJsonObject: fenced ```json block", () => {
+  const o = parseJsonObject('```json\n{"decision":"reject","reason":"recap"}\n```');
+  assert.equal(o?.decision, "reject");
+  assert.equal(o?.reason, "recap");
+});
+
+test("parseJsonObject: JSON embedded in surrounding prose", () => {
+  const o = parseJsonObject('Sure — here is my verdict:\n{"verdict":"warn","summary":"borderline"}\nHope that helps.');
+  assert.equal(o?.verdict, "warn");
+  assert.equal(o?.summary, "borderline");
+});
+
+test("parseJsonObject: no JSON present returns null", () => {
+  assert.equal(parseJsonObject("I cannot answer that."), null);
+  assert.equal(parseJsonObject("{ not valid json"), null);
 });
