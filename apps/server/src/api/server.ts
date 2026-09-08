@@ -1205,7 +1205,19 @@ export async function buildServer() {
 
   async function diagnosticSnapshot() {
     const hl = activeHyperliquid();
-    let account: Record<string, unknown> = { connected: hl.live, address: hl.publicAddress() };
+    // Equity per venue (HL + Aster + …) — margin isn't shared across venues.
+    const equityByVenue: Record<string, number> = {};
+    await Promise.all(
+      allExchanges().map(async (ex) => {
+        try {
+          const summ = await ex.getAccountSummary();
+          if (summ && Number.isFinite(summ.accountValue)) equityByVenue[ex.name] = summ.accountValue;
+        } catch {
+          /* venue equity unavailable — omit it */
+        }
+      }),
+    );
+    let account: Record<string, unknown> = { connected: hl.live, address: hl.publicAddress(), equityByVenue };
     try {
       if (hl.publicAddress()) {
         const [summary, positions] = await Promise.all([hl.getAccountSummary(), hl.getPositions()]);
@@ -1217,6 +1229,7 @@ export async function buildServer() {
           accountValue: summary?.accountValue,
           withdrawable: summary?.withdrawable,
           totalMarginUsed: summary?.totalMarginUsed,
+          equityByVenue,
           positions,
         };
       }
