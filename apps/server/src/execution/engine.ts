@@ -91,7 +91,11 @@ function describeRepair(r: RepairAction): string {
  * sanity, notional, anti-netting, collateral, liveMaxOrderUsd — for opens).
  * Returns whether it actually acted + a human note.
  */
-async function applyRepair(group: Group, repair: RepairAction, rawText: string): Promise<{ applied: boolean; note: string }> {
+async function applyRepair(
+  group: Group,
+  repair: RepairAction,
+  rawText: string,
+): Promise<{ applied: boolean; note: string; noop?: boolean }> {
   const sym = repair.kind === "skip" ? "" : canonicalSymbol(repair.symbol);
   const openG = tradesRepo.open().filter((t) => t.groupId === group.id && !t.shadow);
   const workG = tradesRepo.working().filter((t) => t.groupId === group.id && !t.shadow);
@@ -103,13 +107,13 @@ async function applyRepair(group: Group, repair: RepairAction, rawText: string):
       return { applied: true, note: "skipped (no action)" };
 
     case "cancel_limit": {
-      if (!workSym.length) return { applied: false, note: `no ${sym} working order` };
+      if (!workSym.length) return { applied: false, noop: true, note: `no ${sym} working order` };
       for (const w of workSym) await cancelWorkingTrade(w.id, "auto-repair");
       return { applied: true, note: `canceled ${workSym.length} ${sym} working order(s)` };
     }
 
     case "breakeven": {
-      if (!openSym.length) return { applied: false, note: `no open ${sym} position` };
+      if (!openSym.length) return { applied: false, noop: true, note: `no open ${sym} position` };
       let ok = false;
       for (const t of openSym) if (await moveStop(t, t.entryPrice, true)) ok = true;
       return { applied: ok, note: ok ? `SL→breakeven ${sym}` : `breakeven not applied (${sym})` };
@@ -117,7 +121,7 @@ async function applyRepair(group: Group, repair: RepairAction, rawText: string):
 
     case "move_sl": {
       const targets = [...openSym, ...workSym];
-      if (!targets.length) return { applied: false, note: `no ${sym} position` };
+      if (!targets.length) return { applied: false, noop: true, note: `no ${sym} position` };
       let ok = false;
       for (const t of targets) {
         let price = t.entryPrice;
@@ -136,14 +140,14 @@ async function applyRepair(group: Group, repair: RepairAction, rawText: string):
     }
 
     case "book_partial": {
-      if (!openSym.length) return { applied: false, note: `no open ${sym} position` };
+      if (!openSym.length) return { applied: false, noop: true, note: `no open ${sym} position` };
       let ok = false;
       for (const t of openSym) if (await partialClose(t, repair.fraction)) ok = true;
       return { applied: ok, note: ok ? `booked ${Math.round(repair.fraction * 100)}% ${sym}` : `partial not booked (${sym})` };
     }
 
     case "close": {
-      if (!openSym.length) return { applied: false, note: `no open ${sym} position` };
+      if (!openSym.length) return { applied: false, noop: true, note: `no open ${sym} position` };
       const frac = repair.fraction ?? 1;
       let ok = false;
       for (const t of openSym) {
@@ -1353,7 +1357,7 @@ async function applyManagement(
           const r = await applyRepair(group, veto.repair, rawText);
           recordRepair({
             group, kind: "management", summary: `${summary} → ${describeRepair(veto.repair)}`,
-            detail: r.note, applied: r.applied, model: settingsRepo.getSelfHealingModel(), confidence: veto.confidence,
+            detail: r.note, applied: r.applied, noop: r.noop, model: settingsRepo.getSelfHealingModel(), confidence: veto.confidence,
           });
           results.push(`auto-repair: ${r.note}`);
           if (r.applied) {
@@ -2133,7 +2137,7 @@ async function execute(
       if (shouldAutoRepair(veto) && veto.repair) {
         const r = await applyRepair(group, veto.repair, signal.rawText);
         recordRepair({
-          group, kind: "entry", summary: describeRepair(veto.repair), detail: r.note, applied: r.applied,
+          group, kind: "entry", summary: describeRepair(veto.repair), detail: r.note, applied: r.applied, noop: r.noop,
           model: settingsRepo.getSelfHealingModel(), signalId: signal.id, confidence: veto.confidence,
         });
         const rejected = signalsRepo.update(signal.id, {

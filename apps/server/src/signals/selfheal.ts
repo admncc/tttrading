@@ -514,19 +514,23 @@ export function recordRepair(opts: {
   summary: string;
   detail?: string;
   applied: boolean;
+  /** True when the repair ran but had nothing to do (target already flat/closed). */
+  noop?: boolean;
   model?: string;
   signalId?: string;
   tradeId?: string;
   confidence?: number;
 }): void {
+  const noop = !opts.applied && !!opts.noop;
+  const label = opts.applied ? "Auto-repaired" : noop ? "Auto-repair no-op" : "Auto-repair FAILED";
   const entry: SelfHealingEntry = {
     id: nanoid(),
     ts: new Date().toISOString(),
     phase: "repair",
     decision: "reject",
-    verdict: opts.applied ? "warn" : "error",
+    verdict: opts.applied ? "warn" : noop ? "skipped" : "error",
     confidence: opts.confidence ?? 0,
-    summary: `${opts.applied ? "Auto-repaired" : "Auto-repair FAILED"} ${opts.kind}: ${opts.summary}`.slice(0, 500),
+    summary: `${label} ${opts.kind}: ${opts.summary}`.slice(0, 500),
     suggestion: (opts.detail ?? "").slice(0, 1000),
     model: opts.model ?? "",
     groupId: opts.group.id,
@@ -538,9 +542,9 @@ export function recordRepair(opts: {
   broadcast({ type: "heal", entry });
   event(
     "selfheal",
-    `Auto-repair ${opts.applied ? "applied" : "FAILED"} (${opts.kind}): ${opts.summary}`,
+    `Auto-repair ${opts.applied ? "applied" : noop ? "no-op (already done)" : "FAILED"} (${opts.kind}): ${opts.summary}`,
     { detail: opts.detail, confidence: opts.confidence },
-    { level: "warn", groupId: opts.group.id, signalId: opts.signalId },
+    { level: opts.applied || noop ? "info" : "warn", groupId: opts.group.id, signalId: opts.signalId },
   );
 }
 
