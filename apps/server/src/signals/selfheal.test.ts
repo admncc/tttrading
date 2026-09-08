@@ -92,7 +92,21 @@ test("parseJsonObject: prefill style (leading brace prepended by caller)", () =>
   assert.equal(o?.decision, "approve");
 });
 
-test("parseJsonObject: no JSON present returns null", () => {
+test("parseJsonObject: loose salvage from truncated/unclosed JSON", () => {
+  // No closing brace (truncated) — strict parse fails, field salvage recovers it.
+  const o = parseJsonObject('{"verdict":"error","confidence":0.7,"summary":"missed a valid entry"');
+  assert.equal(o?.verdict, "error");
+  assert.equal(o?.confidence, 0.7);
+  assert.equal(o?.summary, "missed a valid entry");
+});
+
+test("parseJsonObject: loose salvage from rambly non-JSON with quoted fields", () => {
+  const o = parseJsonObject('Sure! "decision": "approve", "reason": "valid setup". Hope this helps!');
+  assert.equal(o?.decision, "approve");
+  assert.equal(o?.reason, "valid setup");
+});
+
+test("parseJsonObject: no JSON/fields present returns null", () => {
   assert.equal(parseJsonObject("I cannot answer that."), null);
   assert.equal(parseJsonObject("{ not valid json"), null);
 });

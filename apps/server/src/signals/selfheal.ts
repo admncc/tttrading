@@ -38,13 +38,25 @@ export function parseJsonObject(text: string): Record<string, unknown> | null {
   const body = fenced?.[1] ?? text;
   const start = body.indexOf("{");
   const end = body.lastIndexOf("}");
-  if (start < 0 || end <= start) return null;
-  const slice = body.slice(start, end + 1).replace(/,\s*([}\]])/g, "$1"); // tolerate trailing commas
-  try {
-    return JSON.parse(slice) as Record<string, unknown>;
-  } catch {
-    return null;
+  if (start >= 0 && end > start) {
+    const slice = body.slice(start, end + 1).replace(/,\s*([}\]])/g, "$1"); // tolerate trailing commas
+    try {
+      return JSON.parse(slice) as Record<string, unknown>;
+    } catch {
+      /* fall through to loose field salvage */
+    }
   }
+  // Loose salvage: pull "key": "string" / number / bool pairs out of rambly or
+  // truncated output. Small models (e.g. Fable, which supports neither forced
+  // tool_choice nor assistant prefill) sometimes wrap or malform the JSON.
+  const out: Record<string, unknown> = {};
+  for (const m of body.matchAll(/"(\w+)"\s*:\s*"((?:[^"\\]|\\.)*)"/g)) {
+    try { out[m[1]!] = JSON.parse(`"${m[2]!}"`); } catch { out[m[1]!] = m[2]!; }
+  }
+  for (const m of body.matchAll(/"(\w+)"\s*:\s*(-?\d+(?:\.\d+)?|true|false)\b/g)) {
+    if (!(m[1]! in out)) out[m[1]!] = m[2] === "true" ? true : m[2] === "false" ? false : Number(m[2]);
+  }
+  return Object.keys(out).length ? out : null;
 }
 
 /** Concatenated text of an Anthropic response (no tool blocks are used). */
@@ -203,7 +215,8 @@ export async function reviewHandled(
         `"""\n${msg.slice(0, 4000)}\n"""\n` +
         (images?.length ? `\n[${images.length} chart image(s) attached below]\n` : "") +
         `\n--- WHAT THE BOT DID ---\n${systemAction}\n\n` +
-        `Review whether the bot handled this correctly. Respond with ONLY the JSON object.`,
+        `Review whether the bot handled this correctly. Reply with ONE JSON object and nothing else — ` +
+        `start with { and end with }, no explanation, no chart description before or after.`,
     },
   ];
   for (const img of images ?? []) {
@@ -224,14 +237,9 @@ export async function reviewHandled(
       model,
       max_tokens: 600,
       system,
-      // Prefill the assistant turn with "{" so even small models that don't
-      // support forced tool use emit JSON only (no prose/fence to strip).
-      messages: [
-        { role: "user", content: userBlocks },
-        { role: "assistant", content: "{" },
-      ],
+      messages: [{ role: "user", content: userBlocks }],
     });
-    const input = parseJsonObject("{" + textOf(res)) as {
+    const input = parseJsonObject(textOf(res)) as {
       verdict?: string;
       confidence?: number;
       summary?: string;
@@ -388,10 +396,9 @@ export async function vetoGate(plan: VetoPlan): Promise<VetoDecision> {
             `--- ACTION THE BOT IS ABOUT TO EXECUTE (${plan.kind}) ---\n${plan.actionSummary}\n\n` +
             `Approve or reject this action. Respond with ONLY the JSON object.`,
         },
-        { role: "assistant", content: "{" },
       ],
     });
-    const input = parseJsonObject("{" + textOf(res)) as {
+    const input = parseJsonObject(textOf(res)) as {
       decision?: string;
       confidence?: number;
       reason?: string;
