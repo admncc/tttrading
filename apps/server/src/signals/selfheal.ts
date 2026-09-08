@@ -316,7 +316,7 @@ Respond with ONLY a JSON object — no prose, no markdown fence — of this shap
   {"kind":"cancel_limit","symbol":"APT"}
   {"kind":"open","symbol":"APT","side":"long","entry":0.60,"stopLoss":0.55,"takeProfits":[0.70],"leverage":5}}
 
-Rules for "repair": use the SAME symbol the action concerns; prices/fractions must be real numbers (fraction 0-1); "open"/"close" are allowed when that is genuinely the right correction; use "skip" when the derived action should simply not run (e.g. a recap wrongly turned into a close). A high "confidence" (>0.88) is required before the bot will auto-apply the repair, so only be that confident when you are sure.`;
+Rules for "repair": use the SAME symbol the action concerns; prices/fractions must be real numbers (fraction 0-1); "open"/"close" are allowed when that is genuinely the right correction; use "skip" when the derived action should simply not run (e.g. a recap wrongly turned into a close). A high "confidence" (>0.75) is required before the bot will auto-apply the repair, so only be that confident when you are sure.`;
 
 /** A derived action awaiting the veto gate's approval before execution. */
 export interface VetoPlan {

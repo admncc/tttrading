@@ -360,7 +360,7 @@ export async function buildServer() {
       const on = d.selfHealingAutoRepair && vetoOn;
       settingsRepo.setSelfHealingAutoRepair(on);
       log.warn(
-        `Self-Healing AUTO-REPAIR ${on ? "ENABLED — reviewer fixes above 88% confidence are applied automatically" : "disabled"}` +
+        `Self-Healing AUTO-REPAIR ${on ? "ENABLED — reviewer fixes above 75% confidence are applied automatically" : "disabled"}` +
           `${d.selfHealingAutoRepair && !on ? " (ignored: requires veto flow on)" : ""}.`,
       );
     }

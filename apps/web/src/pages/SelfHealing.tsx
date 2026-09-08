@@ -179,7 +179,7 @@ export function SelfHealing({
     if (
       next &&
       !confirm(
-        "Enable AUTO-REPAIR?\n\nWhen the veto blocks an action AND the reviewer is >88% confident, the " +
+        "Enable AUTO-REPAIR?\n\nWhen the veto blocks an action AND the reviewer is >75% confident, the " +
           "reviewer's corrected action is applied AUTOMATICALLY — including moving stops, booking/closing, " +
           "and OPENING or CLOSING whole positions on real money. Continue?",
       )
@@ -325,7 +325,7 @@ export function SelfHealing({
                 <span className="sw-text">
                   <span>Auto-repair</span>
                   <span className="hint">
-                    requires veto · applies the reviewer's fix on a blocked action when &gt;88% confident
+                    requires veto · applies the reviewer's fix on a blocked action when &gt;75% confident
                     (incl. opening/closing positions)
                   </span>
                 </span>

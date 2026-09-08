@@ -53,7 +53,7 @@ function symbolAllowed(group: Group, symbol: string): boolean {
 /* --------------------------- Self-Healing auto-repair --------------------------- */
 
 /** A blocked action is only auto-repaired above this reviewer confidence. */
-const AUTO_REPAIR_MIN_CONF = 0.88;
+const AUTO_REPAIR_MIN_CONF = 0.75;
 
 /** Whether a rejected action should trigger auto-repair (both toggles on + conf). */
 function shouldAutoRepair(veto: { confidence: number; repair?: RepairAction | null }): boolean {
