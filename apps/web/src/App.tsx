@@ -328,7 +328,13 @@ export function App() {
         : "test";
   const net = (health?.activeNetwork ?? health?.env ?? "").toUpperCase();
   const envState = env === "live" ? "LIVE" : env === "paused" ? "PAUSED" : "TEST";
-  const clock = now.toISOString().slice(11, 19);
+  const clock = now.toLocaleTimeString("de-DE", {
+    timeZone: "Europe/Berlin",
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 
   const countFor = (id: Tab): { n: number; cls: string } | null => {
     if (id === "trades" && openCount) return { n: openCount, cls: "gain" };
@@ -522,7 +528,7 @@ export function App() {
                     Equity <span className="num">{usd(account.accountValue)}</span>
                   </span>
                 )}
-            <span className="chip num">{clock} UTC</span>
+            <span className="chip num">{clock} Berlin</span>
             <div className="search" style={{ position: "relative" }}>
               <Icon name="search" />
               <input
