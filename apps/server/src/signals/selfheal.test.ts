@@ -81,6 +81,17 @@ test("parseJsonObject: JSON embedded in surrounding prose", () => {
   assert.equal(o?.summary, "borderline");
 });
 
+test("parseJsonObject: tolerates trailing commas", () => {
+  const o = parseJsonObject('{"verdict":"ok","confidence":0.8,}');
+  assert.equal(o?.verdict, "ok");
+});
+
+test("parseJsonObject: prefill style (leading brace prepended by caller)", () => {
+  // The caller prepends "{" to a prefilled assistant continuation.
+  const o = parseJsonObject('{' + '"decision":"approve","reason":"valid entry"}');
+  assert.equal(o?.decision, "approve");
+});
+
 test("parseJsonObject: no JSON present returns null", () => {
   assert.equal(parseJsonObject("I cannot answer that."), null);
   assert.equal(parseJsonObject("{ not valid json"), null);

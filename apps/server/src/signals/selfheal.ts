@@ -39,8 +39,9 @@ export function parseJsonObject(text: string): Record<string, unknown> | null {
   const start = body.indexOf("{");
   const end = body.lastIndexOf("}");
   if (start < 0 || end <= start) return null;
+  const slice = body.slice(start, end + 1).replace(/,\s*([}\]])/g, "$1"); // tolerate trailing commas
   try {
-    return JSON.parse(body.slice(start, end + 1)) as Record<string, unknown>;
+    return JSON.parse(slice) as Record<string, unknown>;
   } catch {
     return null;
   }
@@ -221,11 +222,16 @@ export async function reviewHandled(
   try {
     const res = await getClient().messages.create({
       model,
-      max_tokens: 500,
+      max_tokens: 600,
       system,
-      messages: [{ role: "user", content: userBlocks }],
+      // Prefill the assistant turn with "{" so even small models that don't
+      // support forced tool use emit JSON only (no prose/fence to strip).
+      messages: [
+        { role: "user", content: userBlocks },
+        { role: "assistant", content: "{" },
+      ],
     });
-    const input = parseJsonObject(textOf(res)) as {
+    const input = parseJsonObject("{" + textOf(res)) as {
       verdict?: string;
       confidence?: number;
       summary?: string;
@@ -370,7 +376,7 @@ export async function vetoGate(plan: VetoPlan): Promise<VetoDecision> {
   try {
     const res = await getClient().messages.create({
       model,
-      max_tokens: 500,
+      max_tokens: 600,
       system,
       messages: [
         {
@@ -382,9 +388,10 @@ export async function vetoGate(plan: VetoPlan): Promise<VetoDecision> {
             `--- ACTION THE BOT IS ABOUT TO EXECUTE (${plan.kind}) ---\n${plan.actionSummary}\n\n` +
             `Approve or reject this action. Respond with ONLY the JSON object.`,
         },
+        { role: "assistant", content: "{" },
       ],
     });
-    const input = parseJsonObject(textOf(res)) as {
+    const input = parseJsonObject("{" + textOf(res)) as {
       decision?: string;
       confidence?: number;
       reason?: string;
