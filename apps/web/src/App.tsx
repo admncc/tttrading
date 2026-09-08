@@ -301,6 +301,9 @@ export function App() {
         case "healLearning":
           setHealLearnings((prev) => [e.learning, ...prev.filter((l) => l.id !== e.learning.id)].slice(0, 400));
           break;
+        case "healLearningDeleted":
+          setHealLearnings((prev) => prev.filter((l) => l.id !== e.id));
+          break;
         case "prices":
           setPrices(e.prices);
           break;

@@ -983,6 +983,7 @@ export async function buildServer() {
   app.delete<{ Params: { id: string } }>("/api/self-healing/learnings/:id", async (req, reply) => {
     if (!authEnabled) return reply.code(403).send({ error: "Set DESK_PASSWORD to edit learnings." });
     selfHealingLearningsRepo.delete(req.params.id);
+    broadcast({ type: "healLearningDeleted", id: req.params.id });
     return { ok: true };
   });
 

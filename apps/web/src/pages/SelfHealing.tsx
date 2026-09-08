@@ -40,6 +40,7 @@ export function SelfHealing({
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [learnings, setLearnings] = useState<SelfHealingLearning[]>([]);
+  const [hiddenLearningIds, setHiddenLearningIds] = useState<Set<string>>(new Set());
 
   const reloadLearnings = useCallback(() => {
     api.selfHealingLearnings().then(setLearnings).catch(() => {});
@@ -95,8 +96,8 @@ export function SelfHealing({
 
   const mergedLearnings = useMemo(() => {
     const seen = new Set(liveLearnings.map((l) => l.id));
-    return [...liveLearnings, ...learnings.filter((l) => !seen.has(l.id))];
-  }, [liveLearnings, learnings]);
+    return [...liveLearnings, ...learnings.filter((l) => !seen.has(l.id))].filter((l) => !hiddenLearningIds.has(l.id));
+  }, [liveLearnings, learnings, hiddenLearningIds]);
 
   const submitComment = async (id: string) => {
     const text = (drafts[id] ?? "").trim();
@@ -114,10 +115,20 @@ export function SelfHealing({
   };
 
   const deleteLearning = async (id: string) => {
+    // Optimistically hide it — the list renders `mergedLearnings`, which is
+    // dominated by `liveLearnings` (WS-fed, a prop we can't mutate), so filtering
+    // local `learnings` alone would leave the item on screen.
+    setHiddenLearningIds((prev) => new Set(prev).add(id));
     try {
       await api.deleteSelfHealingLearning(id);
       setLearnings((prev) => prev.filter((l) => l.id !== id));
     } catch (e) {
+      // Roll the hide back so the failed item reappears.
+      setHiddenLearningIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
       alert(`Delete failed: ${e instanceof Error ? e.message : e}`);
     }
   };

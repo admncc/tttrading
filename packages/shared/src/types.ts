@@ -735,6 +735,7 @@ export type WsEvent =
   | { type: "prices"; prices: Record<string, number> }
   | { type: "heal"; entry: SelfHealingEntry }
   | { type: "healLearning"; learning: SelfHealingLearning }
+  | { type: "healLearningDeleted"; id: string }
   | { type: "secondOpinion"; secondOpinion: SecondOpinion };
 
 /** Payload to create/update a group from the desk. */
