@@ -52,7 +52,7 @@ function symbolAllowed(group: Group, symbol: string): boolean {
 
 /* --------------------------- Self-Healing auto-repair --------------------------- */
 
-/** A blocked action is only auto-repaired above this reviewer confidence. */
+/** A blocked action is only auto-repaired at or above this reviewer confidence. */
 const AUTO_REPAIR_MIN_CONF = 0.75;
 
 /** Whether a rejected action should trigger auto-repair (both toggles on + conf). */
@@ -60,7 +60,7 @@ function shouldAutoRepair(veto: { confidence: number; repair?: RepairAction | nu
   return (
     settingsRepo.getSelfHealingVetoFlow() &&
     settingsRepo.getSelfHealingAutoRepair() &&
-    veto.confidence > AUTO_REPAIR_MIN_CONF &&
+    veto.confidence >= AUTO_REPAIR_MIN_CONF &&
     !!veto.repair &&
     veto.repair.kind !== "skip"
   );
