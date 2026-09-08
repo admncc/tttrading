@@ -172,6 +172,20 @@ export function SelfHealing({
 
   const toggleAutoRepair = async () => {
     const next = !autoRepair;
+    if (next && !vetoFlow) {
+      alert("Turn on Veto flow first — auto-repair only acts on an action the veto blocked.");
+      return;
+    }
+    if (
+      next &&
+      !confirm(
+        "Enable AUTO-REPAIR?\n\nWhen the veto blocks an action AND the reviewer is >88% confident, the " +
+          "reviewer's corrected action is applied AUTOMATICALLY — including moving stops, booking/closing, " +
+          "and OPENING or CLOSING whole positions on real money. Continue?",
+      )
+    ) {
+      return;
+    }
     setAutoRepair(next);
     await save({ selfHealingAutoRepair: next });
   };
@@ -193,6 +207,12 @@ export function SelfHealing({
       return;
     }
     setVetoFlow(next);
+    // Auto-repair requires veto — turning veto off also turns auto-repair off.
+    if (!next && autoRepair) {
+      setAutoRepair(false);
+      await save({ selfHealingVetoFlow: next, selfHealingAutoRepair: false });
+      return;
+    }
     await save({ selfHealingVetoFlow: next });
   };
 
@@ -214,6 +234,7 @@ export function SelfHealing({
           {vetoFlow && (
             <div className="actions">
               <span className="tag error">veto active</span>
+              {autoRepair && <span className="tag brand">auto-repair active</span>}
               <span className="tag warn plain">fail-open</span>
             </div>
           )}
@@ -292,17 +313,21 @@ export function SelfHealing({
 
             <div>
               <span
-                className={`switch${autoRepair ? " on" : ""}${saving ? " disabled" : ""}`}
+                className={`switch danger${autoRepair ? " on" : ""}${saving || !vetoFlow ? " disabled" : ""}`}
                 role="switch"
                 aria-checked={autoRepair}
+                title={vetoFlow ? undefined : "Requires Veto flow on"}
                 onClick={() => {
-                  if (!saving) void toggleAutoRepair();
+                  if (!saving && (vetoFlow || autoRepair)) void toggleAutoRepair();
                 }}
               >
                 <span className="track" />
                 <span className="sw-text">
                   <span>Auto-repair</span>
-                  <span className="hint">inert for now — stored, but the reviewer never acts on it</span>
+                  <span className="hint">
+                    requires veto · applies the reviewer's fix on a blocked action when &gt;88% confident
+                    (incl. opening/closing positions)
+                  </span>
                 </span>
               </span>
             </div>
@@ -434,7 +459,11 @@ export function SelfHealing({
                       >
                         <span className="vbar" />
                         <span>
-                          {isVeto ? (
+                          {h.phase === "repair" ? (
+                            <span className={`tag ${h.verdict === "error" ? "error" : "brand"} plain`}>
+                              🔧 auto-repair{h.verdict === "error" ? " · failed" : ""}
+                            </span>
+                          ) : isVeto ? (
                             h.decision === "reject" ? (
                               <span className="tag error plain">⛔ veto · blocked</span>
                             ) : (

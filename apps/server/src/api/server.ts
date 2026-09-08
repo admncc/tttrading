@@ -345,13 +345,24 @@ export async function buildServer() {
       log.info(`Self-Healing review ${d.selfHealingEnabled ? "ENABLED" : "disabled"}.`);
     }
     if (d.selfHealingModel !== undefined) settingsRepo.setSelfHealingModel(d.selfHealingModel);
-    if (d.selfHealingAutoRepair !== undefined) {
-      settingsRepo.setSelfHealingAutoRepair(d.selfHealingAutoRepair);
-      log.warn(`Self-Healing auto-repair ${d.selfHealingAutoRepair ? "ENABLED (inert — no auto-repair wired yet)" : "disabled"}.`);
-    }
+    // Veto first: auto-repair depends on it. Turning veto OFF also forces
+    // auto-repair OFF (auto-repair only acts on a blocked action).
     if (d.selfHealingVetoFlow !== undefined) {
       settingsRepo.setSelfHealingVetoFlow(d.selfHealingVetoFlow);
+      if (!d.selfHealingVetoFlow && settingsRepo.getSelfHealingAutoRepair()) {
+        settingsRepo.setSelfHealingAutoRepair(false);
+      }
       log.warn(`Self-Healing VETO FLOW ${d.selfHealingVetoFlow ? "ENABLED — the reviewer now gates actions before execution" : "disabled"}.`);
+    }
+    if (d.selfHealingAutoRepair !== undefined) {
+      // Auto-repair requires veto flow on — ignore an enable when veto is off.
+      const vetoOn = d.selfHealingVetoFlow ?? settingsRepo.getSelfHealingVetoFlow();
+      const on = d.selfHealingAutoRepair && vetoOn;
+      settingsRepo.setSelfHealingAutoRepair(on);
+      log.warn(
+        `Self-Healing AUTO-REPAIR ${on ? "ENABLED — reviewer fixes above 88% confidence are applied automatically" : "disabled"}` +
+          `${d.selfHealingAutoRepair && !on ? " (ignored: requires veto flow on)" : ""}.`,
+      );
     }
     if (d.parseMode !== undefined) settingsRepo.setParseMode(d.parseMode);
     if (d.anthropicKey !== undefined) {

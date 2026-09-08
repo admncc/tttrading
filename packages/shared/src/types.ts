@@ -675,8 +675,10 @@ export interface SelfHealingEntry {
    * "review" = a post-hoc analysis of a message ALREADY handled (default).
    * "veto"   = a PRE-execution decision: the reviewer was asked to approve the
    *            derived action before it ran (veto flow). See `decision`.
+   * "repair" = a blocked action that auto-repair then corrected/replaced with the
+   *            reviewer's structured fix (requires veto + auto-repair on, high conf).
    */
-  phase?: "review" | "veto";
+  phase?: "review" | "veto" | "repair";
   /** For a veto-phase entry: whether the reviewer approved the action or blocked it. */
   decision?: "approve" | "reject";
   /** The reviewer's overall judgement of how the message was handled. */

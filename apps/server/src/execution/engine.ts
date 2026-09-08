@@ -12,7 +12,7 @@ import type { ExchangeConnector } from "../exchanges/types.js";
 import { NOTIONAL_MAX_OFF, notionalOffFraction } from "../exchanges/pricing.js";
 import { parseSignal } from "../signals/parser.js";
 import { readManagementLevels, reconsiderManagement, llmReady, type SignalImage, type PerSymbolAction } from "../signals/llm.js";
-import { reviewHandled, vetoGate } from "../signals/selfheal.js";
+import { reviewHandled, vetoGate, recordRepair, type RepairAction } from "../signals/selfheal.js";
 import { classifyManagementAll, isTradeUpdate, isMarketCommentary, type ManagementAction } from "../signals/management.js";
 import { expandTakeProfits } from "../signals/takeprofit.js";
 import { assessRisk, tierSlippage, isNoCrossError, ENTRY_RETRY_SLIPPAGE, PROTECTIVE_SLIPPAGE } from "../risk/score.js";
@@ -48,6 +48,143 @@ function symbolAllowed(group: Group, symbol: string): boolean {
   const allow = group.settings.allowedSymbols;
   if (!allow || allow.length === 0) return true;
   return allow.map((s) => s.toUpperCase()).includes(symbol.toUpperCase());
+}
+
+/* --------------------------- Self-Healing auto-repair --------------------------- */
+
+/** A blocked action is only auto-repaired above this reviewer confidence. */
+const AUTO_REPAIR_MIN_CONF = 0.88;
+
+/** Whether a rejected action should trigger auto-repair (both toggles on + conf). */
+function shouldAutoRepair(veto: { confidence: number; repair?: RepairAction | null }): boolean {
+  return (
+    settingsRepo.getSelfHealingVetoFlow() &&
+    settingsRepo.getSelfHealingAutoRepair() &&
+    veto.confidence > AUTO_REPAIR_MIN_CONF &&
+    !!veto.repair &&
+    veto.repair.kind !== "skip"
+  );
+}
+
+/** Canonical symbol a repair targets ("" for skip). */
+function repairSymbol(r: RepairAction): string {
+  return r.kind === "skip" ? "" : canonicalSymbol(r.symbol);
+}
+
+function describeRepair(r: RepairAction): string {
+  switch (r.kind) {
+    case "skip": return "skip (do nothing)";
+    case "move_sl": return `move SL ${r.symbol}→${r.price}`;
+    case "breakeven": return `SL→breakeven ${r.symbol}`;
+    case "book_partial": return `book ${Math.round(r.fraction * 100)}% ${r.symbol}`;
+    case "close": return `close ${r.fraction && r.fraction < 1 ? Math.round(r.fraction * 100) + "% " : ""}${r.symbol}`;
+    case "cancel_limit": return `cancel ${r.symbol} limit`;
+    case "open": return `open ${r.side} ${r.symbol}`;
+  }
+}
+
+/**
+ * Execute a reviewer-authored corrective action (auto-repair). Every field was
+ * already validated by coerceRepair; here we additionally route through the SAME
+ * execution guards as normal handling (protective-side/plausibility for stops,
+ * partialClose/closeTrade truthfulness, and the full entry pipeline — sizing
+ * sanity, notional, anti-netting, collateral, liveMaxOrderUsd — for opens).
+ * Returns whether it actually acted + a human note.
+ */
+async function applyRepair(group: Group, repair: RepairAction, rawText: string): Promise<{ applied: boolean; note: string }> {
+  const sym = repair.kind === "skip" ? "" : canonicalSymbol(repair.symbol);
+  const openG = tradesRepo.open().filter((t) => t.groupId === group.id && !t.shadow);
+  const workG = tradesRepo.working().filter((t) => t.groupId === group.id && !t.shadow);
+  const openSym = openG.filter((t) => t.symbol.toUpperCase() === sym);
+  const workSym = workG.filter((t) => t.symbol.toUpperCase() === sym);
+
+  switch (repair.kind) {
+    case "skip":
+      return { applied: true, note: "skipped (no action)" };
+
+    case "cancel_limit": {
+      if (!workSym.length) return { applied: false, note: `no ${sym} working order` };
+      for (const w of workSym) await cancelWorkingTrade(w.id, "auto-repair");
+      return { applied: true, note: `canceled ${workSym.length} ${sym} working order(s)` };
+    }
+
+    case "breakeven": {
+      if (!openSym.length) return { applied: false, note: `no open ${sym} position` };
+      let ok = false;
+      for (const t of openSym) if (await moveStop(t, t.entryPrice, true)) ok = true;
+      return { applied: ok, note: ok ? `SL→breakeven ${sym}` : `breakeven not applied (${sym})` };
+    }
+
+    case "move_sl": {
+      const targets = [...openSym, ...workSym];
+      if (!targets.length) return { applied: false, note: `no ${sym} position` };
+      let ok = false;
+      for (const t of targets) {
+        let price = t.entryPrice;
+        try {
+          const mid = await connectorFor(t).getMidPrice(t.symbol);
+          if (mid && mid > 0) price = mid;
+        } catch { /* use entry as reference */ }
+        const plausible = repair.price >= price * 0.5 && repair.price <= price * 1.5;
+        const rightSide = t.side === "long" ? repair.price < price : repair.price > price;
+        if (!plausible || !rightSide) {
+          return { applied: false, note: `SL ${repair.price} rejected (${!plausible ? "implausible" : "wrong side"}) for ${sym}` };
+        }
+        if (await moveStop(t, repair.price, false)) ok = true;
+      }
+      return { applied: ok, note: ok ? `SL→${repair.price} ${sym}` : `SL move not applied (${sym})` };
+    }
+
+    case "book_partial": {
+      if (!openSym.length) return { applied: false, note: `no open ${sym} position` };
+      let ok = false;
+      for (const t of openSym) if (await partialClose(t, repair.fraction)) ok = true;
+      return { applied: ok, note: ok ? `booked ${Math.round(repair.fraction * 100)}% ${sym}` : `partial not booked (${sym})` };
+    }
+
+    case "close": {
+      if (!openSym.length) return { applied: false, note: `no open ${sym} position` };
+      const frac = repair.fraction ?? 1;
+      let ok = false;
+      for (const t of openSym) {
+        if (frac >= 1) { await closeTrade(t.id); ok = true; }
+        else if (await partialClose(t, frac)) ok = true;
+      }
+      return { applied: ok, note: ok ? `closed ${frac < 1 ? Math.round(frac * 100) + "% " : ""}${sym}` : `close not applied (${sym})` };
+    }
+
+    case "open": {
+      const parsed: ParsedSignal = {
+        symbol: sym,
+        side: repair.side,
+        entry: repair.entry,
+        stopLoss: repair.stopLoss,
+        takeProfits: repair.takeProfits,
+        leverageHint: repair.leverage,
+        confidence: 1,
+        source: "manual",
+      };
+      const risk = assessRisk(
+        parsed,
+        tradesRepo.forGroup(group.id).filter((t) => !t.archived),
+        tradesRepo.closed(3000),
+      );
+      const signal = signalsRepo.create({
+        groupId: group.id,
+        groupName: group.name,
+        rawText: `[auto-repair] ${rawText}`.slice(0, 2000),
+        status: "executing",
+        parsed,
+        risk,
+      });
+      broadcast({ type: "signal", signal });
+      // skipVeto=true: the repair itself is the reviewer's decision — don't re-veto
+      // it (which would loop).
+      const res = await execute(signal, group, parsed, risk, true);
+      const applied = res.status === "executed";
+      return { applied, note: applied ? `opened ${repair.side} ${sym}` : `open failed (${res.error ?? res.status})` };
+    }
+  }
 }
 
 /**
@@ -1196,36 +1333,43 @@ async function applyManagement(
   // Don't let messages manage positions of a channel the operator disabled.
   if (!group.enabled) return null;
 
-  // Veto flow (final decision gate): with veto flow ON, submit the derived
-  // management action(s) to the independent reviewer before touching any
-  // position. A reject blocks ALL management for this message. Pass-through when
-  // veto flow is off; fail-open on error.
-  {
-    const summary = actions
-      .map((a) => `${a.kind}${a.symbol ? ` ${a.symbol}` : ""}${a.newStop !== undefined ? ` SL→${a.newStop}` : ""}${a.fraction !== undefined ? ` ${Math.round(a.fraction * 100)}%` : ""}`)
-      .join("; ");
-    const veto = await vetoGate({
-      kind: "management",
-      group,
-      rawText,
-      actionSummary: summary || "(no actions)",
-    });
-    if (!veto.approved) {
-      event(
-        "manage",
-        `VETOED management (${actions.map((a) => a.kind).join(", ")}): ${veto.reason}`,
-        { reason: veto.reason, alternative: veto.alternative },
-        { level: "warn", groupId: group.id },
-      );
-      return null;
-    }
-  }
-
   const results: string[] = [];
   let acted = false;
   const actedSymbols = new Set<string>();
 
   for (const action of actions) {
+    // Veto flow (final decision gate), PER ACTION: with veto flow ON, submit this
+    // one derived action to the reviewer before it runs. A reject blocks just this
+    // action; with auto-repair on + high confidence, the reviewer's corrected
+    // action is applied instead. vetoGate is a no-op pass-through when veto is off.
+    {
+      const summary =
+        `${action.kind}${action.symbol ? ` ${action.symbol}` : ""}` +
+        `${action.newStop !== undefined ? ` SL→${action.newStop}` : ""}` +
+        `${action.fraction !== undefined ? ` ${Math.round(action.fraction * 100)}%` : ""}`;
+      const veto = await vetoGate({ kind: "management", group, rawText, actionSummary: summary });
+      if (!veto.approved) {
+        if (shouldAutoRepair(veto) && veto.repair) {
+          const r = await applyRepair(group, veto.repair, rawText);
+          recordRepair({
+            group, kind: "management", summary: `${summary} → ${describeRepair(veto.repair)}`,
+            detail: r.note, applied: r.applied, model: settingsRepo.getSelfHealingModel(), confidence: veto.confidence,
+          });
+          results.push(`auto-repair: ${r.note}`);
+          if (r.applied) {
+            acted = true;
+            const rs = repairSymbol(veto.repair);
+            if (rs) actedSymbols.add(rs);
+          }
+        } else {
+          results.push(`vetoed ${summary.trim()}: ${veto.reason}`);
+          event("manage", `VETOED ${action.kind}${action.symbol ? ` ${action.symbol}` : ""}: ${veto.reason}`,
+            { reason: veto.reason }, { level: "warn", groupId: group.id });
+        }
+        continue; // the original derived action does not run
+      }
+    }
+
     // Re-read state per action — an earlier action (e.g. cancel_limit) may have
     // changed what's open/working.
     const openForGroup = tradesRepo.open().filter((t) => t.groupId === group.id && !t.shadow);
@@ -1793,6 +1937,7 @@ async function execute(
   group: Group,
   parsed: ParsedSignal,
   risk?: RiskRating,
+  skipVeto = false,
 ): Promise<Signal> {
   // Symbol cooldown: skip a same-symbol+side entry too soon after the last one.
   const cd = group.settings.symbolCooldownMinutes ?? 0;
@@ -1964,8 +2109,10 @@ async function execute(
 
   // Veto flow (final decision gate): with veto flow ON, submit the fully-derived
   // entry to the independent reviewer before placing any order. A reject blocks
-  // the entry entirely. Pass-through when veto flow is off; fail-open on error.
-  {
+  // the entry; with auto-repair on + high confidence, the reviewer's corrected
+  // action is applied instead. Pass-through when off; fail-open on error. Skipped
+  // for a repair-originated entry (skipVeto) so it can't re-veto itself in a loop.
+  if (!skipVeto) {
     const entryDesc =
       `OPEN ${parsed.side.toUpperCase()} ${parsed.symbol} on ${ex.name}` +
       (parsed.entry !== undefined ? ` @ ${parsed.entry}` : " @ market") +
@@ -1982,6 +2129,20 @@ async function execute(
       signalId: signal.id,
     });
     if (!veto.approved) {
+      // Auto-repair: apply the reviewer's corrected action instead of the entry.
+      if (shouldAutoRepair(veto) && veto.repair) {
+        const r = await applyRepair(group, veto.repair, signal.rawText);
+        recordRepair({
+          group, kind: "entry", summary: describeRepair(veto.repair), detail: r.note, applied: r.applied,
+          model: settingsRepo.getSelfHealingModel(), signalId: signal.id, confidence: veto.confidence,
+        });
+        const rejected = signalsRepo.update(signal.id, {
+          status: "rejected",
+          error: `veto: ${veto.reason} → auto-repair: ${r.note}`,
+        })!;
+        broadcast({ type: "signal", signal: rejected });
+        return rejected;
+      }
       const reason = `veto: ${veto.reason}${veto.alternative ? ` — instead: ${veto.alternative}` : ""}`;
       const rejected = signalsRepo.update(signal.id, { status: "rejected", error: reason })!;
       event(

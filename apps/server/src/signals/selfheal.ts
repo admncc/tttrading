@@ -304,8 +304,19 @@ about to CLOSE/BOOK/modify a position from it — a recap is information, not a 
 Approve genuine, correctly-interpreted trade instructions. Be decisive but conservative: when the derived action faithfully matches a \
 real instruction, APPROVE. Reserve REJECT for a clear, consequential mismatch. Apply your LEARNINGS.
 
-Respond with ONLY a JSON object — no prose, no markdown fence — of exactly this shape:
-{"decision":"approve"|"reject","confidence":0.0-1.0,"reason":"one concise line justifying the decision","alternative":"if rejecting, what the bot SHOULD do instead (e.g. 'treat as info, do nothing'); empty string when approving"}`;
+You are judging ONE derived action. When you REJECT it, also return a structured "repair" — the corrected action the bot SHOULD execute instead (or {"kind":"skip"} if it should do nothing). When you APPROVE, set "repair" to null.
+
+Respond with ONLY a JSON object — no prose, no markdown fence — of this shape:
+{"decision":"approve"|"reject","confidence":0.0-1.0,"reason":"one concise line","alternative":"human-readable fix or empty","repair": null | one of:
+  {"kind":"skip"}
+  {"kind":"move_sl","symbol":"APT","price":0.61}
+  {"kind":"breakeven","symbol":"APT"}
+  {"kind":"book_partial","symbol":"APT","fraction":0.25}
+  {"kind":"close","symbol":"APT","fraction":1}
+  {"kind":"cancel_limit","symbol":"APT"}
+  {"kind":"open","symbol":"APT","side":"long","entry":0.60,"stopLoss":0.55,"takeProfits":[0.70],"leverage":5}}
+
+Rules for "repair": use the SAME symbol the action concerns; prices/fractions must be real numbers (fraction 0-1); "open"/"close" are allowed when that is genuinely the right correction; use "skip" when the derived action should simply not run (e.g. a recap wrongly turned into a close). A high "confidence" (>0.88) is required before the bot will auto-apply the repair, so only be that confident when you are sure.`;
 
 /** A derived action awaiting the veto gate's approval before execution. */
 export interface VetoPlan {
@@ -318,10 +329,84 @@ export interface VetoPlan {
   tradeId?: string;
 }
 
+/**
+ * A structured corrective action the reviewer returns when it REJECTS a derived
+ * action — applied by the engine's auto-repair (only when veto flow + auto-repair
+ * are on and confidence > the threshold). The engine re-validates every field and
+ * routes through the normal execution guards before anything runs.
+ */
+export type RepairAction =
+  | { kind: "skip" }
+  | { kind: "move_sl"; symbol: string; price: number }
+  | { kind: "breakeven"; symbol: string }
+  | { kind: "book_partial"; symbol: string; fraction: number }
+  | { kind: "close"; symbol: string; fraction?: number }
+  | { kind: "cancel_limit"; symbol: string }
+  | {
+      kind: "open";
+      symbol: string;
+      side: "long" | "short";
+      entry?: number;
+      stopLoss?: number;
+      takeProfits?: number[];
+      leverage?: number;
+    };
+
+/** Validate/narrow the reviewer's raw repair object — never trust it blindly. */
+export function coerceRepair(x: unknown): RepairAction | null {
+  if (!x || typeof x !== "object") return null;
+  const o = x as Record<string, unknown>;
+  const sym = typeof o.symbol === "string" ? o.symbol.toUpperCase().trim() : "";
+  const num = (v: unknown): number | undefined =>
+    typeof v === "number" && Number.isFinite(v) ? v : undefined;
+  switch (o.kind) {
+    case "skip":
+      return { kind: "skip" };
+    case "move_sl": {
+      const p = num(o.price);
+      return sym && p !== undefined && p > 0 ? { kind: "move_sl", symbol: sym, price: p } : null;
+    }
+    case "breakeven":
+      return sym ? { kind: "breakeven", symbol: sym } : null;
+    case "book_partial": {
+      const f = num(o.fraction);
+      return sym && f !== undefined && f > 0 && f <= 1 ? { kind: "book_partial", symbol: sym, fraction: f } : null;
+    }
+    case "close": {
+      const f = num(o.fraction);
+      return sym ? { kind: "close", symbol: sym, fraction: f !== undefined && f > 0 && f <= 1 ? f : 1 } : null;
+    }
+    case "cancel_limit":
+      return sym ? { kind: "cancel_limit", symbol: sym } : null;
+    case "open": {
+      const side = o.side === "long" || o.side === "short" ? o.side : null;
+      if (!sym || !side) return null;
+      const tps = Array.isArray(o.takeProfits)
+        ? (o.takeProfits.filter((t) => typeof t === "number" && Number.isFinite(t) && t > 0) as number[])
+        : undefined;
+      return {
+        kind: "open",
+        symbol: sym,
+        side,
+        entry: num(o.entry),
+        stopLoss: num(o.stopLoss),
+        takeProfits: tps && tps.length ? tps : undefined,
+        leverage: num(o.leverage),
+      };
+    }
+    default:
+      return null;
+  }
+}
+
 export interface VetoDecision {
   approved: boolean;
   reason: string;
   alternative?: string;
+  /** 0..1 confidence in the decision (gates auto-repair). */
+  confidence: number;
+  /** Structured correction to apply when rejected (auto-repair). Null when approved. */
+  repair?: RepairAction | null;
 }
 
 /**
@@ -333,11 +418,11 @@ export interface VetoDecision {
  */
 export async function vetoGate(plan: VetoPlan): Promise<VetoDecision> {
   if (!settings.getSelfHealingEnabled() || !settings.getSelfHealingVetoFlow()) {
-    return { approved: true, reason: "veto flow off" };
+    return { approved: true, reason: "veto flow off", confidence: 0, repair: null };
   }
   if (!effectiveKey()) {
     log.warn("Veto flow is on but no LLM key is set — approving by default (fail-open).");
-    return { approved: true, reason: "no LLM key — fail-open" };
+    return { approved: true, reason: "no LLM key — fail-open", confidence: 0, repair: null };
   }
 
   const model = settings.getSelfHealingModel();
@@ -403,21 +488,60 @@ export async function vetoGate(plan: VetoPlan): Promise<VetoDecision> {
       confidence?: number;
       reason?: string;
       alternative?: string;
+      repair?: unknown;
     } | null;
     if (!input) {
       log.warn("Veto flow: could not parse a JSON decision — approving (fail-open).");
-      return { approved: true, reason: "unparseable decision — fail-open" };
+      return { approved: true, reason: "unparseable decision — fail-open", confidence: 0, repair: null };
     }
     const reject = input.decision === "reject";
     const reason = (input.reason ?? "").slice(0, 400) || (reject ? "blocked by reviewer" : "approved");
     const alternative = (input.alternative ?? "").slice(0, 1000);
     const confidence = typeof input.confidence === "number" ? input.confidence : 0;
+    const repair = reject ? coerceRepair(input.repair) : null;
     record(reject ? "reject" : "approve", reason, alternative, confidence);
-    return { approved: !reject, reason, alternative };
+    return { approved: !reject, reason, alternative, confidence, repair };
   } catch (err) {
     log.warn("Veto flow reviewer failed — approving (fail-open):", err instanceof Error ? err.message : err);
-    return { approved: true, reason: "reviewer unavailable — fail-open" };
+    return { approved: true, reason: "reviewer unavailable — fail-open", confidence: 0, repair: null };
   }
+}
+
+/** Record (+ broadcast + alert) that auto-repair applied a corrective action. */
+export function recordRepair(opts: {
+  group: Group;
+  kind: "entry" | "management";
+  summary: string;
+  detail?: string;
+  applied: boolean;
+  model?: string;
+  signalId?: string;
+  tradeId?: string;
+  confidence?: number;
+}): void {
+  const entry: SelfHealingEntry = {
+    id: nanoid(),
+    ts: new Date().toISOString(),
+    phase: "repair",
+    decision: "reject",
+    verdict: opts.applied ? "warn" : "error",
+    confidence: opts.confidence ?? 0,
+    summary: `${opts.applied ? "Auto-repaired" : "Auto-repair FAILED"} ${opts.kind}: ${opts.summary}`.slice(0, 500),
+    suggestion: (opts.detail ?? "").slice(0, 1000),
+    model: opts.model ?? "",
+    groupId: opts.group.id,
+    groupName: opts.group.name,
+    signalId: opts.signalId,
+    tradeId: opts.tradeId,
+  };
+  healRepo.create(entry);
+  broadcast({ type: "heal", entry });
+  event(
+    "selfheal",
+    `Auto-repair ${opts.applied ? "applied" : "FAILED"} (${opts.kind}): ${opts.summary}`,
+    { detail: opts.detail, confidence: opts.confidence },
+    { level: "warn", groupId: opts.group.id, signalId: opts.signalId },
+  );
 }
 
 /**
