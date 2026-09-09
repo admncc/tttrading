@@ -36,3 +36,29 @@ describe("management classification — TP booked → default-fraction partial (
     assert.ok(partial("just booked TP1 on this one"));
   });
 });
+
+describe("management classification — 'book X% and move SL to (the) entry/BE' pairs breakeven", () => {
+  it("GRASS: 'Book 20% profit and move Stop-loss to the entry' → partial 20% + alsoBreakeven (the 'to THE entry' miss)", () => {
+    const t =
+      "#GRASS Trade Update 🔥 hitting a 7.68% gain almost hitting the first Tp — simply Book 20% profit and move Stop-loss to the entry";
+    const p = partial(t);
+    assert.ok(p, "expected a partial_close");
+    assert.equal(p!.fraction, 0.2);
+    assert.equal(p!.alsoBreakeven, true, "the paired 'move SL to the entry' must set alsoBreakeven");
+  });
+  it("without the article: 'book 30% and move SL to entry' → partial + alsoBreakeven", () => {
+    const p = partial("book 30% here and move SL to entry");
+    assert.ok(p);
+    assert.equal(p!.alsoBreakeven, true);
+  });
+  it("'book 25% and move stop to breakeven' → partial + alsoBreakeven", () => {
+    const p = partial("book 25% and move stop to breakeven");
+    assert.ok(p);
+    assert.equal(p!.alsoBreakeven, true);
+  });
+  it("a bare partial with NO breakeven instruction → alsoBreakeven stays false", () => {
+    const p = partial("book 20% profit here, letting the rest run");
+    assert.ok(p);
+    assert.ok(!p!.alsoBreakeven);
+  });
+});

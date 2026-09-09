@@ -12,7 +12,7 @@ import type { ExchangeConnector } from "../exchanges/types.js";
 import { NOTIONAL_MAX_OFF, notionalOffFraction } from "../exchanges/pricing.js";
 import { parseSignal } from "../signals/parser.js";
 import { readManagementLevels, reconsiderManagement, llmReady, type SignalImage, type PerSymbolAction } from "../signals/llm.js";
-import { reviewHandled, vetoGate, recordRepair, type RepairAction } from "../signals/selfheal.js";
+import { reviewHandled, vetoGate, recordRepair, findMissingActions, type RepairAction } from "../signals/selfheal.js";
 import { classifyManagementAll, isTradeUpdate, isMarketCommentary, type ManagementAction } from "../signals/management.js";
 import { expandTakeProfits } from "../signals/takeprofit.js";
 import { assessRisk, tierSlippage, isNoCrossError, ENTRY_RETRY_SLIPPAGE, PROTECTIVE_SLIPPAGE } from "../risk/score.js";
@@ -675,8 +675,16 @@ async function handleIncomingInner(group: Group, rawText: string, images?: Signa
               for (const a of actions) if (!a.symbol) a.symbol = mv.symbol;
               if (mv.newStop !== undefined && !kinds.has("sl_move"))
                 extra.push({ kind: "sl_move", symbol: mv.symbol, newStop: mv.newStop, note: `chart: SL to ${mv.newStop}` });
-              if (mv.breakeven && !kinds.has("sl_breakeven") && !kinds.has("partial_close"))
-                extra.push({ kind: "sl_breakeven", symbol: mv.symbol, note: "chart: SL to break-even" });
+              if (mv.breakeven && !kinds.has("sl_breakeven")) {
+                if (kinds.has("partial_close")) {
+                  // "book X% AND move SL to break-even" in one message: ride the
+                  // break-even ALONG with the partial(s) instead of dropping it
+                  // (the GRASS "book 20% and move SL to the entry" miss).
+                  for (const a of actions) if (a.kind === "partial_close") a.alsoBreakeven = true;
+                } else {
+                  extra.push({ kind: "sl_breakeven", symbol: mv.symbol, note: "chart: SL to break-even" });
+                }
+              }
               if (mv.partialPercent !== undefined && mv.partialPercent > 0 && mv.partialPercent < 100 && !kinds.has("partial_close"))
                 extra.push({ kind: "partial_close", symbol: mv.symbol, fraction: mv.partialPercent / 100, note: `chart: book ${mv.partialPercent}%` });
             }
@@ -1603,6 +1611,44 @@ async function applyManagement(
     // acted — otherwise the "not booked" line above would sit next to a
     // contradictory "done → SYMBOL" note in the same managed-signal summary.
     if (anyActed) results.push(`${action.note} → ${targets.map((t) => t.symbol).join(", ")}`);
+  }
+
+  // Completeness gate (auto-ADD): after handling, ask the reviewer whether the
+  // message EXPLICITLY instructed an action the bot never derived — the classic
+  // miss being the SECOND of two imperatives ("book 20% AND move SL to breakeven",
+  // where only the partial fired). Distinct from the per-action veto, which can
+  // only replace a BLOCKED action; this ADDS a missing one. Gated on veto flow +
+  // auto-repair on and the same confidence floor; each added action routes through
+  // applyRepair's normal execution guards. Never breaks the management path.
+  if (settingsRepo.getSelfHealingVetoFlow() && settingsRepo.getSelfHealingAutoRepair() && actions.length) {
+    try {
+      const held = [...new Set(
+        [...tradesRepo.open(), ...tradesRepo.working()]
+          .filter((t) => t.groupId === group.id && !t.shadow)
+          .map((t) => t.symbol.toUpperCase()),
+      )];
+      const gate = await findMissingActions({ group, rawText, takenSummary: results.join(" | "), heldSymbols: held });
+      if (gate.confidence >= AUTO_REPAIR_MIN_CONF && gate.missing.length) {
+        for (const m of gate.missing) {
+          const sym = repairSymbol(m);
+          // Never double-reduce a symbol this message already booked/closed.
+          const reduces = m.kind === "book_partial" || m.kind === "close";
+          if (reduces && sym && actedSymbols.has(sym)) continue;
+          const r = await applyRepair(group, m, rawText);
+          recordRepair({
+            group, kind: "management", mode: "add",
+            summary: `${describeRepair(m)} (message also instructed this)`,
+            detail: r.note, applied: r.applied, noop: r.noop,
+            model: settingsRepo.getSelfHealingModel(), confidence: gate.confidence,
+          });
+          if (r.applied) {
+            acted = true;
+            if (sym) actedSymbols.add(sym);
+            results.push(`auto-added: ${r.note}`);
+          }
+        }
+      }
+    } catch { /* the completeness gate must never break the management path */ }
   }
 
   // Remember the coin this message managed, for a symbol-less follow-up to inherit

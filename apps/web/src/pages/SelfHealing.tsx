@@ -472,7 +472,8 @@ export function SelfHealing({
                         <span>
                           {h.phase === "repair" ? (
                             <span className={`tag ${h.verdict === "error" ? "error" : "brand"} plain`}>
-                              🔧 auto-repair{h.verdict === "error" ? " · failed" : ""}
+                              {h.summary?.startsWith("Auto-add") ? "➕ auto-added" : "🔧 auto-repair"}
+                              {h.verdict === "error" ? " · failed" : h.verdict === "skipped" ? " · no-op" : ""}
                             </span>
                           ) : isVeto ? (
                             h.decision === "reject" ? (

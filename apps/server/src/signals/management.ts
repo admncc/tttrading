@@ -60,11 +60,13 @@ const RE_CANCEL_WORD = /\bcancel(?:led|ed|ing)?\b/i;
 // NB: the second branch's target list must NOT include a lowercase "be" — the
 // everyday phrase "going to be" would satisfy it and false-fire a break-even.
 // The bare "to BE" abbreviation is handled case-sensitively by RE_BE_ABBR.
+// The target may carry an article ("to THE entry") — allow an optional "the" so
+// "move Stop-loss to the entry" is recognized, not just "to entry".
 const RE_BE =
-  /\b(break\s*even|risk[-\s]?free)\b|\bmov\w+\b[^.\n]{0,40}\b(?:sl|stop|invalidation)\b[^.\n]{0,25}\bto\s+(?:entry|break\s*even)\b/i;
+  /\b(break\s*even|risk[-\s]?free)\b|\bmov\w+\b[^.\n]{0,40}\b(?:sl|stop|invalidation)\b[^.\n]{0,25}\bto\s+(?:the\s+)?(?:entry|break\s*even)\b/i;
 // "move to BE" with the bare abbreviation. Case-SENSITIVE uppercase BE + a move
 // verb, so it won't fire on ordinary prose like "going to be" / "to be honest".
-const RE_BE_ABBR = /\bmov\w+[^.\n]{0,25}\bto\s+BE\b/;
+const RE_BE_ABBR = /\bmov\w+[^.\n]{0,25}\bto\s+(?:the\s+)?BE\b/;
 /** True when the message asks to move the stop to break-even (spelled or "to BE"). */
 function isBreakeven(text: string): boolean {
   return RE_BE.test(text) || RE_BE_ABBR.test(text);
