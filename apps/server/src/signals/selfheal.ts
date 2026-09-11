@@ -679,6 +679,13 @@ export function commentReview(
   const updated = healRepo.addComment(reviewId, text.slice(0, 2000));
   if (!updated) return undefined;
 
+  // Upsert: a re-comment REPLACES this review's prior learning(s) rather than
+  // stacking a second, possibly contradictory one (the operator corrected their
+  // note). Broadcast each removal so every client drops the stale learning.
+  for (const staleId of learnRepo.deleteBySourceReview(reviewId)) {
+    broadcast({ type: "healLearningDeleted", id: staleId });
+  }
+
   // A self-contained learning: the operator's note, tagged with what it was about
   // so a future reviewer understands the context without the original message.
   const ctx = updated.messageExcerpt

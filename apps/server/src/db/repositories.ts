@@ -849,6 +849,18 @@ export const selfHealingLearnings = {
   delete(id: string): void {
     db.prepare("DELETE FROM self_healing_learnings WHERE id = ?").run(id);
   },
+  /**
+   * Remove every learning distilled from ONE review — used to upsert on re-comment
+   * so a corrected comment replaces its stale (possibly contradictory) learning
+   * instead of adding a second one. Returns the deleted ids (to broadcast).
+   */
+  deleteBySourceReview(reviewId: string): string[] {
+    const rows = db
+      .prepare("SELECT id FROM self_healing_learnings WHERE source_review_id = ?")
+      .all(reviewId) as { id: string }[];
+    db.prepare("DELETE FROM self_healing_learnings WHERE source_review_id = ?").run(reviewId);
+    return rows.map((r) => r.id);
+  },
   clear(): void {
     db.prepare("DELETE FROM self_healing_learnings").run();
   },
