@@ -192,6 +192,56 @@ async function applyRepair(
 }
 
 /**
+ * Completeness gate (auto-ADD). Asks the reviewer whether a message EXPLICITLY
+ * instructed a management action the bot never took, and applies any it returns
+ * above the confidence floor through applyRepair's normal execution guards. Two
+ * callers: (1) after applyManagement's action loop — catches the SECOND of two
+ * imperatives ("book 20% AND move SL to BE"); (2) when the LLM vetoes rule-flagged
+ * management as non-actionable — catches "the bot did NOTHING but should have"
+ * (the PENDLE "TP1 booked here" miss). Only runs with veto flow + auto-repair on
+ * and only when the group holds positions. Returns the notes of actions it added;
+ * never throws (a gate failure must never break message handling). `alreadyActed`
+ * is mutated with symbols it reduces, so a reduce is never double-applied.
+ */
+async function runCompletenessGate(
+  group: Group,
+  rawText: string,
+  takenSummary: string,
+  alreadyActed: Set<string>,
+): Promise<string[]> {
+  if (!settingsRepo.getSelfHealingVetoFlow() || !settingsRepo.getSelfHealingAutoRepair()) return [];
+  const added: string[] = [];
+  try {
+    const held = [...new Set(
+      [...tradesRepo.open(), ...tradesRepo.working()]
+        .filter((t) => t.groupId === group.id && !t.shadow)
+        .map((t) => t.symbol.toUpperCase()),
+    )];
+    if (!held.length) return []; // nothing held → nothing to add
+    const gate = await findMissingActions({ group, rawText, takenSummary, heldSymbols: held });
+    if (gate.confidence < AUTO_REPAIR_MIN_CONF || !gate.missing.length) return [];
+    for (const m of gate.missing) {
+      const sym = repairSymbol(m);
+      // Never double-reduce a symbol the message already booked/closed.
+      const reduces = m.kind === "book_partial" || m.kind === "close";
+      if (reduces && sym && alreadyActed.has(sym)) continue;
+      const r = await applyRepair(group, m, rawText);
+      recordRepair({
+        group, kind: "management", mode: "add",
+        summary: `${describeRepair(m)} (message also instructed this)`,
+        detail: r.note, applied: r.applied, noop: r.noop,
+        model: settingsRepo.getSelfHealingModel(), confidence: gate.confidence,
+      });
+      if (r.applied) {
+        if (sym) alreadyActed.add(sym);
+        added.push(r.note);
+      }
+    }
+  } catch { /* the completeness gate must never break message handling */ }
+  return added;
+}
+
+/**
  * Entry point for a raw message from a group. Parses it, applies group rules,
  * and either executes immediately (auto) or queues it for confirmation.
  *
@@ -463,6 +513,7 @@ async function handleIncomingInner(group: Group, rawText: string, images?: Signa
           // no way to represent a cancel, so it used to VETO explicit "cancel this
           // limit" instructions and leave stale orders resting.) Keep those.
           const kept = actions.filter((a) => a.kind === "cancel_limit");
+          const droppedReal = actions.some((a) => a.kind !== "cancel_limit");
           event(
             "message",
             `LLM (priority) rejected rule-based management [${actions.map((a) => a.kind).join(", ")}] as non-actionable` +
@@ -471,6 +522,14 @@ async function handleIncomingInner(group: Group, rawText: string, images?: Signa
             { level: "warn", groupId: group.id },
           );
           actions = kept;
+          // Completeness gate on the DROP: the rules read real management but the
+          // LLM vetoed it to non-actionable — a second, independent check catches
+          // the case where the bot would otherwise do NOTHING yet the message truly
+          // instructed an action (the PENDLE "TP1 booked here" recap miss). Only
+          // fires with veto flow + auto-repair on and when positions are held.
+          if (droppedReal) {
+            await runCompletenessGate(group, rawText, "(nothing — the LLM classified the message as non-actionable)", new Set<string>());
+          }
         }
         if (mv?.isManagement && mv.confidence >= 0.5) {
           const kinds = new Set(actions.map((a) => a.kind));
@@ -1617,38 +1676,11 @@ async function applyManagement(
   // message EXPLICITLY instructed an action the bot never derived — the classic
   // miss being the SECOND of two imperatives ("book 20% AND move SL to breakeven",
   // where only the partial fired). Distinct from the per-action veto, which can
-  // only replace a BLOCKED action; this ADDS a missing one. Gated on veto flow +
-  // auto-repair on and the same confidence floor; each added action routes through
-  // applyRepair's normal execution guards. Never breaks the management path.
-  if (settingsRepo.getSelfHealingVetoFlow() && settingsRepo.getSelfHealingAutoRepair() && actions.length) {
-    try {
-      const held = [...new Set(
-        [...tradesRepo.open(), ...tradesRepo.working()]
-          .filter((t) => t.groupId === group.id && !t.shadow)
-          .map((t) => t.symbol.toUpperCase()),
-      )];
-      const gate = await findMissingActions({ group, rawText, takenSummary: results.join(" | "), heldSymbols: held });
-      if (gate.confidence >= AUTO_REPAIR_MIN_CONF && gate.missing.length) {
-        for (const m of gate.missing) {
-          const sym = repairSymbol(m);
-          // Never double-reduce a symbol this message already booked/closed.
-          const reduces = m.kind === "book_partial" || m.kind === "close";
-          if (reduces && sym && actedSymbols.has(sym)) continue;
-          const r = await applyRepair(group, m, rawText);
-          recordRepair({
-            group, kind: "management", mode: "add",
-            summary: `${describeRepair(m)} (message also instructed this)`,
-            detail: r.note, applied: r.applied, noop: r.noop,
-            model: settingsRepo.getSelfHealingModel(), confidence: gate.confidence,
-          });
-          if (r.applied) {
-            acted = true;
-            if (sym) actedSymbols.add(sym);
-            results.push(`auto-added: ${r.note}`);
-          }
-        }
-      }
-    } catch { /* the completeness gate must never break the management path */ }
+  // only replace a BLOCKED action; this ADDS a missing one.
+  const addedNotes = await runCompletenessGate(group, rawText, results.join(" | "), actedSymbols);
+  for (const note of addedNotes) {
+    acted = true;
+    results.push(`auto-added: ${note}`);
   }
 
   // Remember the coin this message managed, for a symbol-less follow-up to inherit
