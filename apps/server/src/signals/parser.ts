@@ -34,6 +34,7 @@ export async function parseSignal(
   text: string,
   instructions?: string,
   images?: SignalImage[],
+  context?: string,
 ): Promise<ParsedSignal | null> {
   const rx = parseWithRegex(text);
 
@@ -41,7 +42,7 @@ export async function parseSignal(
   // can read the drawn levels), parse with the LLM and keep the rules as a
   // guardrail. Regex alone can't use the image.
   if ((settings.getParseMode() === "llm" || (images && images.length > 0)) && llmReady()) {
-    const llm = await parseWithLlm(text, instructions, images);
+    const llm = await parseWithLlm(text, instructions, images, context);
     crossCheck(rx, llm);
     if (llm && llm.confidence >= LLM_MIN) return llm;
     // LLM declined — fall back to a strong (trusted) regex hit as a guardrail.
@@ -55,7 +56,7 @@ export async function parseSignal(
   if (rx && rx.confidence >= REGEX_TRUST && !instructions?.trim()) return rx;
 
   if (llmReady()) {
-    const llm = await parseWithLlm(text, instructions);
+    const llm = await parseWithLlm(text, instructions, undefined, context);
     crossCheck(rx, llm);
     if (llm && llm.confidence >= LLM_MIN) return llm;
     // The LLM judged this NOT an actionable signal (or low confidence). Trust it

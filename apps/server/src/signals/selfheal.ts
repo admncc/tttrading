@@ -20,7 +20,7 @@ import { log, event } from "../logger.js";
  * (oldest → newest), rawText truncated, with the bot's status per prior message.
  * `excludeSignalId` drops the current message when it is already a stored signal.
  */
-function channelContext(groupId: string, excludeSignalId?: string, n = 3): string {
+function channelContext(groupId: string, excludeSignalId?: string, n = 5): string {
   let rows;
   try {
     rows = signalsRepo.recentForGroup(groupId, n + 3);
@@ -32,11 +32,12 @@ function channelContext(groupId: string, excludeSignalId?: string, n = 3): strin
   const lines = prior.map((s) => {
     const t = (s.receivedAt || "").slice(11, 16);
     const txt = (s.rawText || "").replace(/\s+/g, " ").trim().slice(0, 300);
-    return `[${t} · ${s.status}] ${txt}`;
+    return `[${t} · already ${s.status}] ${txt || "[image / no text]"}`;
   });
   return (
-    `\n\n--- PRECEDING messages in THIS channel (oldest first; CONTEXT ONLY — you still judge the CURRENT ` +
-    `message above, but use these to resolve a message that only makes sense as a follow-up) ---\n${lines.join("\n")}`
+    `\n\n--- PRECEDING messages in THIS channel (oldest first, each tagged with what the bot ALREADY did; ` +
+    `CONTEXT ONLY — you still judge the CURRENT message above; use these to resolve a post that only makes sense ` +
+    `as a follow-up, but NEVER flag as missing/wrong an action a prior message was ALREADY executed/managed for) ---\n${lines.join("\n")}`
   );
 }
 

@@ -255,8 +255,53 @@ export async function handleIncoming(group: Group, rawText: string, images?: Sig
   return signal;
 }
 
+/** Prior messages within this window are offered to the parser as context. */
+const PARSE_CONTEXT_WINDOW_MS = 10 * 60_000;
+const PARSE_CONTEXT_MAX = 5;
+
+/**
+ * The preceding 2–3 messages from THIS channel within a short time window, as
+ * CONTEXT for the parser/management LLM — traders sometimes split one instruction
+ * across several posts sent close together ("Closing a few 👇" → "$SOL" → "$INJ").
+ * Context only: the current message stays authoritative and the LLM must not emit
+ * a signal that lives only in a prior message. Empty when nothing recent. At parse
+ * time the current message isn't a stored signal yet, so no exclusion is needed.
+ */
+function parseChannelContext(groupId: string): string {
+  try {
+    const cutoff = Date.now() - PARSE_CONTEXT_WINDOW_MS;
+    const prior = signalsRepo
+      .recentForGroup(groupId, PARSE_CONTEXT_MAX + 2)
+      .filter((s) => {
+        const t = Date.parse(s.receivedAt || "");
+        return Number.isFinite(t) && t >= cutoff;
+      })
+      .slice(0, PARSE_CONTEXT_MAX)
+      .reverse();
+    if (!prior.length) return "";
+    const lines = prior.map((s) => {
+      const t = (s.receivedAt || "").slice(11, 16);
+      const txt = (s.rawText || "").replace(/\s+/g, " ").trim().slice(0, 300);
+      // Include the bot's status per prior message so the LLM can see what was
+      // ALREADY handled (the "don't re-execute" safety signal).
+      return `[${t} · already ${s.status}] ${txt || "[image / no text]"}`;
+    });
+    return (
+      `Preceding message(s) from THIS channel in the last ${Math.round(PARSE_CONTEXT_WINDOW_MS / 60000)} min, ` +
+      `newest last, each tagged with what the bot ALREADY did with it ` +
+      `(CONTEXT ONLY — traders sometimes split ONE instruction across posts, so a post that is meaningless alone ` +
+      `can be a real follow-up; BUT the message to parse is authoritative, you must NOT emit a signal/action that ` +
+      `exists only in a prior message, and — critically — you must NOT re-open, re-close or re-book anything a prior ` +
+      `message was ALREADY executed/managed for):\n${lines.join("\n")}`
+    );
+  } catch {
+    return "";
+  }
+}
+
 async function handleIncomingInner(group: Group, rawText: string, images?: SignalImage[]): Promise<Signal> {
   const imgs = (images ?? []).filter(Boolean);
+  const ctx = parseChannelContext(group.id);
   const primary = imgs[0];
   const preview = rawText.replace(/\s+/g, " ").trim().slice(0, 160);
   event("message", `Incoming from ${group.name}${primary ? ` (with ${imgs.length} chart image${imgs.length > 1 ? "s" : ""})` : ""}`, {
@@ -267,7 +312,7 @@ async function handleIncomingInner(group: Group, rawText: string, images?: Signa
     preview,
   }, { groupId: group.id });
 
-  let parsed = await parseSignal(rawText, group.settings.instructions, imgs);
+  let parsed = await parseSignal(rawText, group.settings.instructions, imgs, ctx);
   // Canonicalize metal tickers (XAU→GOLD, XAG→SILVER) so a gold signal is treated
   // as the same asset regardless of which ticker the trader used or venue it lands on.
   if (parsed) parsed = { ...parsed, symbol: canonicalSymbol(parsed.symbol) };
@@ -399,7 +444,7 @@ async function handleIncomingInner(group: Group, rawText: string, images?: Signa
       (primary !== undefined || (llmMode && actions.length > 0));
     if (consultLlm) {
       try {
-        let mv = await readManagementLevels(rawText, group.settings.instructions, imgs, actions.map((a) => a.kind));
+        let mv = await readManagementLevels(rawText, group.settings.instructions, imgs, actions.map((a) => a.kind), ctx);
         // Readable one-liner for a management view, for the deliberation logs.
         const mvDesc = (m: typeof mv): string => {
           if (!m) return "n/a";
@@ -450,7 +495,7 @@ async function handleIncomingInner(group: Group, rawText: string, images?: Signa
               { rules: ruleSummary, llmFirst: mvDesc(first) },
               { level: "warn", groupId: group.id },
             );
-            const mv2 = await reconsiderManagement(rawText, group.settings.instructions, imgs, ruleSummary, first);
+            const mv2 = await reconsiderManagement(rawText, group.settings.instructions, imgs, ruleSummary, first, ctx);
             if (mv2) {
               event(
                 "manage",
@@ -1755,7 +1800,7 @@ async function applySideManagement(
     // names coins as words, not cash-tags, which the rules can't resolve).
     let mv;
     try {
-      mv = await readManagementLevels(rawText, group.settings.instructions, imgs, ruleActs.map((a) => a.kind));
+      mv = await readManagementLevels(rawText, group.settings.instructions, imgs, ruleActs.map((a) => a.kind), parseChannelContext(group.id));
     } catch {
       return;
     }
