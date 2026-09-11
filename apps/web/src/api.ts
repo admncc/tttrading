@@ -219,6 +219,7 @@ export const api = {
       selfHealingModel: string;
       selfHealingAutoRepair: boolean;
       selfHealingVetoFlow: boolean;
+      selfHealingCreateActions: boolean;
       anthropicConfigured: boolean;
       anthropicKeySource: string;
       anthropicModel: string;
@@ -246,6 +247,7 @@ export const api = {
     selfHealingModel?: string;
     selfHealingAutoRepair?: boolean;
     selfHealingVetoFlow?: boolean;
+    selfHealingCreateActions?: boolean;
     autoRefine?: boolean;
     parseMode?: "regex" | "llm";
     llmMemory?: string;

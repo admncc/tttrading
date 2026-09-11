@@ -307,6 +307,7 @@ export async function buildServer() {
       selfHealingModel: z.string().max(100).optional(),
       selfHealingAutoRepair: z.boolean().optional(),
       selfHealingVetoFlow: z.boolean().optional(),
+      selfHealingCreateActions: z.boolean().optional(),
       anthropicKey: z.string().max(500).optional(), // "" clears the desk-stored key
       anthropicModel: z.string().max(100).optional(),
       autoRefine: z.boolean().optional(),
@@ -349,8 +350,10 @@ export async function buildServer() {
     // auto-repair OFF (auto-repair only acts on a blocked action).
     if (d.selfHealingVetoFlow !== undefined) {
       settingsRepo.setSelfHealingVetoFlow(d.selfHealingVetoFlow);
-      if (!d.selfHealingVetoFlow && settingsRepo.getSelfHealingAutoRepair()) {
-        settingsRepo.setSelfHealingAutoRepair(false);
+      // Veto off cascades: auto-repair AND create-actions both depend on it.
+      if (!d.selfHealingVetoFlow) {
+        if (settingsRepo.getSelfHealingAutoRepair()) settingsRepo.setSelfHealingAutoRepair(false);
+        if (settingsRepo.getSelfHealingCreateActions()) settingsRepo.setSelfHealingCreateActions(false);
       }
       log.warn(`Self-Healing VETO FLOW ${d.selfHealingVetoFlow ? "ENABLED — the reviewer now gates actions before execution" : "disabled"}.`);
     }
@@ -359,9 +362,24 @@ export async function buildServer() {
       const vetoOn = d.selfHealingVetoFlow ?? settingsRepo.getSelfHealingVetoFlow();
       const on = d.selfHealingAutoRepair && vetoOn;
       settingsRepo.setSelfHealingAutoRepair(on);
+      // Create-actions depends on auto-repair — turning auto-repair off kills it too.
+      if (!on && settingsRepo.getSelfHealingCreateActions()) settingsRepo.setSelfHealingCreateActions(false);
       log.warn(
         `Self-Healing AUTO-REPAIR ${on ? "ENABLED — reviewer fixes at or above 75% confidence are applied automatically" : "disabled"}` +
           `${d.selfHealingAutoRepair && !on ? " (ignored: requires veto flow on)" : ""}.`,
+      );
+    }
+    if (d.selfHealingCreateActions !== undefined) {
+      // Create-actions requires BOTH veto flow and auto-repair on — ignore an
+      // enable otherwise. It is the aggressive add path (acts on messages the bot
+      // deemed non-actionable), so it is a separate opt-in kill-switch.
+      const vetoOn = d.selfHealingVetoFlow ?? settingsRepo.getSelfHealingVetoFlow();
+      const repairOn = d.selfHealingAutoRepair ?? settingsRepo.getSelfHealingAutoRepair();
+      const on = d.selfHealingCreateActions && vetoOn && repairOn;
+      settingsRepo.setSelfHealingCreateActions(on);
+      log.warn(
+        `Self-Healing CREATE-ACTIONS ${on ? "ENABLED — auto-repair may ADD an action on messages classified non-actionable" : "disabled"}` +
+          `${d.selfHealingCreateActions && !on ? " (ignored: requires veto flow + auto-repair on)" : ""}.`,
       );
     }
     if (d.parseMode !== undefined) settingsRepo.setParseMode(d.parseMode);

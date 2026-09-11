@@ -522,12 +522,13 @@ async function handleIncomingInner(group: Group, rawText: string, images?: Signa
             { level: "warn", groupId: group.id },
           );
           actions = kept;
-          // Completeness gate on the DROP: the rules read real management but the
-          // LLM vetoed it to non-actionable — a second, independent check catches
-          // the case where the bot would otherwise do NOTHING yet the message truly
-          // instructed an action (the PENDLE "TP1 booked here" recap miss). Only
-          // fires with veto flow + auto-repair on and when positions are held.
-          if (droppedReal) {
+          // Completeness gate on the DROP (aggressive "Create new actions" path):
+          // the rules read real management but the LLM vetoed it to non-actionable
+          // — an independent check for the case where the bot would otherwise do
+          // NOTHING yet the message truly instructed an action. Gated behind the
+          // separate opt-in toggle because it acts on messages deemed non-actionable
+          // (summaries), which carries more false-positive risk.
+          if (droppedReal && settingsRepo.getSelfHealingCreateActions()) {
             await runCompletenessGate(group, rawText, "(nothing — the LLM classified the message as non-actionable)", new Set<string>());
           }
         }

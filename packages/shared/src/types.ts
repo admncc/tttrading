@@ -194,6 +194,14 @@ export interface GlobalSettings {
    * Default off — this changes live behaviour.
    */
   selfHealingVetoFlow: boolean;
+  /**
+   * "Create new actions": lets auto-repair's completeness gate ADD an action on a
+   * message the bot classified as NON-actionable (the aggressive add path — e.g. a
+   * "TP1 booked here" the LLM dropped as a recap). The safe add path (a companion
+   * to an action the bot already derived) is always on. Requires veto flow +
+   * auto-repair. Default off — separately killable because it acts on summaries.
+   */
+  selfHealingCreateActions: boolean;
 }
 
 /** Traffic-light risk classification. */

@@ -30,6 +30,7 @@ export function SelfHealing({
   const [model, setModel] = useState("claude-fable-5-1");
   const [autoRepair, setAutoRepair] = useState(false);
   const [vetoFlow, setVetoFlow] = useState(false);
+  const [createActions, setCreateActions] = useState(false);
   const [savedModel, setSavedModel] = useState("claude-fable-5-1");
   const [saving, setSaving] = useState(false);
 
@@ -68,6 +69,7 @@ export function SelfHealing({
         setSavedModel(s.selfHealingModel || "claude-fable-5-1");
         setAutoRepair(s.selfHealingAutoRepair);
         setVetoFlow(s.selfHealingVetoFlow);
+        setCreateActions(s.selfHealingCreateActions);
       })
       .catch(() => {});
     reload();
@@ -163,6 +165,7 @@ export function SelfHealing({
     selfHealingModel?: string;
     selfHealingAutoRepair?: boolean;
     selfHealingVetoFlow?: boolean;
+    selfHealingCreateActions?: boolean;
   }) => {
     setSaving(true);
     try {
@@ -198,7 +201,34 @@ export function SelfHealing({
       return;
     }
     setAutoRepair(next);
+    // Create-actions depends on auto-repair — turning it off kills create-actions too.
+    if (!next && createActions) {
+      setCreateActions(false);
+      await save({ selfHealingAutoRepair: next, selfHealingCreateActions: false });
+      return;
+    }
     await save({ selfHealingAutoRepair: next });
+  };
+
+  const toggleCreateActions = async () => {
+    const next = !createActions;
+    if (next && !(vetoFlow && autoRepair)) {
+      alert("Turn on Veto flow AND Auto-repair first — create-actions extends auto-repair.");
+      return;
+    }
+    if (
+      next &&
+      !confirm(
+        "Enable CREATE NEW ACTIONS?\n\nThis lets auto-repair ADD an action on a message the bot classified as " +
+          "NON-actionable — e.g. a 'TP1 booked here' the parser treated as a recap. It acts on summaries at some " +
+          "risk of a false booking (still ≥75% confidence + all execution guards). Leave OFF if unsure; you can " +
+          "flip it back any time. Continue?",
+      )
+    ) {
+      return;
+    }
+    setCreateActions(next);
+    await save({ selfHealingCreateActions: next });
   };
 
   const toggleVetoFlow = async () => {
@@ -218,10 +248,11 @@ export function SelfHealing({
       return;
     }
     setVetoFlow(next);
-    // Auto-repair requires veto — turning veto off also turns auto-repair off.
-    if (!next && autoRepair) {
+    // Auto-repair AND create-actions require veto — turning veto off kills both.
+    if (!next && (autoRepair || createActions)) {
       setAutoRepair(false);
-      await save({ selfHealingVetoFlow: next, selfHealingAutoRepair: false });
+      setCreateActions(false);
+      await save({ selfHealingVetoFlow: next, selfHealingAutoRepair: false, selfHealingCreateActions: false });
       return;
     }
     await save({ selfHealingVetoFlow: next });
@@ -246,6 +277,7 @@ export function SelfHealing({
             <div className="actions">
               <span className="tag error">veto active</span>
               {autoRepair && <span className="tag brand">auto-repair active</span>}
+              {createActions && <span className="tag brand">create-actions active</span>}
               <span className="tag warn plain">fail-open</span>
             </div>
           )}
@@ -338,6 +370,27 @@ export function SelfHealing({
                   <span className="hint">
                     requires veto · applies the reviewer's fix on a blocked action when ≥75% confident
                     (incl. opening/closing positions)
+                  </span>
+                </span>
+              </span>
+            </div>
+
+            <div>
+              <span
+                className={`switch danger${createActions ? " on" : ""}${saving || !(vetoFlow && autoRepair) ? " disabled" : ""}`}
+                role="switch"
+                aria-checked={createActions}
+                title={vetoFlow && autoRepair ? undefined : "Requires Veto flow + Auto-repair on"}
+                onClick={() => {
+                  if (!saving && ((vetoFlow && autoRepair) || createActions)) void toggleCreateActions();
+                }}
+              >
+                <span className="track" />
+                <span className="sw-text">
+                  <span>Create new actions</span>
+                  <span className="hint">
+                    requires auto-repair · lets the reviewer ADD an action on a message the bot classified
+                    non-actionable (e.g. a "TP1 booked here" recap) · acts on summaries — opt-in, killable
                   </span>
                 </span>
               </span>

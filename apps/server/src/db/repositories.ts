@@ -988,6 +988,19 @@ export const settings = {
   setSelfHealingVetoFlow(on: boolean): void {
     kvSet("selfHealingVetoFlow", on ? "true" : "false");
   },
+  /**
+   * "Create new actions": lets the completeness gate ADD an action on a message
+   * the bot classified as NON-actionable (the aggressive add path). The safe add
+   * path (a companion action when the bot already derived one) is unaffected.
+   * Requires veto flow + auto-repair. Default OFF — it acts on summaries at some
+   * risk, so it is opt-in and separately killable.
+   */
+  getSelfHealingCreateActions(): boolean {
+    return kvGet("selfHealingCreateActions") === "true";
+  },
+  setSelfHealingCreateActions(on: boolean): void {
+    kvSet("selfHealingCreateActions", on ? "true" : "false");
+  },
   getGlobalSettings(): import("@tttrading/shared").GlobalSettings {
     return {
       shadowMode: this.getShadowMode(),
@@ -1003,6 +1016,7 @@ export const settings = {
       selfHealingModel: this.getSelfHealingModel(),
       selfHealingAutoRepair: this.getSelfHealingAutoRepair(),
       selfHealingVetoFlow: this.getSelfHealingVetoFlow(),
+      selfHealingCreateActions: this.getSelfHealingCreateActions(),
     };
   },
   /**
