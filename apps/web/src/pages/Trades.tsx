@@ -355,6 +355,34 @@ export function Trades({
     if (!confirm(`Book ${p}% of ${t.symbol} at market?\n\n${t.side.toUpperCase()} · ${t.groupName}`)) return;
     void run(t.id, () => api.bookPartial(t.id, p / 100), "Book");
   };
+  /** Reload just the expanded trade's history/ladder after an inline edit. */
+  const reloadHistory = async (id: string) => {
+    try {
+      setHistory(await api.tradeHistory(id));
+    } catch {
+      /* keep the stale ladder rather than blanking it */
+    }
+  };
+  /** Remove one take-profit rung from the ladder (replaces TPs with the rest). */
+  const removeTp = (t: Trade, index: number, tps: number[]) => {
+    const remaining = tps.filter((_, i) => i !== index);
+    if (
+      !confirm(
+        `Remove TP${index + 1} (${num(tps[index]!)}) from ${t.symbol}?\n\n` +
+          `New ladder: [${remaining.map((x) => num(x)).join(", ") || "none"}]\n${t.side.toUpperCase()} · ${t.groupName}`,
+      )
+    ) {
+      return;
+    }
+    void run(
+      t.id,
+      async () => {
+        await api.setTradeTakeProfits(t.id, remaining);
+        await reloadHistory(t.id);
+      },
+      "Remove TP",
+    );
+  };
 
   const exportCsv = () => {
     const cols = [
@@ -991,6 +1019,17 @@ export function Trades({
                                               <span className="k">TP{i + 1}</span>
                                               {num(tp)}
                                               {filled ? " ✓ native" : ""}
+                                              {!filled && (
+                                                <button
+                                                  type="button"
+                                                  className="rung-x"
+                                                  title={`Remove TP${i + 1}`}
+                                                  disabled={busyId === t.id}
+                                                  onClick={() => removeTp(t, i, s.takeProfits)}
+                                                >
+                                                  ×
+                                                </button>
+                                              )}
                                             </span>
                                           );
                                         })}
