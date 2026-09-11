@@ -259,6 +259,13 @@ export const signals = {
       .all(groupId) as SignalRow[];
     return rows.map(toSignal);
   },
+  /** The most recent N signals for a group, newest first (channel context). */
+  recentForGroup(groupId: string, limit = 5): Signal[] {
+    const rows = db
+      .prepare("SELECT * FROM signals WHERE group_id = ? ORDER BY received_at DESC LIMIT ?")
+      .all(groupId, limit) as SignalRow[];
+    return rows.map(toSignal);
+  },
   /** True if a signal with the same group, timestamp and text already exists. */
   existsSimilar(groupId: string, receivedAt: string, rawText: string): boolean {
     const row = db
