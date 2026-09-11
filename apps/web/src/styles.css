@@ -169,6 +169,17 @@ button { font: inherit; color: inherit; }
 .sidebar-links { display: flex; justify-content: space-between; gap: 8px; padding: 4px 4px 0; font-size: var(--fs-sm); color: var(--ink-3); }
 .sidebar-links a { color: var(--ink-3); } .sidebar-links a:hover { color: var(--ink); }
 
+/* Deploy version + update widget (bottom-left) */
+.deploy-box { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface-1); }
+.deploy-box.behind { border-color: var(--info-line); background: var(--info-soft); }
+.deploy-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.deploy-ver { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 11px; color: var(--ink-2); }
+.deploy-ver svg { width: 13px; height: 13px; }
+.deploy-refresh { cursor: pointer; color: var(--ink-3); font-size: 13px; line-height: 1; user-select: none; }
+.deploy-refresh:hover { color: var(--ink); }
+.deploy-status { font-size: var(--fs-sm); color: var(--ink-3); }
+.deploy-box.behind .deploy-status { color: var(--info); }
+
 /* Status bar */
 .statusbar {
   position: sticky; top: 0; z-index: 30; height: var(--statusbar-h);

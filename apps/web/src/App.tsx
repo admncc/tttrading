@@ -103,31 +103,61 @@ export function App() {
   const [authState, setAuthState] = useState<"loading" | "in" | "out">("loading");
 
   const [updateEnabled, setUpdateEnabled] = useState(false);
-  const [updateInfo, setUpdateInfo] = useState<string | null>(null);
+  const [update, setUpdate] = useState<{
+    current?: string;
+    behind?: number;
+    commits?: string[];
+    error?: string;
+    checking?: boolean;
+    msg?: string;
+  }>({});
   const [updating, setUpdating] = useState(false);
 
-  const checkUpdate = async () => {
-    setUpdateInfo("checking…");
+  const checkUpdate = useCallback(async (manual = false) => {
+    setUpdate((u) => ({ ...u, checking: true, ...(manual ? { msg: "checking…" } : {}) }));
     try {
       const r = await api.checkUpdate();
-      if (r.error) setUpdateInfo(`error: ${r.error}`);
-      else if ((r.behind ?? 0) === 0) setUpdateInfo(`up to date`);
-      else setUpdateInfo(`${r.behind} behind`);
+      setUpdate({
+        current: r.current,
+        behind: r.behind ?? 0,
+        commits: r.commits,
+        error: r.error,
+        checking: false,
+      });
     } catch (e) {
-      setUpdateInfo(`error: ${e instanceof Error ? e.message : e}`);
+      setUpdate((u) => ({ ...u, checking: false, error: e instanceof Error ? e.message : String(e) }));
     }
-  };
+  }, []);
 
   const applyUpdate = async () => {
-    if (!confirm("Pull the latest code and rebuild? The desk will restart (~1–2 min).")) return;
+    const n = update.behind ?? 0;
+    const list = (update.commits ?? []).slice(0, 10).map((c) => `• ${c}`).join("\n");
+    if (
+      !confirm(
+        `Deploy the latest code and restart the desk?\n\n${n} new commit${n === 1 ? "" : "s"}:\n${list || "(unknown)"}\n\n` +
+          "The desk will pull, rebuild and restart (~1–2 min). New signals aren't processed during the restart; " +
+          "open positions keep their exchange-side SL/TP. Continue?",
+      )
+    ) {
+      return;
+    }
     setUpdating(true);
-    setUpdateInfo("updating — the desk will restart…");
+    setUpdate((u) => ({ ...u, msg: "deploying — the desk will restart…" }));
     try {
       await api.applyUpdate();
     } catch {
-      /* the container is being recreated; the request may not return */
+      /* the process is restarting; the request may not return */
     }
   };
+
+  // Auto-poll for a newer deploy: check on login and every 3 minutes thereafter,
+  // so the bottom-left widget surfaces a new commit without a manual click.
+  useEffect(() => {
+    if (!updateEnabled || authState !== "in") return;
+    void checkUpdate();
+    const id = setInterval(() => void checkUpdate(), 180_000);
+    return () => clearInterval(id);
+  }, [updateEnabled, authState, checkUpdate]);
 
   const refresh = useCallback(async () => {
     const [h, s, g, sig, t, p, a] = await Promise.all([
@@ -443,11 +473,6 @@ export function App() {
           </nav>
 
           <div className="sidebar-footer">
-            {updateEnabled && updateInfo && updateInfo.includes("behind") && (
-              <button className="btn sm block" onClick={applyUpdate} disabled={updating}>
-                {updating ? "Updating…" : "Update & restart"}
-              </button>
-            )}
             <div
               className={`env-card ${env}`}
               title={
@@ -488,14 +513,44 @@ export function App() {
               </button>
             )}
 
+            {updateEnabled && (
+              <div className={`deploy-box${(update.behind ?? 0) > 0 ? " behind" : ""}`}>
+                <div className="deploy-row">
+                  <span
+                    className="deploy-ver"
+                    title={update.commits?.length ? `New commits:\n${update.commits.join("\n")}` : "Current deploy"}
+                  >
+                    <Icon name="update" />
+                    {update.current ? `deploy ${update.current}` : "deploy —"}
+                  </span>
+                  <a
+                    className="deploy-refresh"
+                    onClick={() => void checkUpdate(true)}
+                    role="button"
+                    tabIndex={0}
+                    title="Check for a new deploy now"
+                  >
+                    {update.checking ? "…" : "↻"}
+                  </a>
+                </div>
+                <div className="deploy-status">
+                  {update.error
+                    ? `error: ${update.error}`
+                    : update.msg
+                      ? update.msg
+                      : (update.behind ?? 0) > 0
+                        ? `${update.behind} new commit${(update.behind ?? 0) === 1 ? "" : "s"} available`
+                        : "up to date"}
+                </div>
+                {(update.behind ?? 0) > 0 && !update.msg && (
+                  <button className="btn sm block" onClick={applyUpdate} disabled={updating}>
+                    {updating ? "Deploying…" : "Update & restart"}
+                  </button>
+                )}
+              </div>
+            )}
+
             <div className="sidebar-links">
-              {updateEnabled ? (
-                <a onClick={checkUpdate} role="button" tabIndex={0}>
-                  <Icon name="update" /> Update{updateInfo ? ` · ${updateInfo}` : ""}
-                </a>
-              ) : (
-                <span />
-              )}
               {getToken() && (
                 <a onClick={logout} role="button" tabIndex={0}>
                   <Icon name="logout" /> Log out
