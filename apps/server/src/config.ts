@@ -179,6 +179,13 @@ export const config = {
     project: process.env.COMPOSE_PROJECT_NAME || "tttrading",
     /** Override the update command; empty => sensible default (see update.ts). */
     command: process.env.UPDATE_COMMAND || "",
+    /**
+     * Image for the detached helper that runs the final `compose up -d` (the
+     * container recreate). It must NOT be the container being replaced, or the
+     * recreate kills its own orchestrator mid-restart. Needs the docker CLI +
+     * compose plugin — the official `docker:cli` has both.
+     */
+    helperImage: process.env.UPDATE_HELPER_IMAGE || "docker:cli",
   },
 } as const;
 

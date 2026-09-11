@@ -57,10 +57,19 @@ export function runUpdate(): { started: boolean; error?: string } {
 
   const dir = repo();
   const project = config.selfUpdate.project;
+  const helper = config.selfUpdate.helperImage;
+  // git pull + build run INSIDE this container (safe — building doesn't recreate
+  // the running container). The final `compose up -d` RECREATES this very
+  // container, which would kill the orchestrator mid-restart if we ran it here —
+  // so it is handed to a DETACHED helper container (own docker.sock + repo mount)
+  // that outlives the recreate and finishes bringing the new container up.
   const cmd =
     config.selfUpdate.command ||
     `cd '${dir}' && git config --global --add safe.directory '${dir}' && ` +
-      `git pull --ff-only && docker compose -p '${project}' build && docker compose -p '${project}' up -d`;
+      `git pull --ff-only && docker compose -p '${project}' build && ` +
+      `docker run -d --rm ` +
+      `-v /var/run/docker.sock:/var/run/docker.sock -v '${dir}':'${dir}' -w '${dir}' ` +
+      `'${helper}' compose -p '${project}' up -d`;
 
   updating = true;
   log.warn(`Self-update triggered (project=${project}): ${cmd}`);
