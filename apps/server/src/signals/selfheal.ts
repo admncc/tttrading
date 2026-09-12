@@ -342,6 +342,14 @@ about to CLOSE/BOOK/modify a position from it — a recap is information, not a 
 - The symbol, side, size, or stop of the derived action does not match what the trader clearly meant.
 - A drawn chart level appears mis-read.
 
+WRONG-SIDE STOP TYPO (repair, don't just block): a LONG's stop-loss must be BELOW its entry and a SHORT's ABOVE. \
+If the derived entry has the stop on the WRONG side (e.g. a long with SL 6.852 above a 6.123 entry) it is almost always a \
+trader typo. When the CORRECT level is clear — from the chart's drawn SL line, or an obvious single-digit slip (6.852 → 5.852) — \
+do NOT bare-reject: REJECT with an "open" repair carrying the SAME symbol/side/entry/take-profits and the CORRECTED stopLoss, so \
+the trade is taken with a valid stop. Require the corrected stop to sit on the RIGHT side of the entry and be genuinely supported \
+(a visible chart line or an unambiguous typo) — only then at confidence >=0.75. If you cannot determine the right level with \
+confidence, reject with {"kind":"skip"} instead of guessing a stop.
+
 Approve genuine, correctly-interpreted trade instructions. Be decisive but conservative: when the derived action faithfully matches a \
 real instruction, APPROVE. Reserve REJECT for a clear, consequential mismatch. Apply your LEARNINGS.
 

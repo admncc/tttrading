@@ -158,6 +158,28 @@ async function applyRepair(
     }
 
     case "open": {
+      // Safety: never open with a WRONG-SIDE stop — the exact typo this repair
+      // exists to fix (a long's SL must be BELOW entry, a short's ABOVE). Validate
+      // the corrected SL against the entry, or the live mid when entry is CMP.
+      if (repair.stopLoss !== undefined) {
+        let ref = repair.entry;
+        if (ref === undefined) {
+          try {
+            const resolved = await resolveForSymbol(sym);
+            const ex = resolved.kind === "found" ? resolved.ex : activeHyperliquid();
+            ref = await ex.getMidPrice(sym);
+          } catch { /* no price — let the normal pipeline's sizing/risk guard it */ }
+        }
+        if (ref && ref > 0) {
+          const rightSide = repair.side === "long" ? repair.stopLoss < ref : repair.stopLoss > ref;
+          if (!rightSide) {
+            return {
+              applied: false,
+              note: `open rejected: SL ${repair.stopLoss} wrong-side for ${repair.side} ${sym} (ref ${ref})`,
+            };
+          }
+        }
+      }
       const parsed: ParsedSignal = {
         symbol: sym,
         side: repair.side,
